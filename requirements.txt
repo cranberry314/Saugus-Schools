@@ -1,0 +1,12 @@
+sqlalchemy>=2.0
+psycopg2-binary
+pandas
+requests
+openpyxl
+xlrd
+beautifulsoup4
+lxml
+tqdm
+python-dotenv
+scipy
+numpy

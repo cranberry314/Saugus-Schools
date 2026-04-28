@@ -1,0 +1,213 @@
+# Saugus Schools — Budget & Outcomes Analysis
+
+Generates a PDF report comparing Saugus school funding to peer municipalities,
+tracking MCAS outcomes, and documenting the education funding gap.
+
+**Report output:** `Reports/municipal_finance_report.pdf`
+
+---
+
+## Prerequisites
+
+- Python 3.11+ with the local virtual environment (`.venv/`)
+- PostgreSQL running locally on port 5432 (database: `ma_school_data`)
+- Database credentials in `config.py` (already configured)
+
+The database is **not** in this folder — it runs as a local PostgreSQL service.
+To verify it is running: `pg_isready -h localhost -p 5432`
+
+---
+
+## Generating the Report
+
+```bash
+source .venv/bin/activate
+python analysis/municipal_finance_report.py
+```
+
+Output: `Reports/municipal_finance_report.pdf` (~144 KB, 17 numbered slides + appendix divider)
+
+Every number, chart, and peer comparison is computed live from the database.
+Nothing is hardcoded. Re-running after a data update automatically reflects
+all new values.
+
+---
+
+## Annual Data Update (run each October/November)
+
+When DESE and DLS publish new data for the prior school/fiscal year:
+
+**Step 1 — Update the expected years in `data_loader.py`**
+
+Open `data_loader.py` and find the `EXPECTED` dict near the top.
+Bump the years for sources that have published new data:
+
+```python
+EXPECTED = {
+    "municipal_revenues":    ("fiscal_year", 2026),   # ← bump from 2025
+    "municipal_expenditures":("fiscal_year", 2026),
+    "mcas_results":          ("school_year", 2026),   # ← bump from 2025
+    "graduation_rates":      ("school_year", 2026),
+    "attendance":            ("school_year", 2026),
+    # staffing / per_pupil / enrollment typically lag by 1 year — check DESE
+    ...
+}
+```
+
+Typical release schedule:
+| Source | Usually available | Covers |
+|--------|------------------|--------|
+| MA DLS Schedule A | October | Prior fiscal year (FY ending June) |
+| DESE MCAS | October | Prior school year |
+| DESE Graduation/Attendance | October | Prior school year |
+| DESE Staffing/Per-Pupil/Enrollment | October–December | Prior school year |
+| Census ACS 5-year | December | Year ending 2 years prior |
+| BLS CPI (FRED) | February | Prior calendar year |
+
+**Step 2 — For district_csv.py sources (staffing, enrollment, per-pupil)**
+
+These scrapers read large CSV files from the `Files/` folder.
+Download the latest vintage from DESE:
+- Go to: `https://www.doe.mass.edu/accountability/data-requests/`
+- Download "District Expenditures by Spending Category" → save as
+  `Files/District_Expenditures_by_Spending_Category_YYYYMMDD.csv`
+- Download "District Expenditures by Function Code" → save as
+  `Files/District_Expenditures_by_Function_Code_YYYYMMDD.csv`
+
+The scrapers use a filename glob (`*YYYYMMDD*.csv`) so they will pick up
+the new file automatically. Delete the old dated file after confirming load.
+
+**Step 3 — For CPI (inflation)**
+
+Download the updated annual CSV from FRED:
+- URL: `https://fred.stlouisfed.org/series/FPCPITOTLZGUSA` → Download Data
+- Save as `Files/FPCPITOTLZGUSA.csv` (replace the existing file)
+
+**Step 4 — Run the loader**
+
+```bash
+source .venv/bin/activate
+python data_loader.py
+```
+
+The loader shows a freshness dashboard, then prompts yes/no for each
+source that needs updating. All scrapers run with the correct year arguments.
+
+**Step 5 — Regenerate the report**
+
+```bash
+python analysis/municipal_finance_report.py
+```
+
+---
+
+## File Structure
+
+```
+Schools/
+├── config.py                   # Database connection (edit if Postgres moves)
+├── requirements.txt            # Python dependencies
+├── data_loader.py              # Annual data update orchestrator ← START HERE
+├── run_all.py                  # Runs all analysis reports at once
+│
+├── analysis/
+│   ├── municipal_finance_report.py   # Main report generator (PDF)
+│   ├── data_integrity.py             # Data quality checks
+│   ├── peers.py / peers_comprehensive.py / peers_timeseries.py
+│   └── spending_report.py / stats_report.py
+│
+├── scrapers/                   # One scraper per data source
+│   ├── mcas.py                 # DESE MCAS via Socrata API
+│   ├── graduation_rates.py     # DESE graduation rates
+│   ├── attendance.py           # DESE chronic absenteeism
+│   ├── district_csv.py         # DESE staffing, enrollment, per-pupil
+│   ├── municipal_finance.py    # MA DLS Schedule A (revenues + expenditures)
+│   ├── census_acs.py           # Census ACS 5-year (demographics)
+│   ├── inflation.py            # BLS CPI from FRED CSV
+│   ├── chapter70.py            # DESE Chapter 70 aid
+│   └── selected_populations.py # DESE high-needs demographics
+│
+├── Files/                      # Downloaded source files (large CSVs)
+│   ├── FPCPITOTLZGUSA.csv      # BLS CPI data from FRED (update annually)
+│   ├── District_Expenditures_by_Spending_Category_*.csv   # DESE bulk file
+│   ├── District_Expenditures_by_Function_Code_*.csv       # DESE bulk file
+│   └── School_Expenditures_by_Spending_Category_*.csv     # DESE bulk file
+│
+├── db/
+│   ├── schema.sql              # PostgreSQL schema (for reference / recreation)
+│   └── queries.py              # Common query helpers
+│
+├── Reports/                    # Generated PDF outputs (not committed to git)
+└── .venv/                      # Python virtual environment (not shared)
+```
+
+---
+
+## Database Tables (ma_school_data on localhost)
+
+| Table | Source | Key year column |
+|-------|--------|----------------|
+| `municipal_revenues` | MA DLS Schedule A | `fiscal_year` |
+| `municipal_expenditures` | MA DLS Schedule A | `fiscal_year` |
+| `mcas_results` | MA DESE / Socrata | `school_year` |
+| `graduation_rates` | MA DESE | `school_year` |
+| `attendance` | MA DESE | `school_year` |
+| `staffing` | MA DESE bulk CSV | `school_year` |
+| `per_pupil_expenditure` | MA DESE bulk CSV | `school_year` |
+| `enrollment` | MA DESE bulk CSV | `school_year` |
+| `municipal_census_acs` | Census ACS 5-year API | `acs_year` |
+| `inflation_cpi` | BLS CPI via FRED | `year` |
+| `municipal_tax_rates` | MA DOR via DLS Gateway | `fiscal_year` |
+| `district_chapter70` | MA DESE Ch70 files | `fiscal_year` |
+| `district_selected_populations` | MA DESE | `school_year` |
+| `ingest_log` | Written by all scrapers | — |
+
+---
+
+## If Starting From Scratch (new machine)
+
+```bash
+# 1. Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Create the database
+createdb ma_school_data
+psql ma_school_data < db/schema.sql
+
+# 3. Edit config.py if your Postgres credentials differ
+
+# 4. Download source files into Files/ (see Step 2 above)
+
+# 5. Run data_loader.py with --all flags on individual scrapers to backfill
+python scrapers/mcas.py --all
+python scrapers/graduation_rates.py --all
+# ... etc (see each scraper's --help)
+
+# 6. Generate the report
+python analysis/municipal_finance_report.py
+```
+
+---
+
+## Peer Selection (how it works)
+
+Peers are selected automatically using two independent statistical methods
+applied to 6 outcome-predictive features identified by Ridge regression
+(R²=0.84 on MCAS scores across all 221 MA districts):
+
+- Chronic Absenteeism %
+- Ch70 State Aid per Pupil
+- % College-Educated Adults
+- % SPED
+- Median Household Income
+- % ELL
+
+**Mahalanobis Distance** finds the 10 closest towns in this 6-dimensional
+feature space. **Ward Hierarchical Clustering** independently groups all towns
+and identifies Saugus's natural cluster. The *consensus* — towns selected by
+both methods — appears throughout the report.
+
+Excluded from peer pool: Nantucket (resort/island economy), Tyringham,
+Mount Washington, Wellfleet, East Brookfield (extreme population outliers).

@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Large downloaded source files — download fresh using data_loader.py
+Files/*.csv
+Files/*.xlsx
+
+# The e2c_download folder (older duplicate CSVs)
+e2c_download*/
+
+# Generated outputs — recreate by running analysis/municipal_finance_report.py
+Reports/
+
+# Database credentials — copy config.example.py to config.py and fill in
+config.py
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Personal/exploratory files from early research
+Saugus School Information/
+School Summary 2018.docx
+Saugus.py
+TeacherSalary.py
