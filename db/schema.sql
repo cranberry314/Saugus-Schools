@@ -438,3 +438,54 @@ CREATE TABLE IF NOT EXISTS ch70_district_mapping (
     notes           TEXT,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+
+-- =============================================================
+-- Analysis Snapshots — computed results saved per report run
+-- Allows year-over-year comparison of peers, metrics, outcomes
+-- =============================================================
+
+-- One row per report generation
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    id              SERIAL PRIMARY KEY,
+    run_at          TIMESTAMPTZ DEFAULT NOW(),
+    data_vintage_fy INTEGER,       -- max fiscal_year in data at time of run
+    data_vintage_sy INTEGER,       -- max school_year in data at time of run
+    n_peer_pool     INTEGER,       -- total towns available as peers
+    notes           TEXT
+);
+
+-- Which towns were selected as peers, per method, per run
+CREATE TABLE IF NOT EXISTS computed_peer_groups (
+    id           SERIAL PRIMARY KEY,
+    run_id       INTEGER REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    method       VARCHAR(20)    NOT NULL,  -- 'mahalanobis', 'ward_cluster', 'consensus'
+    municipality VARCHAR(100)   NOT NULL,
+    ed_pct       NUMERIC(6,2),             -- their ed% at time of run
+    mahal_dist   NUMERIC(10,6),            -- NULL for ward/consensus
+    rank_in_set  INTEGER                   -- 1=closest; NULL for ward/consensus
+);
+
+CREATE INDEX IF NOT EXISTS idx_cpg_run_method ON computed_peer_groups (run_id, method);
+
+-- Key computed metrics — flexible key/value with fiscal/school year context
+CREATE TABLE IF NOT EXISTS computed_metrics (
+    id           SERIAL PRIMARY KEY,
+    run_id       INTEGER REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    metric       VARCHAR(60)    NOT NULL,  -- e.g. 'saugus_ed_pct', 'funding_gap_m'
+    fiscal_year  INTEGER,                  -- NULL if metric is not FY-specific
+    school_year  INTEGER,                  -- NULL if metric is not SY-specific
+    value        NUMERIC(12,4),
+    notes        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_cm_run_metric ON computed_metrics (run_id, metric);
+
+-- RBP feature importances per run
+CREATE TABLE IF NOT EXISTS computed_feature_importance (
+    id          SERIAL PRIMARY KEY,
+    run_id      INTEGER REFERENCES analysis_runs(id) ON DELETE CASCADE,
+    rank        INTEGER       NOT NULL,   -- 1 = most important
+    feature     VARCHAR(60)   NOT NULL,
+    importance  NUMERIC(10,6)             -- R² drop from leave-one-out
+);

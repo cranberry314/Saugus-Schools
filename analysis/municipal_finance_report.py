@@ -6,7 +6,7 @@ Source: MA DLS Schedule A, FY2010-2025.
 
 Run: python analysis/municipal_finance_report.py
 """
-import sys, os, math, textwrap
+import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
@@ -14,7 +14,7 @@ import pandas as pd
 from sqlalchemy import text
 from config import get_engine
 from scipy.spatial.distance import mahalanobis
-from scipy.cluster.hierarchy import linkage as hc_linkage, fcluster, dendrogram as scipy_dendrogram
+from scipy.cluster.hierarchy import linkage as hc_linkage, fcluster
 
 import matplotlib
 matplotlib.use("Agg")
@@ -940,7 +940,7 @@ def peer_education_share_page(pdf, exp, year=2024):
     fig, ax = plt.subplots(figsize=(11, 8.5))
     fig.patch.set_facecolor("white")
 
-    bars = ax.barh(range(n), vals, color=colors, edgecolor=edge, linewidth=0.5, height=0.75)
+    ax.barh(range(n), vals, color=colors, edgecolor=edge, linewidth=0.5, height=0.75)
 
     # Peer median line
     ax.axvline(peer_med, color=NAVY, linewidth=2, linestyle="--", zorder=5,
@@ -975,7 +975,6 @@ def peer_education_share_page(pdf, exp, year=2024):
                     arrowprops=dict(arrowstyle="<->", color=RED, lw=2))
         saugus_exp_yr = exp[(exp["fiscal_year"] == year) & (exp["dor_code"] == SAUGUS_CODE)]
         gap_m = (peer_med - saugus_val) / 100 * _v(saugus_exp_yr, year, "total_expenditures") / 1e6
-        mid = (saugus_val + peer_med) / 2
         ax.text(peer_med + 1.5, saugus_idx + 5,
                 f"{peer_med - saugus_val:.1f} ppt gap\n≈ ${gap_m:.0f}M/yr",
                 ha="left", fontsize=8.5, fontweight="bold", color=RED,
@@ -1036,7 +1035,7 @@ def real_spending_growth_page(pdf, sexp, deflator):
         return f"+{d:.0f}%" if d >= 0 else f"{d:.0f}%"
 
     last = years[-1]
-    for idx, (series, label, color) in enumerate([
+    for _, (series, label, color) in enumerate([
         (fc_i,  f"Fixed Costs  {_chg(fc_i[-1])}",  "#7030A0"),
         (ds_i,  f"Debt Service  {_chg(ds_i[-1])}", ORANGE),
         (ps_i,  f"Public Safety  {_chg(ps_i[-1])}",STEEL),
@@ -1146,7 +1145,6 @@ def revenue_vs_education_page(pdf, srev, sexp, deflator):
         for txt in leg2.get_texts(): txt.set_color("white")
     # Label each bar with its dollar value
     for bar, val in zip(bars, surplus):
-        ha = "center"
         va = "bottom" if val >= 0 else "top"
         offset = 0.05 if val >= 0 else -0.05
         ax.text(bar.get_x() + bar.get_width() / 2, val + offset,
@@ -1681,11 +1679,6 @@ def dendrogram_page(pdf, Z, peer_df, optimal_k, feature_desc=None, rbp_work=None
     # Story box — lead with the argument, not the methodology
     n_cluster = len(cluster_towns)
 
-    # Compute ed_pct for cluster towns vs Saugus to get specific numbers
-    cluster_ed_pcts = []
-    if hasattr(pca_df, 'columns') and 'municipality' in pca_df.columns:
-        pass  # ed_pct not available here; use narrative framing
-
     story = (
         "What this chart shows:\n"
         f"• Saugus (gold ★) sits inside a cluster of {n_cluster} demographically similar MA towns\n"
@@ -1798,8 +1791,7 @@ def data_sources_page(pdf, rev, n_peer_towns):
 
 # ── slide 6: dual methodology — mahalanobis + hierarchical clustering ─────────
 
-def dual_methodology_page(pdf, exp, mahal_peers, hclust_peers, year=2024,
-                          feature_desc=None):
+def dual_methodology_page(pdf, exp, mahal_peers, hclust_peers, year=2024):
     if mahal_peers is None or len(mahal_peers) == 0:
         return
 
@@ -2205,8 +2197,6 @@ def closing_slide(pdf, srev, sexp, exp):
 
 def student_outcomes_page(pdf, outcomes: dict):
     """Slide: MCAS trend lines + graduation rates — Saugus vs peers."""
-    from scipy import stats as scipy_stats
-
     mcas        = outcomes["mcas"]
     state_med   = outcomes["state_med"]
     grad        = outcomes["grad"]
@@ -2214,15 +2204,7 @@ def student_outcomes_page(pdf, outcomes: dict):
     SAUGUS_ORG  = outcomes["saugus_org"]
     PEER_ORGS   = outcomes["peer_orgs"]
 
-    mcas10      = outcomes["mcas10"]
     saugus_ela  = mcas[(mcas["org_code"] == SAUGUS_ORG) & (mcas["subject"] == "ELA")].set_index("school_year")["meeting_exceeding_pct"]
-    saugus_math = mcas[(mcas["org_code"] == SAUGUS_ORG) & (mcas["subject"] == "MATH")].set_index("school_year")["meeting_exceeding_pct"]
-
-    # Grade 10 ELA (graduation-requirement test)
-    saugus_ela10 = (mcas10[(mcas10["org_code"] == SAUGUS_ORG) & (mcas10["subject"] == "ELA")]
-                    .set_index("school_year")["meeting_exceeding_pct"])
-    peer_ela10 = (mcas10[mcas10["org_code"].isin(PEER_ORGS.values()) & (mcas10["subject"] == "ELA")]
-                  .groupby("school_year")["meeting_exceeding_pct"].mean())
 
     # Consensus peer average per year (ELA grades 3-8)
     peer_mcas_ela = (mcas[mcas["org_code"].isin(PEER_ORGS.values()) & (mcas["subject"] == "ELA")]
@@ -2238,13 +2220,11 @@ def student_outcomes_page(pdf, outcomes: dict):
 
     # Key stats — use 2019 (last pre-Covid year) as baseline
     ela_2019   = float(saugus_ela.get(2019, saugus_ela.get(2017, 0.48)))
-    ela_2022   = float(saugus_ela.get(2022, 0.34))
     ela_latest_yr = int(max(saugus_ela.index))
     ela_latest = float(saugus_ela.get(ela_latest_yr, saugus_ela.iloc[-1]))
     ela_drop   = ela_latest - ela_2019
 
     peer_ela_2019   = float(peer_mcas_ela.get(2019, peer_mcas_ela.get(2017, 0.53)))
-    peer_ela_2022   = float(peer_mcas_ela.get(2022, 0.41))
     peer_ela_latest = float(peer_mcas_ela.get(ela_latest_yr, peer_mcas_ela.iloc[-1]))
     gap_2019   = ela_2019  - peer_ela_2019
     gap_latest = ela_latest - peer_ela_latest
@@ -2595,7 +2575,7 @@ def load_rbp_features(engine, year: int = 2024) -> pd.DataFrame:
 # ── Relevance-Based Prediction ───────────────────────────────────────────────
 
 def rbp_predict(df: pd.DataFrame, features: list[str], target: str,
-                bandwidth: float | None = None) -> pd.DataFrame:
+                _bandwidth: float | None = None) -> pd.DataFrame:
     """
     Leave-one-out Ridge regression prediction.
     Predicts each district's MCAS using a model trained on all other districts.
@@ -2726,7 +2706,7 @@ def rbp_outcomes_page(pdf, outcomes: dict, rbp_features: pd.DataFrame,
     gap       = actual - predicted                 # e.g. -15.2 pp
     n_towns   = len(rbp_df)
     print(f"[Page 17] Saugus predicted={predicted:.1f}%, actual={actual:.1f}%, gap={gap:+.1f}pp, R²={r_squared:.2f}")
-    gap_color = RED if gap < -2 else GREEN if gap > 2 else STEEL_BLUE
+    _gap_color = RED if gap < -2 else GREEN if gap > 2 else STEEL_BLUE
     gap_sign  = "below" if gap < 0 else "above"
 
     saugus_rank = int(rbp_df["rbp_resid"].rank().loc[
@@ -3048,7 +3028,6 @@ def spending_outcomes_scatter_page(pdf, outcomes: dict, exp, year: int = 2024,
     use["mcas_resid_pp"] = use["mcas_resid"] * 100
     x_line_pp = x_line
     y_line_pp = y_line * 100
-    slope_pp  = slope
 
     fig = plt.figure(figsize=(11, 8.5))
     fig.patch.set_facecolor(NAVY)
@@ -3056,7 +3035,6 @@ def spending_outcomes_scatter_page(pdf, outcomes: dict, exp, year: int = 2024,
     fig.text(0.5, 0.930, "APPENDIX: Education Spending vs. Student Outcomes",
              ha="center", fontsize=18, fontweight="bold", color="white",
              transform=fig.transFigure)
-    n_controls = len(controls)
     fig.text(0.5, 0.898,
              f"Apples-to-apples: comparing districts with similar student populations  "
              f"({len(use)} MA towns, FY/SY 2024)",
@@ -3221,8 +3199,7 @@ def run():
         executive_summary_page(pdf, srev, sexp, peer_stats)                        # 3  The Bottom Line stat boxes
         education_share_trend_page(pdf, sexp)                                       # 4
         peer_education_share_page(pdf, exp, year=2024)                              # 5
-        dual_methodology_page(pdf, exp, mahal_peers, hclust_peers, year=2024,
-                              feature_desc=feat_desc)                               # 6
+        dual_methodology_page(pdf, exp, mahal_peers, hclust_peers, year=2024)        # 6
         wealthy_town_slide(pdf, exp, acs, tax_rates, year=2024)                     # 7
         real_spending_growth_page(pdf, sexp, deflator)                              # 8
         revenue_vs_education_page(pdf, srev, sexp, deflator)                        # 9
@@ -3244,6 +3221,148 @@ def run():
 
     shutil.copy2(tmp_pdf, OUTPUT_PDF)
     print(f"[municipal_finance] Done → {OUTPUT_PDF}  ({os.path.getsize(OUTPUT_PDF)//1024}KB)")
+
+    save_run_snapshot(engine, srev, sexp, exp, outcomes, peer_stats,
+                      mahal_peers, hclust_peers, consensus_names, fi_full,
+                      n_peer_towns)
+
+
+def save_run_snapshot(engine, srev, sexp, exp, outcomes, peer_stats,
+                      mahal_peers, hclust_peers, consensus_names, fi_full,
+                      n_peer_towns):
+    """
+    Persist all computed values for this report run to the database.
+    Enables year-over-year comparison of peer groups, metrics, and outcomes.
+    """
+    mcas       = outcomes["mcas"]
+    SAUGUS_ORG = outcomes["saugus_org"]
+    PEER_ORGS  = outcomes["peer_orgs"]
+
+    fy_max = int(srev["fiscal_year"].max())
+    sy_max = int(mcas["school_year"].max())
+    yr     = 2024   # primary comparison year
+
+    # ── Insert run record ────────────────────────────────────────────────────
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            INSERT INTO analysis_runs (data_vintage_fy, data_vintage_sy, n_peer_pool)
+            VALUES (:fy, :sy, :n)
+            RETURNING id
+        """), {"fy": fy_max, "sy": sy_max, "n": n_peer_towns}).fetchone()
+        run_id = row[0]
+
+        # ── Peer groups ──────────────────────────────────────────────────────
+        # Build ed_pct lookup from Schedule A
+        exp_yr = exp[exp["fiscal_year"] == yr].copy()
+        exp_yr["ed_pct_val"] = exp_yr["education"] / exp_yr["total_expenditures"] * 100
+        ed_lu = exp_yr.drop_duplicates("municipality").set_index("municipality")["ed_pct_val"]
+
+        peer_rows = []
+
+        # Mahalanobis — preserve distance and rank
+        for rank, (_, row_p) in enumerate(mahal_peers.iterrows(), start=1):
+            muni = row_p["municipality"]
+            peer_rows.append({
+                "run_id": run_id, "method": "mahalanobis", "municipality": muni,
+                "ed_pct": float(ed_lu.get(muni, float("nan"))) if not pd.isna(ed_lu.get(muni, float("nan"))) else None,
+                "mahal_dist": float(row_p.get("mahal_dist", float("nan"))) if "mahal_dist" in row_p.index and not pd.isna(row_p.get("mahal_dist")) else None,
+                "rank_in_set": rank,
+            })
+
+        # Ward cluster
+        for _, row_p in hclust_peers.iterrows():
+            muni = row_p["municipality"]
+            peer_rows.append({
+                "run_id": run_id, "method": "ward_cluster", "municipality": muni,
+                "ed_pct": float(ed_lu.get(muni, float("nan"))) if not pd.isna(ed_lu.get(muni, float("nan"))) else None,
+                "mahal_dist": None, "rank_in_set": None,
+            })
+
+        # Consensus
+        for muni in consensus_names:
+            peer_rows.append({
+                "run_id": run_id, "method": "consensus", "municipality": muni,
+                "ed_pct": float(ed_lu.get(muni, float("nan"))) if not pd.isna(ed_lu.get(muni, float("nan"))) else None,
+                "mahal_dist": None, "rank_in_set": None,
+            })
+
+        if peer_rows:
+            conn.execute(text("""
+                INSERT INTO computed_peer_groups
+                    (run_id, method, municipality, ed_pct, mahal_dist, rank_in_set)
+                VALUES (:run_id, :method, :municipality, :ed_pct, :mahal_dist, :rank_in_set)
+            """), peer_rows)
+
+        # ── Key metrics ──────────────────────────────────────────────────────
+        ed_pct_now  = _v(sexp, yr, "education") / _v(sexp, yr, "total_expenditures") * 100
+        ed_pct_2010 = _v(sexp, 2010, "education") / _v(sexp, 2010, "total_expenditures") * 100
+        gap_m = ((_v(sexp, yr, "total_expenditures") * peer_stats["ed_pct"]["median"] / 100)
+                 - _v(sexp, yr, "education")) / 1e6
+
+        # MCAS
+        sela = mcas[(mcas["org_code"] == SAUGUS_ORG) & (mcas["subject"] == "ELA")].set_index("school_year")
+        peer_ela = (mcas[mcas["org_code"].isin(PEER_ORGS.values()) & (mcas["subject"] == "ELA")]
+                    .groupby("school_year")["meeting_exceeding_pct"].mean() * 100)
+        ela_latest_yr = int(sela.index.max())
+        ela_latest    = float(sela.loc[ela_latest_yr, "meeting_exceeding_pct"]) * 100
+        ela_2019      = float(sela.loc[2019, "meeting_exceeding_pct"]) * 100 if 2019 in sela.index else None
+        peer_latest   = float(peer_ela.get(ela_latest_yr, float("nan")))
+        peer_2019     = float(peer_ela.get(2019, float("nan"))) if 2019 in peer_ela.index else None
+        ela_gap       = ela_latest - peer_latest if not pd.isna(peer_latest) else None
+        ela_gap_2019  = (ela_2019 - peer_2019) if ela_2019 and peer_2019 else None
+
+        # Teacher FTE
+        teacher = outcomes["teacher"]
+        t_latest_yr = int(teacher["school_year"].max())
+        t_latest    = float(teacher[teacher["school_year"] == t_latest_yr]["fte"].iloc[0])
+        t_2017      = float(teacher[teacher["school_year"] == 2017]["fte"].iloc[0]) if 2017 in teacher["school_year"].values else None
+
+        metrics = [
+            # Fiscal metrics
+            ("saugus_ed_pct",         yr,    None,          ed_pct_now),
+            ("saugus_ed_pct_2010",    2010,  None,          ed_pct_2010),
+            ("peer_median_ed_pct",    yr,    None,          peer_stats["ed_pct"]["median"]),
+            ("rank_from_bottom",      yr,    None,          peer_stats["ed_pct"]["rank"]),
+            ("n_peer_towns",          yr,    None,          peer_stats["ed_pct"]["n"]),
+            ("funding_gap_m",         yr,    None,          gap_m),
+            ("fy_latest_surplus_m",   fy_max,None,          (_v(srev, fy_max, "total_revenues") - _v(sexp, fy_max, "total_expenditures")) / 1e6),
+            # MCAS metrics
+            ("ela_saugus_pct",        None,  ela_latest_yr, ela_latest),
+            ("ela_peer_avg_pct",      None,  ela_latest_yr, peer_latest),
+            ("ela_gap_pp",            None,  ela_latest_yr, ela_gap),
+            ("ela_saugus_pct_2019",   None,  2019,          ela_2019),
+            ("ela_peer_avg_pct_2019", None,  2019,          peer_2019),
+            ("ela_gap_2019_pp",       None,  2019,          ela_gap_2019),
+            # Staffing
+            ("teacher_fte",           None,  t_latest_yr,   t_latest),
+            ("teacher_fte_2017",      None,  2017,          t_2017),
+        ]
+
+        metric_rows = [
+            {"run_id": run_id, "metric": m, "fiscal_year": fy, "school_year": sy,
+             "value": round(float(v), 4) if v is not None and not pd.isna(float(v) if v is not None else float("nan")) else None}
+            for m, fy, sy, v in metrics
+            if v is not None
+        ]
+        conn.execute(text("""
+            INSERT INTO computed_metrics (run_id, metric, fiscal_year, school_year, value)
+            VALUES (:run_id, :metric, :fiscal_year, :school_year, :value)
+        """), metric_rows)
+
+        # ── Feature importances ──────────────────────────────────────────────
+        fi_rows = [
+            {"run_id": run_id, "rank": i + 1,
+             "feature": row_fi["feature"],
+             "importance": round(float(row_fi["importance"]), 6)}
+            for i, (_, row_fi) in enumerate(fi_full.head(N_TOP_RBP).iterrows())
+        ]
+        conn.execute(text("""
+            INSERT INTO computed_feature_importance (run_id, rank, feature, importance)
+            VALUES (:run_id, :rank, :feature, :importance)
+        """), fi_rows)
+
+    print(f"[municipal_finance] Snapshot saved → run_id={run_id}  "
+          f"(FY{fy_max}, SY{sy_max}, {len(peer_rows)} peer rows, {len(metric_rows)} metrics)")
 
 
 if __name__ == "__main__":
