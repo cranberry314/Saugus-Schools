@@ -11,10 +11,9 @@ tracking MCAS outcomes, and documenting the education funding gap.
 
 - Python 3.11+ with the local virtual environment (`.venv/`)
 - PostgreSQL running locally on port 5432 (database: `ma_school_data`)
-- Database credentials in `config.py` (already configured)
+- Database credentials in `config.py` (copy from `config.example.py`)
 
-The database is **not** in this folder — it runs as a local PostgreSQL service.
-To verify it is running: `pg_isready -h localhost -p 5432`
+To verify Postgres is running: `pg_isready -h localhost -p 5432`
 
 ---
 
@@ -28,8 +27,7 @@ python analysis/municipal_finance_report.py
 Output: `Reports/municipal_finance_report.pdf` (~144 KB, 17 numbered slides + appendix divider)
 
 Every number, chart, and peer comparison is computed live from the database.
-Nothing is hardcoded. Re-running after a data update automatically reflects
-all new values.
+Nothing is hardcoded. Re-running after a data update automatically reflects all new values.
 
 ---
 
@@ -58,8 +56,10 @@ Typical release schedule:
 | Source | Usually available | Covers |
 |--------|------------------|--------|
 | MA DLS Schedule A | October | Prior fiscal year (FY ending June) |
+| MA DLS Tax Rates & Assessed Values | December | Prior fiscal year |
 | DESE MCAS | October | Prior school year |
 | DESE Graduation/Attendance | October | Prior school year |
+| DESE SAT / Postsecondary / Dropout | October–November | Prior school year |
 | DESE Staffing/Per-Pupil/Enrollment | October–December | Prior school year |
 | Census ACS 5-year | December | Year ending 2 years prior |
 | BLS CPI (FRED) | February | Prior calendar year |
@@ -93,7 +93,20 @@ python data_loader.py
 The loader shows a freshness dashboard, then prompts yes/no for each
 source that needs updating. All scrapers run with the correct year arguments.
 
-**Step 5 — Regenerate the report**
+**Step 5 — Refresh supplemental data (run once per year)**
+
+```bash
+# Assessed values — all ~352 MA municipalities
+python scrapers/assessed_values.py
+
+# DESE state reports — SAT, post-secondary, dropout
+python scrapers/dese_state_reports.py all
+
+# Zillow home values
+python scrapers/zillow_housing.py
+```
+
+**Step 6 — Regenerate the report**
 
 ```bash
 python analysis/municipal_finance_report.py
@@ -105,7 +118,8 @@ python analysis/municipal_finance_report.py
 
 ```
 Schools/
-├── config.py                   # Database connection (edit if Postgres moves)
+├── config.py                   # Database connection — copy from config.example.py
+├── config.example.py           # Credential template (safe to commit)
 ├── requirements.txt            # Python dependencies
 ├── data_loader.py              # Annual data update orchestrator ← START HERE
 ├── run_all.py                  # Runs all analysis reports at once
@@ -120,24 +134,30 @@ Schools/
 │   ├── mcas.py                 # DESE MCAS via Socrata API
 │   ├── graduation_rates.py     # DESE graduation rates
 │   ├── attendance.py           # DESE chronic absenteeism
-│   ├── district_csv.py         # DESE staffing, enrollment, per-pupil
+│   ├── district_csv.py         # DESE staffing, enrollment, per-pupil (CSV bulk)
+│   ├── dese_state_reports.py   # DESE SAT scores, postsecondary, dropout rates
+│   ├── selected_populations.py # DESE high-needs demographics (SPED, ELL, etc.)
+│   ├── chapter70.py            # DESE Chapter 70 state aid
 │   ├── municipal_finance.py    # MA DLS Schedule A (revenues + expenditures)
-│   ├── census_acs.py           # Census ACS 5-year (demographics)
+│   ├── assessed_values.py      # MA DLS LA-4 assessed values by property class
+│   ├── census_acs.py           # Census ACS 5-year (demographics + age)
 │   ├── inflation.py            # BLS CPI from FRED CSV
-│   ├── chapter70.py            # DESE Chapter 70 aid
-│   └── selected_populations.py # DESE high-needs demographics
+│   └── zillow_housing.py       # Zillow home value index (ZHVI)
 │
-├── Files/                      # Downloaded source files (large CSVs)
+├── Files/                      # Downloaded source files (large CSVs — gitignored)
 │   ├── FPCPITOTLZGUSA.csv      # BLS CPI data from FRED (update annually)
 │   ├── District_Expenditures_by_Spending_Category_*.csv   # DESE bulk file
 │   ├── District_Expenditures_by_Function_Code_*.csv       # DESE bulk file
 │   └── School_Expenditures_by_Spending_Category_*.csv     # DESE bulk file
 │
 ├── db/
-│   ├── schema.sql              # PostgreSQL schema (for reference / recreation)
-│   └── queries.py              # Common query helpers
+│   ├── schema.sql                       # Full PostgreSQL schema
+│   ├── migrate_add_snapshots.py         # Migration: analysis snapshot tables
+│   ├── migrate_add_assessed_values.py   # Migration: municipal_assessed_values
+│   ├── migrate_add_dese_reports.py      # Migration: DESE report tables + ACS age
+│   └── queries.py                       # Common query helpers
 │
-├── Reports/                    # Generated PDF outputs (not committed to git)
+├── Reports/                    # Generated PDF outputs (gitignored)
 └── .venv/                      # Python virtual environment (not shared)
 ```
 
@@ -145,23 +165,52 @@ Schools/
 
 ## Database Tables (ma_school_data on localhost)
 
+### Core Financial & Fiscal Data
 | Table | Source | Key year column |
 |-------|--------|----------------|
 | `municipal_revenues` | MA DLS Schedule A | `fiscal_year` |
 | `municipal_expenditures` | MA DLS Schedule A | `fiscal_year` |
-| `mcas_results` | MA DESE / Socrata | `school_year` |
+| `municipal_tax_rates` | MA DLS Gateway | `fiscal_year` |
+| `municipal_assessed_values` | MA DLS Gateway LA-4 report | `fiscal_year` |
+| `municipal_income_eqv` | MA DLS Gateway (EQV) | `fiscal_year` |
+| `municipal_gf_expenditures` | MA DLS Gateway | `fiscal_year` |
+| `municipal_new_growth` | MA DLS Gateway | `fiscal_year` |
+| `district_chapter70` | MA DESE Chapter 70 files | `fiscal_year` |
+| `inflation_cpi` | BLS CPI via FRED | `year` |
+
+### School Outcomes & Demographics
+| Table | Source | Key year column |
+|-------|--------|----------------|
+| `mcas_results` | MA DESE / Socrata API | `school_year` |
 | `graduation_rates` | MA DESE | `school_year` |
-| `attendance` | MA DESE | `school_year` |
+| `attendance` | MA DESE (chronic absenteeism) | `school_year` |
+| `district_sat_scores` | MA DESE profiles | `school_year` |
+| `district_postsecondary` | MA DESE (graduates attending college) | `school_year` |
+| `district_dropout` | MA DESE | `school_year` |
 | `staffing` | MA DESE bulk CSV | `school_year` |
 | `per_pupil_expenditure` | MA DESE bulk CSV | `school_year` |
 | `enrollment` | MA DESE bulk CSV | `school_year` |
+| `district_selected_populations` | MA DESE (SPED, ELL, etc.) | `school_year` |
+
+### Community Demographics & Housing
+| Table | Source | Key year column |
+|-------|--------|----------------|
 | `municipal_census_acs` | Census ACS 5-year API | `acs_year` |
-| `inflation_cpi` | BLS CPI via FRED | `year` |
-| `municipal_tax_rates` | MA DOR via DLS Gateway | `fiscal_year` |
-| `municipal_assessed_values` | MA DLS Gateway LA-4 report | `fiscal_year` |
-| `district_chapter70` | MA DESE Ch70 files | `fiscal_year` |
-| `district_selected_populations` | MA DESE | `school_year` |
-| `ingest_log` | Written by all scrapers | — |
+| `municipal_zillow_housing` | Zillow ZHVI | `data_year` |
+
+### Reference & Infrastructure
+| Table | Description |
+|-------|-------------|
+| `districts` | MA district/school registry |
+| `ingest_log` | Load history written by all scrapers |
+
+### Analysis Snapshots (computed per report run)
+| Table | Description |
+|-------|-------------|
+| `analysis_runs` | One row per report generation |
+| `computed_peer_groups` | Peer towns selected per run |
+| `computed_metrics` | Key metrics saved per run |
+| `computed_feature_importance` | Ridge regression feature weights per run |
 
 ---
 
@@ -186,7 +235,10 @@ cp config.example.py config.py
 # 5. Run data_loader.py with --all flags on individual scrapers to backfill
 python scrapers/mcas.py --all
 python scrapers/graduation_rates.py --all
-# ... etc (see each scraper's --help)
+python scrapers/dese_state_reports.py all
+python scrapers/assessed_values.py --all
+python scrapers/zillow_housing.py
+# ... see each scraper's --help for options
 
 # 6. Generate the report
 python analysis/municipal_finance_report.py
