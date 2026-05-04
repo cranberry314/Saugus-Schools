@@ -441,6 +441,26 @@ CREATE TABLE IF NOT EXISTS ch70_district_mapping (
 
 
 -- =============================================================
+-- Municipal Assessed Values by Property Class (from DLS LA-4 report)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS municipal_assessed_values (
+    id                  SERIAL PRIMARY KEY,
+    fiscal_year         INTEGER      NOT NULL,
+    dor_code            INTEGER      NOT NULL,
+    municipality        VARCHAR(100),
+    res_av              BIGINT,   -- Class 1: Residential
+    open_space_av       BIGINT,   -- Class 2: Open Space
+    commercial_av       BIGINT,   -- Class 3: Commercial
+    industrial_av       BIGINT,   -- Class 4: Industrial
+    personal_property_av BIGINT,  -- Class 5: Personal Property
+    total_av            BIGINT,   -- Total Real & Personal (taxable)
+    exempt_av           BIGINT,   -- Exempt property value
+    loaded_at           TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (fiscal_year, dor_code)
+);
+CREATE INDEX IF NOT EXISTS idx_mav_fy_code ON municipal_assessed_values (fiscal_year, dor_code);
+
+-- =============================================================
 -- Analysis Snapshots — computed results saved per report run
 -- Allows year-over-year comparison of peers, metrics, outcomes
 -- =============================================================
