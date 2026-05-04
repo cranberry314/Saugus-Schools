@@ -176,6 +176,63 @@ CREATE TABLE IF NOT EXISTS staffing (
 );
 
 -- -------------------------------------------------------
+-- MA DLS Schedule A — Municipal Revenues & Expenditures
+-- Source: scrapers/municipal_finance.py (DLS Gateway rdPage)
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS municipal_revenues (
+    id                  SERIAL PRIMARY KEY,
+    dor_code            INTEGER      NOT NULL,
+    municipality        TEXT         NOT NULL,
+    fiscal_year         INTEGER      NOT NULL,
+    taxes               BIGINT,
+    service_charges     BIGINT,
+    licenses_permits    BIGINT,
+    federal_revenue     BIGINT,
+    state_revenue       BIGINT,
+    intergovernmental   BIGINT,
+    special_assessments BIGINT,
+    fines_forfeitures   BIGINT,
+    miscellaneous       BIGINT,
+    other_financing     BIGINT,
+    transfers           BIGINT,
+    total_revenues      BIGINT,
+    loaded_at           TIMESTAMP DEFAULT NOW(),
+    UNIQUE (dor_code, fiscal_year)
+);
+
+CREATE TABLE IF NOT EXISTS municipal_expenditures (
+    id                  SERIAL PRIMARY KEY,
+    dor_code            INTEGER      NOT NULL,
+    municipality        TEXT         NOT NULL,
+    fiscal_year         INTEGER      NOT NULL,
+    general_government  BIGINT,
+    public_safety       BIGINT,
+    education           BIGINT,
+    public_works        BIGINT,
+    human_services      BIGINT,
+    culture_recreation  BIGINT,
+    fixed_costs         BIGINT,
+    intergovernmental   BIGINT,
+    other_expenditures  BIGINT,
+    debt_service        BIGINT,
+    total_expenditures  BIGINT,
+    loaded_at           TIMESTAMP DEFAULT NOW(),
+    UNIQUE (dor_code, fiscal_year)
+);
+
+-- -------------------------------------------------------
+-- Boston MSA CPI (for local inflation context)
+-- Source: FRED series CUUSA103SA0
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cpi_boston_msa (
+    calendar_year   INTEGER      NOT NULL PRIMARY KEY,
+    cpi_value       NUMERIC,
+    cpi_index       NUMERIC,
+    source          TEXT         DEFAULT 'FRED CUUSA103SA0',
+    fetched_at      TIMESTAMP    DEFAULT NOW()
+);
+
+-- -------------------------------------------------------
 -- FRED CPI Inflation (annual % change, USA)
 -- Source: FRED series FPCPITOTLZGUSA  (Files/FPCPITOTLZGUSA.csv)
 -- -------------------------------------------------------
