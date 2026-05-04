@@ -33,3 +33,11 @@ DOE_BASE      = DOE_EDU
 PROFILES_BASE = "https://profiles.doe.mass.edu"
 
 SOCRATA_PAGE_SIZE = 50_000
+
+# Optional API keys — scrapers work without these but rate limits are tighter
+# BLS API key (free): https://data.bls.gov/registrationEngine/
+BLS_API_KEY = ""   # leave blank to use the anonymous v1 endpoint (25 req/day limit)
+
+# FBI Crime Data Explorer API key (free): https://api.data.gov/signup/
+# Required for crime statistics scraper
+FBI_CDE_API_KEY = ""

@@ -50,6 +50,22 @@ VARS = [
     "B15003_023E",   # Master's degree
     "B15003_024E",   # Professional school degree
     "B15003_025E",   # Doctorate degree
+    # Unemployment (B23025)
+    "B23025_003E",   # Civilian labor force
+    "B23025_005E",   # Civilian unemployed
+    # Poverty (B17001)
+    "B17001_001E",   # Total for poverty universe
+    "B17001_002E",   # Below poverty level
+    # Foreign-born (B05002)
+    "B05002_013E",   # Foreign-born population
+    # Divorced (B12001)
+    "B12001_001E",   # Total pop 15+
+    "B12001_010E",   # Male: Divorced
+    "B12001_019E",   # Female: Divorced
+    # Single-parent families with children (B11003)
+    "B11003_001E",   # Total families
+    "B11003_010E",   # Male householder, no spouse, with own children under 18
+    "B11003_016E",   # Female householder, no spouse, with own children under 18
 ]
 
 MA_STATE_FIPS = "25"
@@ -90,13 +106,15 @@ UPSERT = text("""
          total_population, median_age, pop_under18, pct_under18,
          pop_65_plus, pct_65_plus,
          median_hh_income, total_housing_units, owner_occupied, pct_owner_occupied,
-         pop_25_plus, bachelors_plus, pct_bachelors_plus)
+         pop_25_plus, bachelors_plus, pct_bachelors_plus,
+         unemployment_rate, poverty_pct, pct_foreign_born, pct_divorced, pct_single_parent)
     VALUES
         (:acs_year, :state_fips, :county_fips, :cousub_fips, :name, :municipality,
          :total_population, :median_age, :pop_under18, :pct_under18,
          :pop_65_plus, :pct_65_plus,
          :median_hh_income, :total_housing_units, :owner_occupied, :pct_owner_occupied,
-         :pop_25_plus, :bachelors_plus, :pct_bachelors_plus)
+         :pop_25_plus, :bachelors_plus, :pct_bachelors_plus,
+         :unemployment_rate, :poverty_pct, :pct_foreign_born, :pct_divorced, :pct_single_parent)
     ON CONFLICT (acs_year, state_fips, county_fips, cousub_fips) DO UPDATE SET
         name               = EXCLUDED.name,
         municipality       = EXCLUDED.municipality,
@@ -113,6 +131,11 @@ UPSERT = text("""
         pop_25_plus        = EXCLUDED.pop_25_plus,
         bachelors_plus     = EXCLUDED.bachelors_plus,
         pct_bachelors_plus = EXCLUDED.pct_bachelors_plus,
+        unemployment_rate  = EXCLUDED.unemployment_rate,
+        poverty_pct        = EXCLUDED.poverty_pct,
+        pct_foreign_born   = EXCLUDED.pct_foreign_born,
+        pct_divorced       = EXCLUDED.pct_divorced,
+        pct_single_parent  = EXCLUDED.pct_single_parent,
         loaded_at          = NOW()
 """)
 
@@ -187,6 +210,25 @@ def _load_year(engine, year: int) -> int:
         bach_plus= sum((_safe_int(row[idx[v]]) or 0) for v in BACH_VARS)
         pct_bach = round(bach_plus / pop_25 * 100, 2) if pop_25 and pop_25 > 0 else None
 
+        labor_force  = _safe_int(row[idx["B23025_003E"]])
+        unemployed   = _safe_int(row[idx["B23025_005E"]])
+        unemp_rate   = round(unemployed / labor_force * 100, 2) if labor_force and unemployed is not None else None
+
+        pov_total = _safe_int(row[idx["B17001_001E"]])
+        pov_below = _safe_int(row[idx["B17001_002E"]])
+        poverty_pct = round(pov_below / pov_total * 100, 2) if pov_total and pov_below is not None else None
+
+        foreign_born    = _safe_int(row[idx["B05002_013E"]])
+        pct_foreign_born= round(foreign_born / pop_total * 100, 2) if pop_total and foreign_born is not None else None
+
+        pop_15plus  = _safe_int(row[idx["B12001_001E"]])
+        divorced    = (_safe_int(row[idx["B12001_010E"]]) or 0) + (_safe_int(row[idx["B12001_019E"]]) or 0)
+        pct_divorced= round(divorced / pop_15plus * 100, 2) if pop_15plus and pop_15plus > 0 else None
+
+        families       = _safe_int(row[idx["B11003_001E"]])
+        single_parent  = (_safe_int(row[idx["B11003_010E"]]) or 0) + (_safe_int(row[idx["B11003_016E"]]) or 0)
+        pct_single_par = round(single_parent / families * 100, 2) if families and families > 0 else None
+
         records.append({
             "acs_year":          year,
             "state_fips":        MA_STATE_FIPS,
@@ -207,6 +249,11 @@ def _load_year(engine, year: int) -> int:
             "pop_25_plus":       pop_25,
             "bachelors_plus":    bach_plus,
             "pct_bachelors_plus":pct_bach,
+            "unemployment_rate": unemp_rate,
+            "poverty_pct":       poverty_pct,
+            "pct_foreign_born":  pct_foreign_born,
+            "pct_divorced":      pct_divorced,
+            "pct_single_parent": pct_single_par,
         })
 
     print(f"[census_acs]   Parsed {len(records)} municipalities "

@@ -104,7 +104,16 @@ python scrapers/dese_state_reports.py all
 
 # Zillow home values
 python scrapers/zillow_housing.py
+
+# County unemployment (BLS LAUS) — needs BLS_API_KEY in config.py for >25 req/day
+python scrapers/bls_laus.py
+
+# County health rankings (Robert Wood Johnson)
+python scrapers/county_health.py
 ```
+
+Note: BLS LAUS has a 25-request/day limit without an API key. Register for a free key at
+https://data.bls.gov/registrationEngine/ and set `BLS_API_KEY` in `config.py`.
 
 **Step 6 — Regenerate the report**
 
@@ -140,9 +149,11 @@ Schools/
 │   ├── chapter70.py            # DESE Chapter 70 state aid
 │   ├── municipal_finance.py    # MA DLS Schedule A (revenues + expenditures)
 │   ├── assessed_values.py      # MA DLS LA-4 assessed values by property class
-│   ├── census_acs.py           # Census ACS 5-year (demographics + age)
+│   ├── census_acs.py           # Census ACS 5-year (demographics, age, poverty, divorce, etc.)
 │   ├── inflation.py            # BLS CPI from FRED CSV
-│   └── zillow_housing.py       # Zillow home value index (ZHVI)
+│   ├── zillow_housing.py       # Zillow home value index (ZHVI)
+│   ├── bls_laus.py             # BLS LAUS county unemployment (monthly)
+│   └── county_health.py        # County Health Rankings (Robert Wood Johnson)
 │
 ├── Files/                      # Downloaded source files (large CSVs — gitignored)
 │   ├── FPCPITOTLZGUSA.csv      # BLS CPI data from FRED (update annually)
@@ -155,6 +166,7 @@ Schools/
 │   ├── migrate_add_snapshots.py         # Migration: analysis snapshot tables
 │   ├── migrate_add_assessed_values.py   # Migration: municipal_assessed_values
 │   ├── migrate_add_dese_reports.py      # Migration: DESE report tables + ACS age
+│   └── migrate_add_county_demographics.py  # Migration: county tables + ACS demographic columns
 │   └── queries.py                       # Common query helpers
 │
 ├── Reports/                    # Generated PDF outputs (gitignored)
@@ -192,11 +204,21 @@ Schools/
 | `enrollment` | MA DESE bulk CSV | `school_year` |
 | `district_selected_populations` | MA DESE (SPED, ELL, etc.) | `school_year` |
 
-### Community Demographics & Housing
+### Community Demographics & Housing (Town-Level)
 | Table | Source | Key year column |
 |-------|--------|----------------|
 | `municipal_census_acs` | Census ACS 5-year API | `acs_year` |
 | `municipal_zillow_housing` | Zillow ZHVI | `data_year` |
+
+ACS columns include: total population, median age, % under 18, % 65+, median household income,
+% owner-occupied, % bachelor's degree, unemployment rate, poverty rate, % foreign-born,
+% divorced, % single-parent families.
+
+### County-Level Context
+| Table | Source | Level |
+|-------|--------|-------|
+| `county_unemployment` | BLS LAUS monthly | All 14 MA counties, monthly |
+| `county_health_rankings` | Robert Wood Johnson / UW CHR | All 14 MA counties, annual |
 
 ### Reference & Infrastructure
 | Table | Description |
