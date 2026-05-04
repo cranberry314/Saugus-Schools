@@ -203,7 +203,8 @@ Schools/
 | `municipal_gf_expenditures` | MA DLS Gateway | `fiscal_year` |
 | `municipal_new_growth` | MA DLS Gateway | `fiscal_year` |
 | `district_chapter70` | MA DESE Chapter 70 files | `fiscal_year` |
-| `inflation_cpi` | BLS CPI via FRED | `year` |
+| `inflation_cpi` | BLS CPI via FRED (national) | `year` |
+| `cpi_boston_msa` | FRED CUUSA103SA0 (Boston MSA CPI) | `calendar_year` |
 
 ### School Outcomes & Demographics
 | Table | Source | Key year column |
@@ -218,6 +219,9 @@ Schools/
 | `per_pupil_expenditure` | MA DESE bulk CSV | `school_year` |
 | `enrollment` | MA DESE bulk CSV | `school_year` |
 | `district_selected_populations` | MA DESE (SPED, ELL, etc.) | `school_year` |
+| `district_financials` | MA DESE (detailed per-pupil by category) | `school_year` |
+| `demographics` | MA DESE (school-level demographics) | `school_year` |
+| `school_expenditures` | MA DESE bulk CSV (school-level) | `school_year` |
 
 ### Community Demographics & Housing (Town-Level)
 | Table | Source | Key year column |
@@ -238,7 +242,10 @@ ACS columns include: total population, median age, % under 18, % 65+, median hou
 ### Reference & Infrastructure
 | Table | Description |
 |-------|-------------|
-| `districts` | MA district/school registry |
+| `districts` | MA district registry (org codes, names, types) |
+| `schools` | MA school registry (populated by districts.py) |
+| `ch70_district_mapping` | Lookup table mapping LEA codes to DESE district names |
+| `peer_districts` | Historical peer district selections (older analysis) |
 | `ingest_log` | Load history written by all scrapers |
 
 ### Analysis Snapshots (computed per report run)
