@@ -63,6 +63,8 @@ Typical release schedule:
 | DESE Staffing/Per-Pupil/Enrollment | October–December | Prior school year |
 | Census ACS 5-year | December | Year ending 2 years prior |
 | BLS CPI (FRED) | February | Prior calendar year |
+| BLS LAUS (county unemployment) | Monthly | Prior month (1–2 month lag) |
+| County Health Rankings | April | Data from ~2 years prior |
 
 **Step 2 — For district_csv.py sources (staffing, enrollment, per-pupil)**
 
@@ -140,20 +142,32 @@ Schools/
 │   └── spending_report.py / stats_report.py
 │
 ├── scrapers/                   # One scraper per data source
+│   │
+│   │   # — Primary scrapers (called by data_loader.py) —
 │   ├── mcas.py                 # DESE MCAS via Socrata API
 │   ├── graduation_rates.py     # DESE graduation rates
 │   ├── attendance.py           # DESE chronic absenteeism
-│   ├── district_csv.py         # DESE staffing, enrollment, per-pupil (CSV bulk)
-│   ├── dese_state_reports.py   # DESE SAT scores, postsecondary, dropout rates
+│   ├── district_csv.py         # DESE staffing, enrollment, per-pupil (bulk CSV)
 │   ├── selected_populations.py # DESE high-needs demographics (SPED, ELL, etc.)
 │   ├── chapter70.py            # DESE Chapter 70 state aid
-│   ├── municipal_finance.py    # MA DLS Schedule A (revenues + expenditures)
-│   ├── assessed_values.py      # MA DLS LA-4 assessed values by property class
-│   ├── census_acs.py           # Census ACS 5-year (demographics, age, poverty, divorce, etc.)
+│   ├── municipal_finance.py    # MA DLS Schedule A revenues + expenditures
+│   ├── census_acs.py           # Census ACS 5-year (demographics, income, age, etc.)
 │   ├── inflation.py            # BLS CPI from FRED CSV
+│   │
+│   │   # — Supplemental scrapers (run annually, not via data_loader.py) —
+│   ├── assessed_values.py      # MA DLS LA-4 assessed values by property class
+│   ├── dese_state_reports.py   # DESE SAT scores, postsecondary, dropout rates
 │   ├── zillow_housing.py       # Zillow home value index (ZHVI)
 │   ├── bls_laus.py             # BLS LAUS county unemployment (monthly)
-│   └── county_health.py        # County Health Rankings (Robert Wood Johnson)
+│   ├── county_health.py        # County Health Rankings (Robert Wood Johnson)
+│   │
+│   │   # — Reference / backfill scrapers —
+│   ├── districts.py            # Populates MA district registry (districts table)
+│   ├── chapter70_historical.py # Historical Chapter 70 backfill
+│   ├── enrollment.py           # Enrollment from MA DOE Excel downloads
+│   ├── finance.py              # Per-pupil expenditure from MA DOE Excel downloads
+│   ├── school_finance.py       # School-level per-pupil from bulk CSV
+│   └── municipal_finances.py   # Schedule A alternative implementation
 │
 ├── Files/                      # Downloaded source files (large CSVs — gitignored)
 │   ├── FPCPITOTLZGUSA.csv      # BLS CPI data from FRED (update annually)
@@ -162,12 +176,13 @@ Schools/
 │   └── School_Expenditures_by_Spending_Category_*.csv     # DESE bulk file
 │
 ├── db/
-│   ├── schema.sql                       # Full PostgreSQL schema
-│   ├── migrate_add_snapshots.py         # Migration: analysis snapshot tables
-│   ├── migrate_add_assessed_values.py   # Migration: municipal_assessed_values
-│   ├── migrate_add_dese_reports.py      # Migration: DESE report tables + ACS age
+│   ├── schema.sql                          # Full PostgreSQL schema
+│   ├── init_db.py                          # One-time DB creation helper
+│   ├── queries.py                          # Common query helpers
+│   ├── migrate_add_snapshots.py            # Migration: analysis snapshot tables
+│   ├── migrate_add_assessed_values.py      # Migration: municipal_assessed_values
+│   ├── migrate_add_dese_reports.py         # Migration: DESE report tables + ACS age
 │   └── migrate_add_county_demographics.py  # Migration: county tables + ACS demographic columns
-│   └── queries.py                       # Common query helpers
 │
 ├── Reports/                    # Generated PDF outputs (gitignored)
 └── .venv/                      # Python virtual environment (not shared)
@@ -260,6 +275,8 @@ python scrapers/graduation_rates.py --all
 python scrapers/dese_state_reports.py all
 python scrapers/assessed_values.py --all
 python scrapers/zillow_housing.py
+python scrapers/bls_laus.py --all
+python scrapers/county_health.py --all
 # ... see each scraper's --help for options
 
 # 6. Generate the report
