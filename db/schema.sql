@@ -222,6 +222,9 @@ CREATE TABLE IF NOT EXISTS municipal_census_acs (
     name                    VARCHAR(150),       -- raw Census name
     municipality            VARCHAR(100),       -- cleaned town name
     total_population        INTEGER,
+    median_age              NUMERIC(5,1),
+    pop_under18             INTEGER,
+    pct_under18             NUMERIC(6,2),
     pop_65_plus             INTEGER,
     pct_65_plus             NUMERIC(6,2),
     median_hh_income        INTEGER,
@@ -439,6 +442,56 @@ CREATE TABLE IF NOT EXISTS ch70_district_mapping (
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+
+-- =============================================================
+-- DESE District State Reports
+-- =============================================================
+CREATE TABLE IF NOT EXISTS district_sat_scores (
+    id            SERIAL PRIMARY KEY,
+    school_year   INTEGER      NOT NULL,  -- 2024 = 2023-24 school year
+    district_code VARCHAR(20)  NOT NULL,
+    district_name VARCHAR(255),
+    tests_taken   INTEGER,
+    mean_ebrw     INTEGER,                -- Evidence-Based Reading & Writing
+    mean_math     INTEGER,
+    loaded_at     TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (school_year, district_code)
+);
+
+CREATE TABLE IF NOT EXISTS district_postsecondary (
+    id                   SERIAL PRIMARY KEY,
+    school_year          INTEGER      NOT NULL,
+    district_code        VARCHAR(20)  NOT NULL,
+    district_name        VARCHAR(255),
+    grads_n              INTEGER,         -- total HS graduates
+    attending_n          INTEGER,         -- attending college
+    attending_pct        NUMERIC(6,2),
+    private_2yr_pct      NUMERIC(6,2),
+    private_4yr_pct      NUMERIC(6,2),
+    public_2yr_pct       NUMERIC(6,2),
+    public_4yr_pct       NUMERIC(6,2),
+    ma_comm_college_pct  NUMERIC(6,2),
+    ma_state_univ_pct    NUMERIC(6,2),
+    umass_pct            NUMERIC(6,2),
+    loaded_at            TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (school_year, district_code)
+);
+
+CREATE TABLE IF NOT EXISTS district_dropout (
+    id            SERIAL PRIMARY KEY,
+    school_year   INTEGER      NOT NULL,
+    district_code VARCHAR(20)  NOT NULL,
+    district_name VARCHAR(255),
+    enrolled_9_12 INTEGER,
+    dropout_n     INTEGER,
+    dropout_pct   NUMERIC(6,2),
+    gr9_pct       NUMERIC(6,2),
+    gr10_pct      NUMERIC(6,2),
+    gr11_pct      NUMERIC(6,2),
+    gr12_pct      NUMERIC(6,2),
+    loaded_at     TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (school_year, district_code)
+);
 
 -- =============================================================
 -- Municipal Assessed Values by Property Class (from DLS LA-4 report)

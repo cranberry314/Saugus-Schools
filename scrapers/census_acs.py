@@ -31,6 +31,11 @@ CENSUS_BASE = "https://api.census.gov/data/{year}/acs/acs5"
 VARS = [
     "NAME",
     "B01001_001E",   # Total population
+    "B01002_001E",   # Median age
+    # Male under 18 (under 5, 5-9, 10-14, 15-17)
+    "B01001_003E", "B01001_004E", "B01001_005E", "B01001_006E",
+    # Female under 18
+    "B01001_027E", "B01001_028E", "B01001_029E", "B01001_030E",
     # Male 65+
     "B01001_020E", "B01001_021E", "B01001_022E",
     "B01001_023E", "B01001_024E", "B01001_025E",
@@ -59,6 +64,13 @@ def _safe_int(v, null_sentinel: int = -666666666) -> int | None:
     except Exception:
         return None
 
+def _safe_float(v, null_sentinel: int = -666666666) -> float | None:
+    try:
+        f = float(v)
+        return None if int(f) == null_sentinel else f
+    except Exception:
+        return None
+
 
 def _clean_town_name(raw: str) -> str:
     """
@@ -75,18 +87,23 @@ def _clean_town_name(raw: str) -> str:
 UPSERT = text("""
     INSERT INTO municipal_census_acs
         (acs_year, state_fips, county_fips, cousub_fips, name, municipality,
-         total_population, pop_65_plus, pct_65_plus,
+         total_population, median_age, pop_under18, pct_under18,
+         pop_65_plus, pct_65_plus,
          median_hh_income, total_housing_units, owner_occupied, pct_owner_occupied,
          pop_25_plus, bachelors_plus, pct_bachelors_plus)
     VALUES
         (:acs_year, :state_fips, :county_fips, :cousub_fips, :name, :municipality,
-         :total_population, :pop_65_plus, :pct_65_plus,
+         :total_population, :median_age, :pop_under18, :pct_under18,
+         :pop_65_plus, :pct_65_plus,
          :median_hh_income, :total_housing_units, :owner_occupied, :pct_owner_occupied,
          :pop_25_plus, :bachelors_plus, :pct_bachelors_plus)
     ON CONFLICT (acs_year, state_fips, county_fips, cousub_fips) DO UPDATE SET
         name               = EXCLUDED.name,
         municipality       = EXCLUDED.municipality,
         total_population   = EXCLUDED.total_population,
+        median_age         = EXCLUDED.median_age,
+        pop_under18        = EXCLUDED.pop_under18,
+        pct_under18        = EXCLUDED.pct_under18,
         pop_65_plus        = EXCLUDED.pop_65_plus,
         pct_65_plus        = EXCLUDED.pct_65_plus,
         median_hh_income   = EXCLUDED.median_hh_income,
@@ -99,6 +116,8 @@ UPSERT = text("""
         loaded_at          = NOW()
 """)
 
+MALE_U18_VARS  = [f"B01001_00{n}E" for n in range(3, 7)]         # 003–006
+FEMALE_U18_VARS= [f"B01001_0{n}E" for n in range(27, 31)]       # 027–030
 MALE_65_VARS   = [f"B01001_0{n:02d}E" for n in range(20, 26)]   # 020–025
 FEMALE_65_VARS = [f"B01001_0{n:02d}E" for n in range(44, 50)]   # 044–049
 BACH_VARS      = ["B15003_022E", "B15003_023E", "B15003_024E", "B15003_025E"]
@@ -144,6 +163,14 @@ def _load_year(engine, year: int) -> int:
             skipped += 1
             continue
 
+        median_age = _safe_float(row[idx["B01002_001E"]])
+
+        pop_u18 = sum(
+            (_safe_int(row[idx[v]]) or 0)
+            for v in MALE_U18_VARS + FEMALE_U18_VARS
+        )
+        pct_u18 = round(pop_u18 / pop_total * 100, 2) if pop_total else None
+
         pop_65 = sum(
             (_safe_int(row[idx[v]]) or 0)
             for v in MALE_65_VARS + FEMALE_65_VARS
@@ -168,6 +195,9 @@ def _load_year(engine, year: int) -> int:
             "name":              name_raw,
             "municipality":      _clean_town_name(name_raw),
             "total_population":  pop_total,
+            "median_age":        median_age,
+            "pop_under18":       pop_u18,
+            "pct_under18":       pct_u18,
             "pop_65_plus":       pop_65,
             "pct_65_plus":       pct_65,
             "median_hh_income":  med_income,
