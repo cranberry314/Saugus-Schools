@@ -158,6 +158,7 @@ Schools/
 | `municipal_census_acs` | Census ACS 5-year API | `acs_year` |
 | `inflation_cpi` | BLS CPI via FRED | `year` |
 | `municipal_tax_rates` | MA DOR via DLS Gateway | `fiscal_year` |
+| `municipal_assessed_values` | MA DLS Gateway LA-4 report | `fiscal_year` |
 | `district_chapter70` | MA DESE Ch70 files | `fiscal_year` |
 | `district_selected_populations` | MA DESE | `school_year` |
 | `ingest_log` | Written by all scrapers | — |
@@ -176,7 +177,9 @@ pip install -r requirements.txt
 createdb ma_school_data
 psql ma_school_data < db/schema.sql
 
-# 3. Edit config.py if your Postgres credentials differ
+# 3. Set up config.py from the example template
+cp config.example.py config.py
+# Then open config.py and fill in your Postgres credentials
 
 # 4. Download source files into Files/ (see Step 2 above)
 
