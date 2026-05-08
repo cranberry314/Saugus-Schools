@@ -693,3 +693,25 @@ CREATE TABLE IF NOT EXISTS municipal_crime (
 
 CREATE INDEX IF NOT EXISTS idx_municipal_crime_slug ON municipal_crime(jurisdiction_slug);
 CREATE INDEX IF NOT EXISTS idx_municipal_crime_year ON municipal_crime(year);
+
+-- -------------------------------------------------------
+-- Municipal Crash Statistics (MassDOT IMPACT Open Data Platform)
+-- Source: gis.crashdata.dot.mass.gov — MASSDOT_ODP_OPEN_{year}
+-- Coverage: all ~350 MA municipalities, 2021–2024
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS municipal_crashes (
+    id               SERIAL PRIMARY KEY,
+    city_town_name   VARCHAR(100)  NOT NULL,
+    year             INTEGER       NOT NULL,
+    total_crashes    INTEGER,
+    fatal_crashes    INTEGER,
+    injury_crashes   INTEGER,
+    pdo_crashes      INTEGER,
+    total_fatalities INTEGER,
+    total_injuries   INTEGER,
+    loaded_at        TIMESTAMP DEFAULT NOW(),
+    UNIQUE (city_town_name, year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_municipal_crashes_town ON municipal_crashes(city_town_name);
+CREATE INDEX IF NOT EXISTS idx_municipal_crashes_year ON municipal_crashes(year);

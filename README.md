@@ -115,6 +115,9 @@ python scrapers/county_health.py
 
 # Municipal crime statistics (MA State Police Beyond 2020 portal)
 python scrapers/ma_crime.py
+
+# Municipal crash statistics (MassDOT IMPACT open data)
+python scrapers/ma_crashes.py
 ```
 
 Note: BLS LAUS has a 25-request/day limit without an API key. Register for a free key at
@@ -164,6 +167,7 @@ Schools/
 │   ├── bls_laus.py             # BLS LAUS county unemployment (monthly)
 │   ├── county_health.py        # County Health Rankings (Robert Wood Johnson)
 │   ├── ma_crime.py             # MA State Police Beyond 2020 crime stats (town-level)
+│   ├── ma_crashes.py           # MassDOT IMPACT crash stats by severity (town-level)
 │   │
 │   │   # — Reference / backfill scrapers —
 │   ├── districts.py            # Populates MA district registry (districts table)
@@ -187,7 +191,8 @@ Schools/
 │   ├── migrate_add_assessed_values.py      # Migration: municipal_assessed_values
 │   ├── migrate_add_dese_reports.py         # Migration: DESE report tables + ACS age
 │   ├── migrate_add_county_demographics.py  # Migration: county tables + ACS demographic columns
-│   └── migrate_add_crime.py                # Migration: municipal_crime table
+│   ├── migrate_add_crime.py                # Migration: municipal_crime table
+│   └── migrate_add_crashes.py              # Migration: municipal_crashes table
 │
 ├── Reports/                    # Generated PDF outputs (gitignored)
 └── .venv/                      # Python virtual environment (not shared)
@@ -248,9 +253,13 @@ ACS columns include: total population, median age, % under 18, % 65+, median hou
 | Table | Source | Key year column |
 |-------|--------|----------------|
 | `municipal_crime` | MA State Police Beyond 2020 portal | `year` |
+| `municipal_crashes` | MassDOT IMPACT Open Data Platform (gis.crashdata.dot.mass.gov) | `year` |
 
-Columns: total crimes, violent crimes, homicides, sexual assaults, aggravated assaults,
+`municipal_crime` columns: total crimes, violent crimes, homicides, sexual assaults, aggravated assaults,
 clearance rate %, crime rate per 100,000, population. Coverage: all MA municipalities, 2020–2024 (NIBRS era).
+
+`municipal_crashes` columns: total crashes, fatal crashes, injury crashes, PDO crashes (property damage only),
+total fatalities, total injuries. Coverage: all ~350 MA municipalities, 2021–2024.
 
 ### Reference & Infrastructure
 | Table | Description |
@@ -298,6 +307,7 @@ python scrapers/zillow_housing.py
 python scrapers/bls_laus.py --all
 python scrapers/county_health.py --all
 python scrapers/ma_crime.py
+python scrapers/ma_crashes.py
 # ... see each scraper's --help for options
 
 # 6. Generate the report
