@@ -112,6 +112,9 @@ python scrapers/bls_laus.py
 
 # County health rankings (Robert Wood Johnson)
 python scrapers/county_health.py
+
+# Municipal crime statistics (MA State Police Beyond 2020 portal)
+python scrapers/ma_crime.py
 ```
 
 Note: BLS LAUS has a 25-request/day limit without an API key. Register for a free key at
@@ -160,6 +163,7 @@ Schools/
 │   ├── zillow_housing.py       # Zillow home value index (ZHVI)
 │   ├── bls_laus.py             # BLS LAUS county unemployment (monthly)
 │   ├── county_health.py        # County Health Rankings (Robert Wood Johnson)
+│   ├── ma_crime.py             # MA State Police Beyond 2020 crime stats (town-level)
 │   │
 │   │   # — Reference / backfill scrapers —
 │   ├── districts.py            # Populates MA district registry (districts table)
@@ -182,7 +186,8 @@ Schools/
 │   ├── migrate_add_snapshots.py            # Migration: analysis snapshot tables
 │   ├── migrate_add_assessed_values.py      # Migration: municipal_assessed_values
 │   ├── migrate_add_dese_reports.py         # Migration: DESE report tables + ACS age
-│   └── migrate_add_county_demographics.py  # Migration: county tables + ACS demographic columns
+│   ├── migrate_add_county_demographics.py  # Migration: county tables + ACS demographic columns
+│   └── migrate_add_crime.py                # Migration: municipal_crime table
 │
 ├── Reports/                    # Generated PDF outputs (gitignored)
 └── .venv/                      # Python virtual environment (not shared)
@@ -239,6 +244,14 @@ ACS columns include: total population, median age, % under 18, % 65+, median hou
 | `county_unemployment` | BLS LAUS monthly | All 14 MA counties, monthly |
 | `county_health_rankings` | Robert Wood Johnson / UW CHR | All 14 MA counties, annual |
 
+### Public Safety (Town-Level)
+| Table | Source | Key year column |
+|-------|--------|----------------|
+| `municipal_crime` | MA State Police Beyond 2020 portal | `year` |
+
+Columns: total crimes, violent crimes, homicides, sexual assaults, aggravated assaults,
+clearance rate %, crime rate per 100,000, population. Coverage: all MA municipalities, 2020–2024 (NIBRS era).
+
 ### Reference & Infrastructure
 | Table | Description |
 |-------|-------------|
@@ -284,6 +297,7 @@ python scrapers/assessed_values.py --all
 python scrapers/zillow_housing.py
 python scrapers/bls_laus.py --all
 python scrapers/county_health.py --all
+python scrapers/ma_crime.py
 # ... see each scraper's --help for options
 
 # 6. Generate the report

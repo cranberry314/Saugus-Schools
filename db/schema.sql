@@ -667,3 +667,29 @@ CREATE TABLE IF NOT EXISTS computed_feature_importance (
     feature     VARCHAR(60)   NOT NULL,
     importance  NUMERIC(10,6)             -- R² drop from leave-one-out
 );
+
+-- -------------------------------------------------------
+-- Municipal Crime Statistics
+-- Source: MA State Police Beyond 2020 portal (ma.beyond2020.com/ma_tops)
+-- Coverage: all MA municipalities, 2020–2024 (NIBRS era)
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS municipal_crime (
+    id                   SERIAL PRIMARY KEY,
+    jurisdiction_slug    VARCHAR(100)  NOT NULL,
+    ori_code             VARCHAR(20)   NOT NULL,
+    jurisdiction_name    VARCHAR(200),
+    year                 INTEGER       NOT NULL,
+    total_crimes         INTEGER,
+    violent_crimes       INTEGER,
+    homicides            INTEGER,
+    sexual_assaults      INTEGER,
+    aggravated_assaults  INTEGER,
+    clearance_rate_pct   NUMERIC(5,2),
+    crime_rate_per_100k  NUMERIC(10,2),
+    population           INTEGER,
+    loaded_at            TIMESTAMP DEFAULT NOW(),
+    UNIQUE (ori_code, year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_municipal_crime_slug ON municipal_crime(jurisdiction_slug);
+CREATE INDEX IF NOT EXISTS idx_municipal_crime_year ON municipal_crime(year);
