@@ -29,7 +29,8 @@ import requests
 from sqlalchemy import text
 from config import get_engine
 
-BLS_BASE = "https://api.bls.gov/publicAPI/v1/timeseries/data"
+BLS_BASE_V1 = "https://api.bls.gov/publicAPI/v1/timeseries/data"
+BLS_BASE_V2 = "https://api.bls.gov/publicAPI/v2/timeseries/data"
 HEADERS  = {"User-Agent": "Mozilla/5.0"}
 
 # All 14 Massachusetts counties: state_fips(25) + county_fips(3)
@@ -76,8 +77,20 @@ UPSERT = text("""
 """)
 
 
-def _fetch_series(series_id: str) -> list[dict]:
-    r = requests.get(f"{BLS_BASE}/{series_id}", headers=HEADERS, timeout=30)
+def _fetch_series(series_id: str, api_key: str = "", start_year: int = 2010) -> list[dict]:
+    if api_key:
+        # v2 API: POST with JSON body, supports API key and year range
+        import json
+        payload = {
+            "seriesid": [series_id],
+            "startyear": str(start_year),
+            "endyear": str(datetime.datetime.now().year),
+            "registrationkey": api_key,
+        }
+        r = requests.post(BLS_BASE_V2, json=payload, headers=HEADERS, timeout=30)
+    else:
+        # v1 API: GET, 25 req/day limit, returns last ~2 years only
+        r = requests.get(f"{BLS_BASE_V1}/{series_id}", headers=HEADERS, timeout=30)
     r.raise_for_status()
     data = r.json()
     if data.get("status") != "REQUEST_SUCCEEDED":
@@ -85,16 +98,17 @@ def _fetch_series(series_id: str) -> list[dict]:
     return data["Results"]["series"][0]["data"]
 
 
-def run(engine, county_fips: list[str] | None = None, start_year: int = 2010) -> int:
+def run(engine, county_fips: list[str] | None = None, start_year: int = 2010,
+        api_key: str = "") -> int:
     counties = {k: v for k, v in MA_COUNTIES.items() if not county_fips or k in county_fips}
     total = 0
 
     for fips, name in counties.items():
         print(f"[bls_laus] {name} ({fips})...")
         try:
-            rate_data   = _fetch_series(_series_id(fips, MEASURE_RATE))
-            count_data  = _fetch_series(_series_id(fips, MEASURE_COUNT))
-            lf_data     = _fetch_series(_series_id(fips, MEASURE_LF))
+            rate_data   = _fetch_series(_series_id(fips, MEASURE_RATE),  api_key, start_year)
+            count_data  = _fetch_series(_series_id(fips, MEASURE_COUNT), api_key, start_year)
+            lf_data     = _fetch_series(_series_id(fips, MEASURE_LF),    api_key, start_year)
         except Exception as e:
             print(f"  ERROR: {e}")
             continue
@@ -147,7 +161,7 @@ def run(engine, county_fips: list[str] | None = None, start_year: int = 2010) ->
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--all",        action="store_true", help="Load all years from 2000")
+    parser.add_argument("--all",        action="store_true", help="Load all years from 2000 (requires API key for v2)")
     parser.add_argument("--start-year", type=int, default=2010)
     parser.add_argument("--county",     type=str, help="Single county FIPS (e.g. 25009)")
     args = parser.parse_args()
@@ -155,6 +169,11 @@ if __name__ == "__main__":
     start = 2000 if args.all else args.start_year
     counties = [args.county] if args.county else None
 
+    try:
+        from config import BLS_API_KEY
+    except ImportError:
+        BLS_API_KEY = ""
+
     engine = get_engine()
-    n = run(engine, county_fips=counties, start_year=start)
+    n = run(engine, county_fips=counties, start_year=start, api_key=BLS_API_KEY or "")
     print(f"[bls_laus] Done — {n} total rows upserted.")
