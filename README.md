@@ -120,8 +120,13 @@ python scrapers/ma_crime.py
 python scrapers/ma_crashes.py
 ```
 
-Note: BLS LAUS has a 25-request/day limit without an API key. Register for a free key at
-https://data.bls.gov/registrationEngine/ and set `BLS_API_KEY` in `config.py`.
+Notes:
+- **BLS LAUS** (county unemployment): Without an API key, the v1 endpoint loads only ~2 years of data and
+  is limited to 25 req/day (3 req per county × 14 counties = 42 req → only 8 counties load before hitting
+  the limit). Register for a free key at https://data.bls.gov/registrationEngine/ and set `BLS_API_KEY`
+  in `config.py` to enable the v2 endpoint (500 req/day, full history to 2000, all 14 counties).
+- **MA crime** (ma_crime.py): ~360 municipal slugs, ~10 requests each → ~10 min runtime.
+- **MA crashes** (ma_crashes.py): single ArcGIS statistics query per year → completes in seconds.
 
 **Step 6 — Regenerate the report**
 
