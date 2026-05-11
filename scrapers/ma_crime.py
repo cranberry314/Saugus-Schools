@@ -40,7 +40,7 @@ LATEST_YEAR = 2024
 SKIP_PATTERNS = [
     "college", "university", "state-police", "railroad", "hospital",
     "med-ctr", "mbta", "mta", "transit", "airport", "massachusetts",
-    "amtrak", "comm-", "dock", "pike",
+    "amtrak", "comm-", "dock", "pike", "-cc",
 ]
 
 UPSERT = text("""
@@ -241,7 +241,8 @@ def fetch_jurisdiction(session, slug: str, display_name: str, token: str) -> tup
     return ori, new_token, rows
 
 
-def run(engine, slugs: list[str] | None = None, dry_run: bool = False) -> int:
+def run(engine, slugs: list[str] | None = None, dry_run: bool = False,
+        resume: bool = False) -> int:
     session = requests.Session()
     token = _get_initial_token(session)
 
@@ -251,6 +252,15 @@ def run(engine, slugs: list[str] | None = None, dry_run: bool = False) -> int:
     if slugs:
         all_slugs = [(s, n) for s, n in all_slugs if s in slugs]
         print(f"[ma_crime] Filtered to {len(all_slugs)} slug(s)")
+
+    if resume and engine is not None:
+        from sqlalchemy import text as _text
+        with engine.connect() as conn:
+            done = set(conn.execute(_text(
+                "SELECT DISTINCT jurisdiction_slug FROM municipal_crime"
+            )).scalars().all())
+        all_slugs = [(s, n) for s, n in all_slugs if s not in done]
+        print(f"[ma_crime] Resuming — {len(all_slugs)} slugs remaining")
 
     if dry_run:
         for s, n in all_slugs:
@@ -285,11 +295,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--slug",    type=str, help="Single municipality slug (e.g. saugus)")
     parser.add_argument("--dry-run", action="store_true", help="List slugs without loading")
+    parser.add_argument("--resume",  action="store_true", help="Skip slugs already in the database")
     args = parser.parse_args()
 
     slugs = [args.slug] if args.slug else None
     eng = None if args.dry_run else get_engine()
 
-    n = run(eng, slugs=slugs, dry_run=args.dry_run)
+    n = run(eng, slugs=slugs, dry_run=args.dry_run, resume=args.resume)
     if not args.dry_run:
         print(f"[ma_crime] Done — {n} total rows upserted.")
