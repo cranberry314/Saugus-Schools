@@ -524,17 +524,12 @@ def run_backtest(engine, lag: int = 3) -> pd.DataFrame:
     print(f"[backtest] Panel: {len(panel):,} rows, {panel['town'].nunique()} towns, "
           f"years {panel['year'].min()}–{panel['year'].max()}")
 
-    # Core features — available for ~335 districts (no Schedule A needed)
-    core_features = ["log_pp_exp", "teachers_per1k", "ch70_per_pupil"]
-    # Schedule A features — available for ~61 municipalities
-    sched_a_features = ["ed_pct_budget", "log_muni_rev_pc",
-                        "public_works_pc", "debt_pct_budget", "public_safety_pc"]
-    # Safety features — lagged crime/crash
-    safety_features = ["crime_rate_feat", "crash_rate_feat"]
-
-    # All features tried; regression selects subset with ≥100 joint obs
-    all_features = core_features + sched_a_features + safety_features
-    MIN_OBS = 80
+    # Core DESE features — available for ~335 districts statewide.
+    # Schedule A features excluded: only cover ~61 municipalities → collapses sample to ~25 towns.
+    # Safety features (lagged crime/crash) excluded: they are background conditions, not policy
+    # levers, and create a circular overlap problem when the same metric appears as both
+    # outcome and lagged feature within the short 2020-2024 crime/crash data window.
+    all_features = ["log_pp_exp", "teachers_per1k", "ch70_per_pupil"]
 
     results = []
     for out_key, out_label, category, higher_is_better in OUTCOMES:
@@ -610,12 +605,13 @@ def make_plain_english_legend() -> plt.Figure:
          "We look 1 year, 3 years, and 5 years into the future."),
 
         ("What do the numbers mean?",
-         "Each cell shows a number — a 'strength score' (statisticians call it a t-statistic).\n"
-         "A bigger number means a stronger relationship between policy and outcome.\n"
-         "Green = positive association (more spending → higher graduation rate).\n"
-         "Red = negative association (more spending → lower dropout rate — which is actually good!).\n"
-         "Note: for outcomes where lower is better (crime, dropout, poverty),\n"
-         "red can mean a GOOD outcome. Check the final ranking slide for the full picture."),
+         "Each cell shows a strength score — how strongly a policy predicts a good outcome.\n"
+         "The number and the colour always mean the same thing:\n"
+         "  Positive number / Green = this policy predicts BETTER outcomes\n"
+         "  Negative number / Red   = this policy predicts WORSE outcomes\n"
+         "The scores are already adjusted: for outcomes where lower is better\n"
+         "(like dropout rate, crime, poverty), the score is flipped so that\n"
+         "a policy that reduces crime shows as positive and green — not negative and red."),
 
         ("What do the stars mean?",
          "★★★  99% confident — almost certainly a real effect, not random chance\n"
@@ -656,44 +652,49 @@ def make_plain_english_legend() -> plt.Figure:
     return fig
 
 
-def _build_matrix_fig(results: pd.DataFrame, lag: int,
-                      outcome_subset: list[tuple[str, str]],
-                      flip_sign: bool,
-                      panel_title: str,
-                      collinear_pairs: list[tuple[str,str]] | None = None) -> plt.Figure:
+def make_tstat_matrix(results: pd.DataFrame, lag: int,
+                      collinear_pairs: list[tuple[str,str]] | None = None) -> list[plt.Figure]:
     """
-    Internal helper: build one heatmap panel for a given set of outcomes.
-    flip_sign=True flips t-stats so green always means the good direction.
+    Single combined heatmap. T-statistics are sign-adjusted before display:
+    outcomes where lower is better (crime, dropout, poverty…) have their
+    t-stat multiplied by -1. This means the NUMBER in every cell and the
+    COLOUR both carry the same message: positive/green = good, negative/red = bad.
     """
     features = list(FEATURE_LABELS.keys())
-    outcomes = [o for o in outcome_subset
-                if results[results["outcome_label"] == o[0]].shape[0] > 0
-                and results[results["outcome_label"] == o[0]].iloc[0].get("n_obs", 0) >= 30]
 
+    # Build sign lookup: +1 if higher is better, -1 if lower is better
+    sign_map = {out_label: (1 if hib else -1)
+                for _, out_label, _, hib in OUTCOMES}
+
+    outcomes = [(r["outcome_label"], r["category"]) for _, r in results.iterrows()
+                if "n_obs" in r and r.get("n_obs", 0) >= 30]
     if not outcomes:
-        return None
+        return []
 
     n_feat = len(features)
     n_out  = len(outcomes)
-    sign   = -1 if flip_sign else 1
 
+    # Sign-adjusted matrix — positive always means good
     mat = np.full((n_feat, n_out), np.nan)
     for j, (out_label, _) in enumerate(outcomes):
-        row = results[results["outcome_label"] == out_label].iloc[0]
+        row  = results[results["outcome_label"] == out_label].iloc[0]
+        sign = sign_map.get(out_label, 1)
         for i, feat in enumerate(features):
             raw = row.get(f"{feat}_tstat", np.nan)
             mat[i, j] = sign * raw if not np.isnan(raw) else np.nan
 
-    fig, ax = plt.subplots(figsize=(max(12, n_out * 1.15 + 3), max(6, n_feat * 0.8 + 3)))
+    fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(6, n_feat * 0.8 + 3)))
 
     vmax = 3.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
     im = ax.imshow(mat, cmap="RdYlGn", norm=norm, aspect="auto")
 
+    # Column backgrounds by outcome category
     for j, (_, cat) in enumerate(outcomes):
         ax.axvspan(j - 0.5, j + 0.5, color=CAT_LIGHT.get(cat, "#f5f5f5"),
                    alpha=0.5, zorder=0)
 
+    # Cell labels: sign-adjusted value + stars
     for i in range(n_feat):
         for j in range(n_out):
             t = mat[i, j]
@@ -709,6 +710,7 @@ def _build_matrix_fig(results: pd.DataFrame, lag: int,
                         fontweight="bold" if stars else "normal", color=fg,
                         linespacing=1.3)
 
+    # Outcome labels across the top, colour-coded by category
     ax.set_xticks(range(n_out))
     ax.set_xticklabels([lbl for lbl, _ in outcomes], rotation=40, ha="left", fontsize=9)
     ax.xaxis.set_label_position("top")
@@ -717,6 +719,7 @@ def _build_matrix_fig(results: pd.DataFrame, lag: int,
         tick.set_color(CAT_COLOURS.get(cat, "#333"))
         tick.set_fontweight("bold")
 
+    # Policy input labels on left; collinear ones in red
     collinear_feats = {f for pair in (collinear_pairs or []) for f in pair}
     ax.set_yticks(range(n_feat))
     ax.set_yticklabels([FEATURE_LABELS[f] for f in features], fontsize=9)
@@ -727,11 +730,12 @@ def _build_matrix_fig(results: pd.DataFrame, lag: int,
     lag_desc = ("near-term (1 year out)" if lag == 1 else
                 "medium-term (3 years out)" if lag == 3 else
                 "long-term (5 years out)")
-    colour_note = ("Green = good  ·  Red = bad" if not flip_sign
-                   else "Green = policy REDUCES this  ·  Red = policy INCREASES this")
     ax.set_title(
-        f"{panel_title}  —  {lag_desc}\n"
-        f"{colour_note}  ·  Stars = how confident we are  ·  Policy inputs → rows  ·  Outcomes → columns",
+        f"Does this policy predict better town outcomes? — {lag_desc}\n"
+        "Green / positive number = policy predicts IMPROVEMENT  ·  "
+        "Red / negative number = policy predicts WORSENING  ·  "
+        "Stars = confidence level\n"
+        "(Numbers already adjusted: a policy that reduces crime shows positive, not negative)",
         fontsize=10, fontweight="bold", pad=16, loc="left"
     )
 
@@ -741,10 +745,8 @@ def _build_matrix_fig(results: pd.DataFrame, lag: int,
               bbox_to_anchor=(0, -0.06), ncol=len(legend_patches),
               title="Outcome category", title_fontsize=8, framealpha=0.9)
 
-    cbar_label = ("Green = positive effect  |  Red = negative effect  |  Brighter = stronger"
-                  if not flip_sign else
-                  "Green = policy reduces this outcome  |  Red = policy increases it  |  Brighter = stronger")
-    plt.colorbar(im, ax=ax, orientation="vertical", pad=0.02, shrink=0.8, label=cbar_label)
+    plt.colorbar(im, ax=ax, orientation="vertical", pad=0.02, shrink=0.8,
+                 label="Positive (green) = predicts better outcomes  |  Negative (red) = predicts worse outcomes")
 
     if collinear_pairs:
         warn_text = ("⚠ Red row labels share a strong correlation with another input — "
@@ -754,38 +756,7 @@ def _build_matrix_fig(results: pd.DataFrame, lag: int,
         fig.text(0.01, 0.01, warn_text, fontsize=7.5, color="#C0392B", ha="left", va="bottom")
 
     plt.tight_layout(rect=[0, 0.04, 1, 1])
-    return fig
-
-
-def make_tstat_matrix(results: pd.DataFrame, lag: int,
-                      collinear_pairs: list[tuple[str,str]] | None = None) -> list[plt.Figure]:
-    """
-    Returns two figures: one for 'higher is better' outcomes, one for
-    'lower is better' outcomes (with sign flipped so green = good in both).
-    """
-    all_outcomes = [(r["outcome_label"], r["category"]) for _, r in results.iterrows()
-                    if "n_obs" in r and r.get("n_obs", 0) >= 30]
-
-    hib_set  = {lbl for _, lbl, _, hib in OUTCOMES if hib}
-    lib_set  = {lbl for _, lbl, _, hib in OUTCOMES if not hib}
-
-    higher = [(lbl, cat) for lbl, cat in all_outcomes if lbl in hib_set]
-    lower  = [(lbl, cat) for lbl, cat in all_outcomes if lbl in lib_set]
-
-    figs = []
-    if higher:
-        figs.append(_build_matrix_fig(
-            results, lag, higher, flip_sign=False,
-            panel_title="Outcomes where HIGHER is better (graduation, home values, test scores…)",
-            collinear_pairs=collinear_pairs,
-        ))
-    if lower:
-        figs.append(_build_matrix_fig(
-            results, lag, lower, flip_sign=True,
-            panel_title="Outcomes where LOWER is better (crime, dropout, poverty…)  —  green = policy reduces it",
-            collinear_pairs=collinear_pairs,
-        ))
-    return [f for f in figs if f is not None]
+    return [fig]
 
     # Wide figure: outcomes across the top, features down the side
     fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(6, n_feat * 0.75 + 3)))
