@@ -44,23 +44,23 @@ OUTPUT_CSV = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports",
 # 16 outcome definitions
 # ---------------------------------------------------------------------------
 OUTCOMES = [
-    # (key, label, category)
-    ("dropout_rate",         "Dropout Rate",               "Education"),
-    ("graduation_rate",      "Graduation Rate",            "Education"),
-    ("mcas_ela_pct",         "MCAS ELA Proficient %",      "Education"),
-    ("mcas_math_pct",        "MCAS Math Proficient %",     "Education"),
-    ("postsecondary_pct",    "Postsecondary Attendance %", "Education"),
-    ("sat_mean",             "SAT Mean Score",             "Education"),
-    ("crime_rate",           "Crime Rate / 100k",          "Safety"),
-    ("violent_crime_rate",   "Violent Crime Rate / 100k",  "Safety"),
-    ("crash_rate",           "Crash Rate / 1k pop",        "Safety"),
-    ("injury_crash_rate",    "Injury Crash Rate / 1k pop", "Safety"),
-    ("absenteeism_rate",     "Chronic Absenteeism %",      "Community"),
-    ("enrollment_growth",    "Enrollment Growth %",        "Community"),
-    ("poverty_pct",          "Poverty Rate %",             "Community"),
-    ("real_zhvi_growth",     "Real Home Value Growth %",   "Market"),
-    ("real_rev_growth",      "Real Revenue Growth %",      "Fiscal"),
-    ("mcas_ela_residual",    "MCAS ELA Residual (SES adj)","Education"),
+    # (key, label, category, higher_is_better)
+    ("dropout_rate",         "Dropout Rate",               "Education", False),
+    ("graduation_rate",      "Graduation Rate",            "Education", True),
+    ("mcas_ela_pct",         "MCAS ELA Proficient %",      "Education", True),
+    ("mcas_math_pct",        "MCAS Math Proficient %",     "Education", True),
+    ("postsecondary_pct",    "Postsecondary Attendance %", "Education", True),
+    ("sat_mean",             "SAT Mean Score",             "Education", True),
+    ("crime_rate",           "Crime Rate / 100k",          "Safety",    False),
+    ("violent_crime_rate",   "Violent Crime Rate / 100k",  "Safety",    False),
+    ("crash_rate",           "Crash Rate / 1k pop",        "Safety",    False),
+    ("injury_crash_rate",    "Injury Crash Rate / 1k pop", "Safety",    False),
+    ("absenteeism_rate",     "Chronic Absenteeism %",      "Community", False),
+    ("enrollment_growth",    "Enrollment Growth %",        "Community", True),
+    ("poverty_pct",          "Poverty Rate %",             "Community", False),
+    ("real_zhvi_growth",     "Real Home Value Growth %",   "Market",    True),
+    ("real_rev_growth",      "Real Revenue Growth %",      "Fiscal",    True),
+    ("mcas_ela_residual",    "MCAS ELA Residual (SES adj)","Education", True),
 ]
 
 # Feature labels for display
@@ -537,7 +537,7 @@ def run_backtest(engine, lag: int = 3) -> pd.DataFrame:
     MIN_OBS = 80
 
     results = []
-    for out_key, out_label, category in OUTCOMES:
+    for out_key, out_label, category, higher_is_better in OUTCOMES:
         if out_key not in panel.columns:
             print(f"  SKIP {out_key} — not in panel")
             continue
@@ -704,91 +704,190 @@ def make_cover(lag: int) -> plt.Figure:
 
 def make_decay_chart(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
     """
-    For each outcome, plot how each feature's t-statistic evolves across lags.
-    Shows whether effects peak early (operational) or late (structural).
+    Heatmap showing how each feature's mean |t-stat| varies across lags.
+    Rows = outcomes, columns = lags, cells = t-stat at that lag for the
+    feature with the strongest signal at any lag (one chart per feature group).
+    Keeps it simple and fast to render.
     """
     lags = sorted(all_results.keys())
     features = list(FEATURE_LABELS.keys())
     cat_colours = {"Education": "#4A90D9", "Safety": "#E05C4A",
                    "Community": "#5CB85C", "Market": "#F0AD4E", "Fiscal": "#9B59B6"}
 
-    # Collect all (outcome, feature) pairs that have at least one non-nan t-stat
-    valid_outcomes = []
-    for out_key, out_label, category in OUTCOMES:
-        for feat in features:
-            has_data = any(
-                not np.isnan(all_results[lag].loc[
-                    all_results[lag]["outcome_label"] == out_label,
-                    f"{feat}_tstat"
-                ].values[0] if out_label in all_results[lag]["outcome_label"].values
-                  and f"{feat}_tstat" in all_results[lag].columns else np.nan)
-                for lag in lags
-            )
-            if has_data:
-                break
-        else:
-            continue
-        valid_outcomes.append((out_key, out_label, category))
+    # Build a (feature × lag) matrix of mean |t| across outcomes
+    feat_lag_mat = np.full((len(features), len(lags)), np.nan)
+    for j, lag in enumerate(lags):
+        res_df = all_results[lag]
+        for i, feat in enumerate(features):
+            col = f"{feat}_tstat"
+            if col not in res_df.columns:
+                continue
+            vals = res_df[col].dropna()
+            if len(vals) > 0:
+                feat_lag_mat[i, j] = vals.abs().mean()
 
-    n_outcomes = len(valid_outcomes)
-    if n_outcomes == 0:
+    fig, ax = plt.subplots(figsize=(7, max(4, len(features) * 0.6 + 2)))
+    norm = plt.Normalize(vmin=0, vmax=np.nanmax(feat_lag_mat) if not np.all(np.isnan(feat_lag_mat)) else 3)
+    im = ax.imshow(feat_lag_mat, cmap="YlOrRd", norm=norm, aspect="auto")
+
+    for i in range(len(features)):
+        for j in range(len(lags)):
+            v = feat_lag_mat[i, j]
+            if not np.isnan(v):
+                stars = "***" if v > 2.58 else "**" if v > 1.96 else "*" if v > 1.645 else ""
+                ax.text(j, i, f"{v:.2f}{stars}", ha="center", va="center",
+                        fontsize=8.5, color="white" if v > 2.0 else "black",
+                        fontweight="bold" if stars else "normal")
+            else:
+                ax.text(j, i, "—", ha="center", va="center", fontsize=8, color="#aaa")
+
+    ax.set_xticks(range(len(lags)))
+    ax.set_xticklabels([f"Lag {l}yr" for l in lags], fontsize=10)
+    ax.set_yticks(range(len(features)))
+    ax.set_yticklabels([FEATURE_LABELS[f] for f in features], fontsize=9)
+    ax.set_title("Signal Decay — Mean |T-Statistic| by Feature and Lag\n"
+                 "Higher = stronger average effect across all outcomes",
+                 fontsize=10, fontweight="bold", pad=12)
+    plt.colorbar(im, ax=ax, label="Mean |T-Statistic|", pad=0.02)
+    plt.tight_layout()
+    return fig
+
+
+def make_feature_ranking(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
+    """
+    Summary slide: rank policy inputs by how consistently and strongly they
+    predict good outcomes across all 16 outcomes and all 3 lags.
+
+    Sign-adjusted t-statistic: for outcomes where lower is better (dropout,
+    crime, poverty) the t-stat is flipped so positive always means beneficial.
+
+    Metrics reported per feature:
+      - Mean beneficial t-stat  (average signal strength across all cells)
+      - % of cells significant at 10% level (|t| > 1.645)
+      - % of cells significant at 5%  level (|t| > 1.96)
+      - Best lag (where mean |t| is highest)
+    """
+    lags = sorted(all_results.keys())
+    features = list(FEATURE_LABELS.keys())
+
+    # Sign multipliers: +1 if higher outcome is good, -1 if lower is good
+    sign = {out_key: (1 if hib else -1)
+            for out_key, _, _, hib in OUTCOMES}
+
+    # Collect all sign-adjusted t-stats per (feature, lag)
+    records = []  # (feature, lag, outcome_label, beneficial_t)
+    for lag in lags:
+        res_df = all_results[lag]
+        for out_key, out_label, _, hib in OUTCOMES:
+            multiplier = 1 if hib else -1
+            match = res_df[res_df["outcome_label"] == out_label]
+            if len(match) == 0:
+                continue
+            row = match.iloc[0]
+            for feat in features:
+                col = f"{feat}_tstat"
+                if col not in row.index or pd.isna(row[col]):
+                    continue
+                records.append({
+                    "feature":       feat,
+                    "lag":           lag,
+                    "outcome":       out_label,
+                    "beneficial_t":  multiplier * float(row[col]),
+                })
+
+    if not records:
         return None
 
-    # One row per outcome, columns = features, three lines per cell (lag 1, 3, 5)
-    n_cols = min(4, len(features))
-    n_rows = n_outcomes
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(n_cols * 3.2, n_rows * 1.8),
-        squeeze=False
-    )
-    fig.suptitle("Signal Decay — T-Statistic by Lag  (1, 3, 5 Years)",
-                 fontsize=13, fontweight="bold", y=1.01)
+    df = pd.DataFrame(records)
 
-    lag_styles = {1: ("o", "-", "#E05C4A"), 3: ("s", "--", "#4A90D9"), 5: ("^", ":", "#5CB85C")}
+    # Aggregate per feature across all outcomes and lags
+    agg = df.groupby("feature").agg(
+        mean_t       = ("beneficial_t", "mean"),
+        pct_sig10    = ("beneficial_t", lambda x: (x.abs() > 1.645).mean() * 100),
+        pct_sig05    = ("beneficial_t", lambda x: (x.abs() > 1.960).mean() * 100),
+        n_cells      = ("beneficial_t", "count"),
+    ).reset_index()
 
-    for row_i, (out_key, out_label, category) in enumerate(valid_outcomes):
-        for col_j, feat in enumerate(features[:n_cols]):
-            ax = axes[row_i][col_j]
-            tvals, lvals = [], []
-            for lag in lags:
-                res_df = all_results[lag]
-                match = res_df[res_df["outcome_label"] == out_label]
-                col = f"{feat}_tstat"
-                tval = match[col].values[0] if len(match) > 0 and col in res_df.columns else np.nan
-                tvals.append(tval)
-                lvals.append(lag)
+    # Best lag per feature (highest mean |t| at that lag)
+    lag_means = df.groupby(["feature","lag"])["beneficial_t"].apply(
+        lambda x: x.abs().mean()
+    ).reset_index(name="mean_abs_t")
+    best_lag = lag_means.loc[lag_means.groupby("feature")["mean_abs_t"].idxmax(),
+                             ["feature","lag"]].rename(columns={"lag":"best_lag"})
+    agg = agg.merge(best_lag, on="feature", how="left")
 
-            # Plot line
-            valid_pairs = [(l, t) for l, t in zip(lvals, tvals) if not np.isnan(t)]
-            if valid_pairs:
-                xs, ys = zip(*valid_pairs)
-                ax.plot(xs, ys, "o-", color=cat_colours.get(category, "#888"),
-                        linewidth=1.8, markersize=5)
-                for x, y in zip(xs, ys):
-                    stars = "***" if abs(y) > 2.58 else "**" if abs(y) > 1.96 else "*" if abs(y) > 1.645 else ""
-                    ax.annotate(f"{y:+.1f}{stars}", (x, y),
-                                textcoords="offset points", xytext=(0, 5),
-                                ha="center", fontsize=6.5)
+    # Sort: most effective first (highest mean_t), least effective last
+    agg = agg.sort_values("mean_t", ascending=True)  # ascending → weakest at top for bottom-up plot
 
-            ax.axhline(0, color="#aaa", linewidth=0.8, linestyle="--")
-            ax.axhline(1.96,  color="#4A90D9", linewidth=0.6, linestyle=":", alpha=0.6)
-            ax.axhline(-1.96, color="#4A90D9", linewidth=0.6, linestyle=":", alpha=0.6)
-            ax.set_xticks(lags)
-            ax.set_xticklabels([f"L{l}" for l in lags], fontsize=7)
-            ax.tick_params(axis="y", labelsize=7)
+    fig, axes = plt.subplots(1, 2, figsize=(15, max(5, len(agg) * 0.7 + 2.5)),
+                             gridspec_kw={"width_ratios": [2, 1.6]})
+    ax_bar, ax_tbl = axes
 
-            if col_j == 0:
-                ax.set_ylabel(out_label, fontsize=7.5, fontweight="bold",
-                              color=cat_colours.get(category, "#333"))
-            if row_i == 0:
-                ax.set_title(FEATURE_LABELS[feat], fontsize=7.5, fontweight="bold")
+    # --- Bar chart ---
+    colours = ["#E05C4A" if v < 0 else "#4A90D9" if v < 1.0 else "#27AE60"
+               for v in agg["mean_t"]]
+    bars = ax_bar.barh(range(len(agg)), agg["mean_t"], color=colours,
+                       edgecolor="white", height=0.65)
 
-    # Hide unused axes
-    for row_i in range(n_outcomes):
-        for col_j in range(len(features[:n_cols]), n_cols):
-            axes[row_i][col_j].axis("off")
+    ax_bar.axvline(0,     color="#333", linewidth=1.0)
+    ax_bar.axvline(1.645, color="#F0AD4E", linewidth=1.0, linestyle="--", label="p<0.10")
+    ax_bar.axvline(1.960, color="#4A90D9", linewidth=1.0, linestyle="--", label="p<0.05")
+    ax_bar.axvline(2.576, color="#27AE60", linewidth=1.0, linestyle="--", label="p<0.01")
+    ax_bar.axvline(-1.645, color="#F0AD4E", linewidth=1.0, linestyle="--")
 
+    ax_bar.set_yticks(range(len(agg)))
+    ax_bar.set_yticklabels([FEATURE_LABELS.get(f, f) for f in agg["feature"]], fontsize=9)
+    ax_bar.set_xlabel("Mean Beneficial T-Statistic\n(sign-adjusted: positive = good outcome)",
+                      fontsize=9)
+    ax_bar.set_title("Policy Input Effectiveness\n(averaged across 16 outcomes × 3 lags)",
+                     fontsize=10, fontweight="bold")
+    ax_bar.legend(fontsize=8, loc="lower right")
+    ax_bar.invert_yaxis()  # strongest at bottom as requested
+
+    # Value labels on bars
+    for i, (val, row_) in enumerate(zip(agg["mean_t"], agg.itertuples())):
+        ax_bar.text(val + (0.05 if val >= 0 else -0.05), i,
+                    f"{val:+.2f}", va="center",
+                    ha="left" if val >= 0 else "right", fontsize=8)
+
+    # --- Summary table ---
+    tbl_data = []
+    for _, row_ in agg.sort_values("mean_t", ascending=False).iterrows():
+        stars = ("***" if row_["pct_sig05"] > 50 else
+                 "**"  if row_["pct_sig05"] > 25 else
+                 "*"   if row_["pct_sig10"] > 25 else "")
+        tbl_data.append([
+            FEATURE_LABELS.get(row_["feature"], row_["feature"]),
+            f"{row_['mean_t']:+.2f}{stars}",
+            f"{row_['pct_sig05']:.0f}%",
+            f"{row_['pct_sig10']:.0f}%",
+            f"{int(row_['best_lag'])}yr",
+            str(int(row_["n_cells"])),
+        ])
+
+    ax_tbl.axis("off")
+    col_labels = ["Feature", "Mean T\n(adj.)", "Sig@5%", "Sig@10%", "Best\nLag", "N"]
+    tbl = ax_tbl.table(cellText=tbl_data, colLabels=col_labels,
+                       loc="center", cellLoc="center")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8.5)
+    tbl.scale(1, 1.5)
+
+    # Colour table rows by rank
+    n = len(tbl_data)
+    for i, row_vals in enumerate(tbl_data):
+        mt = float(row_vals[1].replace("*","").replace("+",""))
+        colour = ("#d4efdf" if mt > 1.0 else
+                  "#fef9e7" if mt > 0   else
+                  "#fadbd8")
+        for j in range(len(col_labels)):
+            tbl[(i+1, j)].set_facecolor(colour)
+
+    ax_tbl.set_title("Ranked: most effective → least\n*** >50% sig@5%  ** >25%  * >25%@10%",
+                     fontsize=9, fontweight="bold", pad=12)
+
+    fig.suptitle("Which Policy Inputs Work?  —  Feature Effectiveness Summary",
+                 fontsize=12, fontweight="bold", y=1.01)
     plt.tight_layout()
     return fig
 
@@ -847,35 +946,35 @@ def main(lag: int | None = None):
     combined.to_csv(OUTPUT_CSV, index=False)
     print(f"[backtest] Results saved to {OUTPUT_CSV}")
 
+    def _save(pdf, fig, label=""):
+        if fig is None:
+            return
+        try:
+            pdf.savefig(fig, bbox_inches="tight")
+        except Exception as e:
+            print(f"  [warn] Could not save {label}: {e}")
+        finally:
+            plt.close(fig)
+
     print("[backtest] Generating PDF...")
     with PdfPages(OUTPUT_PDF) as pdf:
-        # Cover
-        pdf.savefig(make_multi_lag_cover() if len(target_lags) > 1 else make_cover(lag),
-                    bbox_inches="tight")
-        plt.close()
+        _save(pdf, make_multi_lag_cover() if len(target_lags) > 1 else make_cover(lag), "cover")
 
-        # One heatmap per lag
         for l in target_lags:
-            fig = make_tstat_matrix(all_results[l], l)
-            if fig:
-                pdf.savefig(fig, bbox_inches="tight")
-                plt.close()
+            _save(pdf, make_tstat_matrix(all_results[l], l), f"heatmap lag={l}")
 
-        # Signal decay chart (only when multiple lags run)
         if len(target_lags) > 1:
-            fig_decay = make_decay_chart(all_results)
-            if fig_decay:
-                pdf.savefig(fig_decay, bbox_inches="tight")
-                plt.close()
+            _save(pdf, make_decay_chart(all_results), "decay chart")
 
-        # Summary table for each lag
         for l in target_lags:
             fig2 = make_r2_table(all_results[l])
             if fig2:
                 fig2.suptitle(f"Model Fit Summary — Lag {l} Year{'s' if l != 1 else ''}",
                               fontsize=11, fontweight="bold")
-                pdf.savefig(fig2, bbox_inches="tight")
-                plt.close()
+            _save(pdf, fig2, f"r2 table lag={l}")
+
+        if len(target_lags) > 1:
+            _save(pdf, make_feature_ranking(all_results), "feature ranking")
 
     print(f"[backtest] Report saved to {OUTPUT_PDF}")
 
