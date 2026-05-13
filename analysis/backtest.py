@@ -908,51 +908,87 @@ def make_cover(lag: int) -> plt.Figure:
 
 def make_decay_chart(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
     """
-    Heatmap showing how each feature's mean |t-stat| varies across lags.
-    Rows = outcomes, columns = lags, cells = t-stat at that lag for the
-    feature with the strongest signal at any lag (one chart per feature group).
-    Keeps it simple and fast to render.
+    Bar chart showing how each feature's average effect strength changes
+    across the three time horizons (1, 3, 5 years).
+    Replaces the previous red heatmap which was hard to read.
     """
     lags = sorted(all_results.keys())
-    features = list(FEATURE_LABELS.keys())
-    cat_colours = {"Education": "#4A90D9", "Safety": "#E05C4A",
-                   "Community": "#5CB85C", "Market": "#F0AD4E", "Fiscal": "#9B59B6"}
+    lag_labels = {1: "1 year out\n(fast effects)",
+                  3: "3 years out\n(medium term)",
+                  5: "5 years out\n(long term)"}
 
-    # Build a (feature × lag) matrix of mean |t| across outcomes
-    feat_lag_mat = np.full((len(features), len(lags)), np.nan)
-    for j, lag in enumerate(lags):
-        res_df = all_results[lag]
-        for i, feat in enumerate(features):
+    # Collect sign-adjusted mean t-stat per (feature, lag)
+    sign_map = {out_label: (1 if hib else -1)
+                for _, out_label, _, hib in OUTCOMES}
+
+    # Only include features that have any data
+    active_features = []
+    data: dict[str, dict[int, float]] = {}
+    for feat in FEATURE_LABELS:
+        feat_data = {}
+        for lag in lags:
+            res_df = all_results[lag]
             col = f"{feat}_tstat"
             if col not in res_df.columns:
                 continue
-            vals = res_df[col].dropna()
-            if len(vals) > 0:
-                feat_lag_mat[i, j] = vals.abs().mean()
+            vals = []
+            for _, out_label, _, hib in OUTCOMES:
+                m = res_df[res_df["outcome_label"] == out_label]
+                if len(m) > 0 and col in m.columns and not pd.isna(m.iloc[0][col]):
+                    sign = 1 if hib else -1
+                    vals.append(sign * float(m.iloc[0][col]))
+            if vals:
+                feat_data[lag] = float(np.mean(vals))
+        if feat_data:
+            data[feat] = feat_data
+            active_features.append(feat)
 
-    fig, ax = plt.subplots(figsize=(7, max(4, len(features) * 0.6 + 2)))
-    norm = plt.Normalize(vmin=0, vmax=np.nanmax(feat_lag_mat) if not np.all(np.isnan(feat_lag_mat)) else 3)
-    im = ax.imshow(feat_lag_mat, cmap="YlOrRd", norm=norm, aspect="auto")
+    if not active_features:
+        return None
 
-    for i in range(len(features)):
-        for j in range(len(lags)):
-            v = feat_lag_mat[i, j]
-            if not np.isnan(v):
-                stars = "***" if v > 2.58 else "**" if v > 1.96 else "*" if v > 1.645 else ""
-                ax.text(j, i, f"{v:.2f}{stars}", ha="center", va="center",
-                        fontsize=8.5, color="white" if v > 2.0 else "black",
-                        fontweight="bold" if stars else "normal")
-            else:
-                ax.text(j, i, "—", ha="center", va="center", fontsize=8, color="#aaa")
+    n_feats = len(active_features)
+    n_lags  = len(lags)
+    bar_w   = 0.22
+    x       = np.arange(n_feats)
 
-    ax.set_xticks(range(len(lags)))
-    ax.set_xticklabels([f"Lag {l}yr" for l in lags], fontsize=10)
-    ax.set_yticks(range(len(features)))
-    ax.set_yticklabels([FEATURE_LABELS[f] for f in features], fontsize=9)
-    ax.set_title("Signal Decay — Mean |T-Statistic| by Feature and Lag\n"
-                 "Higher = stronger average effect across all outcomes",
-                 fontsize=10, fontweight="bold", pad=12)
-    plt.colorbar(im, ax=ax, label="Mean |T-Statistic|", pad=0.02)
+    lag_colours = {1: "#E05C4A", 3: "#4A90D9", 5: "#27AE60"}
+
+    fig, ax = plt.subplots(figsize=(max(10, n_feats * 1.4 + 2), 5))
+
+    for k, lag in enumerate(lags):
+        vals = [data[f].get(lag, np.nan) for f in active_features]
+        offset = (k - (n_lags - 1) / 2) * bar_w
+        bars = ax.bar(x + offset, vals, width=bar_w,
+                      label=lag_labels[lag], color=lag_colours[lag],
+                      alpha=0.85, edgecolor="white")
+        # Value labels on bars
+        for bar, v in zip(bars, vals):
+            if not np.isnan(v) and abs(v) > 0.1:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + (0.04 if v >= 0 else -0.04),
+                        f"{v:+.2f}", ha="center",
+                        va="bottom" if v >= 0 else "top",
+                        fontsize=7.5, color="#333")
+
+    ax.axhline(0, color="#333", linewidth=1.0)
+    ax.axhline( 1.645, color="#aaa", linewidth=0.8, linestyle="--")
+    ax.axhline(-1.645, color="#aaa", linewidth=0.8, linestyle="--")
+    ax.annotate("90% confidence threshold", xy=(n_feats - 0.5, 1.645),
+                fontsize=7, color="#888", ha="right", va="bottom")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([FEATURE_LABELS[f] for f in active_features],
+                       rotation=25, ha="right", fontsize=9)
+    ax.set_ylabel("Average strength score\n(positive = predicts better outcomes)", fontsize=9)
+    ax.set_title(
+        "Does the effect get stronger or weaker over time?\n"
+        "Each bar shows the average strength of that policy input "
+        "at 1, 3, and 5 years — taller bar = stronger effect at that time horizon",
+        fontsize=10, fontweight="bold", pad=12
+    )
+    ax.legend(fontsize=9, loc="upper right", framealpha=0.9)
+    ax.set_xlim(-0.5, n_feats - 0.5)
+
     plt.tight_layout()
     return fig
 
