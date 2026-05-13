@@ -441,36 +441,12 @@ def load_panel(engine, lag: int) -> pd.DataFrame:
 def run_regression(panel: pd.DataFrame, outcome: str, features: list[str]) -> dict:
     """
     Two-way fixed effects OLS: outcome ~ features + town FE + year FE.
-    Returns dict with coefficient, t-stat, p-value, N, R2_within per feature.
+    Feature list is pre-screened by the caller; this function just runs the model.
     """
     from linearmodels.panel import PanelOLS
     import warnings
 
-    # Start with core features, then greedily add extras that don't halve the sample
-    base_feats = [f for f in features if f in panel.columns]
-    if not base_feats:
-        return {"n_obs": 0, "n_towns": 0}
-
-    # Compute baseline sample with all features
-    full_sub = panel[["town","year", outcome] + base_feats].dropna()
-    baseline_n = len(full_sub)
-
-    if baseline_n >= 80:
-        use_features = base_feats
-    else:
-        # Fall back: greedily include features that keep sample ≥ 80
-        use_features = []
-        for f in base_feats:
-            trial = panel[["town","year", outcome] + use_features + [f]].dropna()
-            if len(trial) >= 80:
-                use_features.append(f)
-        # If still empty, just use features that have pairwise coverage
-        if not use_features:
-            use_features = [
-                f for f in base_feats
-                if panel[[outcome, f]].dropna().shape[0] >= 30
-            ]
-
+    use_features = [f for f in features if f in panel.columns]
     if not use_features:
         return {"n_obs": 0, "n_towns": 0}
 
@@ -524,12 +500,14 @@ def run_backtest(engine, lag: int = 3) -> pd.DataFrame:
     print(f"[backtest] Panel: {len(panel):,} rows, {panel['town'].nunique()} towns, "
           f"years {panel['year'].min()}–{panel['year'].max()}")
 
-    # Core DESE features — available for ~335 districts statewide.
-    # Schedule A features excluded: only cover ~61 municipalities → collapses sample to ~25 towns.
-    # Safety features (lagged crime/crash) excluded: they are background conditions, not policy
-    # levers, and create a circular overlap problem when the same metric appears as both
-    # outcome and lagged feature within the short 2020-2024 crime/crash data window.
-    all_features = ["log_pp_exp", "teachers_per1k", "ch70_per_pupil"]
+    # All policy input features — ordered from widest to narrowest coverage so the
+    # greedy selector below can add them one at a time without collapsing the sample.
+    all_features = [
+        "log_pp_exp", "teachers_per1k", "ch70_per_pupil",      # DESE — ~335 districts
+        "ed_pct_budget", "log_muni_rev_pc",                    # Schedule A — fiscal
+        "public_works_pc", "debt_pct_budget", "public_safety_pc",  # Schedule A — civic
+    ]
+    MIN_TOWNS = 30  # never run a regression with fewer unique towns than this
 
     results = []
     for out_key, out_label, category, higher_is_better in OUTCOMES:
@@ -537,7 +515,19 @@ def run_backtest(engine, lag: int = 3) -> pd.DataFrame:
             print(f"  SKIP {out_key} — not in panel")
             continue
 
-        features = all_features
+        # Greedy feature selection: add features in order, keeping only those
+        # that maintain at least MIN_TOWNS unique towns in the joint sample.
+        features = []
+        for f in all_features:
+            if f not in panel.columns:
+                continue
+            trial = panel[["town", "year", out_key] + features + [f]].dropna()
+            if trial["town"].nunique() >= MIN_TOWNS:
+                features.append(f)
+        if not features:
+            # fallback: use any feature that has ≥ MIN_TOWNS pairwise with outcome
+            features = [f for f in all_features if f in panel.columns and
+                        panel[["town", out_key, f]].dropna()["town"].nunique() >= MIN_TOWNS]
 
         print(f"  {out_label}...", end="", flush=True)
         r = run_regression(panel, out_key, features)
