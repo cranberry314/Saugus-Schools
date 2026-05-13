@@ -660,7 +660,7 @@ def make_tstat_matrix(results: pd.DataFrame, lag: int,
     t-stat multiplied by -1. This means the NUMBER in every cell and the
     COLOUR both carry the same message: positive/green = good, negative/red = bad.
     """
-    features = list(FEATURE_LABELS.keys())
+    all_features = list(FEATURE_LABELS.keys())
 
     # Build sign lookup: +1 if higher is better, -1 if lower is better
     sign_map = {out_label: (1 if hib else -1)
@@ -671,19 +671,24 @@ def make_tstat_matrix(results: pd.DataFrame, lag: int,
     if not outcomes:
         return []
 
-    n_feat = len(features)
-    n_out  = len(outcomes)
-
-    # Sign-adjusted matrix — positive always means good
-    mat = np.full((n_feat, n_out), np.nan)
+    # Build full matrix first, then drop feature rows that are entirely NaN
+    mat_full = np.full((len(all_features), len(outcomes)), np.nan)
     for j, (out_label, _) in enumerate(outcomes):
         row  = results[results["outcome_label"] == out_label].iloc[0]
         sign = sign_map.get(out_label, 1)
-        for i, feat in enumerate(features):
+        for i, feat in enumerate(all_features):
             raw = row.get(f"{feat}_tstat", np.nan)
-            mat[i, j] = sign * raw if not np.isnan(raw) else np.nan
+            mat_full[i, j] = sign * raw if not np.isnan(raw) else np.nan
 
-    fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(6, n_feat * 0.8 + 3)))
+    # Only show features that have at least one non-NaN result
+    used_mask = ~np.all(np.isnan(mat_full), axis=1)
+    features  = [f for f, used in zip(all_features, used_mask) if used]
+    mat       = mat_full[used_mask, :]
+
+    n_feat = len(features)
+    n_out  = len(outcomes)
+
+    fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(5, n_feat * 0.9 + 3)))
 
     vmax = 3.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
@@ -874,11 +879,7 @@ def make_r2_table(results: pd.DataFrame) -> plt.Figure:
         tbl[(i + 1, 0)].get_text().set_color(CAT_COLOURS.get(cat, "#333"))
         tbl[(i + 1, 0)].get_text().set_fontweight("bold")
 
-    ax.set_title(
-        "Model Summary — How many towns and data points were used, and how well does the model fit?\n"
-        "'How well model fits' (0–1): higher means the policy inputs explain more of the variation in outcomes.",
-        fontsize=9, fontweight="bold", pad=14
-    )
+    # Title is set by caller (main) to include the lag label — don't set one here
     plt.tight_layout()
     return fig
 
@@ -1260,8 +1261,19 @@ def main(lag: int | None = None):
         for l in target_lags:
             fig2 = make_r2_table(all_results[l])
             if fig2:
-                fig2.suptitle(f"Model Summary — {l}-Year Lag",
-                              fontsize=11, fontweight="bold")
+                lag_word = "1-Year" if l == 1 else "3-Year" if l == 3 else "5-Year"
+                fig2.text(0.5, 0.98,
+                          f"Model Summary — {lag_word} Lag",
+                          ha="center", va="top", fontsize=12, fontweight="bold",
+                          transform=fig2.transFigure)
+                fig2.text(0.5, 0.94,
+                          "How many towns were analysed, how many data points used, "
+                          "and how well do the policy inputs explain the outcomes?\n"
+                          "('How well model fits': 0 = explains nothing, 1 = explains everything — "
+                          "most real-world policy effects are weak, so 0.05–0.20 is typical)",
+                          ha="center", va="top", fontsize=8, color="#555",
+                          transform=fig2.transFigure)
+                fig2.subplots_adjust(top=0.88)
             _save(pdf, fig2, f"r2 table lag={l}")
 
         if len(target_lags) > 1:
