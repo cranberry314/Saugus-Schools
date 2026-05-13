@@ -10,3 +10,6 @@ tqdm
 python-dotenv
 scipy
 numpy
+linearmodels
+statsmodels
+matplotlib
