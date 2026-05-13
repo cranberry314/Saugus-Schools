@@ -656,24 +656,136 @@ def make_plain_english_legend() -> plt.Figure:
     return fig
 
 
-def make_tstat_matrix(results: pd.DataFrame, lag: int,
+def _build_matrix_fig(results: pd.DataFrame, lag: int,
+                      outcome_subset: list[tuple[str, str]],
+                      flip_sign: bool,
+                      panel_title: str,
                       collinear_pairs: list[tuple[str,str]] | None = None) -> plt.Figure:
+    """
+    Internal helper: build one heatmap panel for a given set of outcomes.
+    flip_sign=True flips t-stats so green always means the good direction.
+    """
     features = list(FEATURE_LABELS.keys())
-    outcomes = [(r["outcome_label"], r["category"]) for _, r in results.iterrows()
-                if "n_obs" in r and r.get("n_obs", 0) >= 30]
+    outcomes = [o for o in outcome_subset
+                if results[results["outcome_label"] == o[0]].shape[0] > 0
+                and results[results["outcome_label"] == o[0]].iloc[0].get("n_obs", 0) >= 30]
 
     if not outcomes:
         return None
 
     n_feat = len(features)
     n_out  = len(outcomes)
+    sign   = -1 if flip_sign else 1
 
-    # Matrix: rows = policy inputs (features), columns = outcomes
     mat = np.full((n_feat, n_out), np.nan)
     for j, (out_label, _) in enumerate(outcomes):
         row = results[results["outcome_label"] == out_label].iloc[0]
         for i, feat in enumerate(features):
-            mat[i, j] = row.get(f"{feat}_tstat", np.nan)
+            raw = row.get(f"{feat}_tstat", np.nan)
+            mat[i, j] = sign * raw if not np.isnan(raw) else np.nan
+
+    fig, ax = plt.subplots(figsize=(max(12, n_out * 1.15 + 3), max(6, n_feat * 0.8 + 3)))
+
+    vmax = 3.0
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+    im = ax.imshow(mat, cmap="RdYlGn", norm=norm, aspect="auto")
+
+    for j, (_, cat) in enumerate(outcomes):
+        ax.axvspan(j - 0.5, j + 0.5, color=CAT_LIGHT.get(cat, "#f5f5f5"),
+                   alpha=0.5, zorder=0)
+
+    for i in range(n_feat):
+        for j in range(n_out):
+            t = mat[i, j]
+            if np.isnan(t):
+                ax.text(j, i, "—", ha="center", va="center", fontsize=7.5, color="#aaa")
+            else:
+                stars = ("★★★" if abs(t) > 2.58 else
+                         "★★"  if abs(t) > 1.96 else
+                         "★"   if abs(t) > 1.645 else "")
+                cell_label = f"{t:+.1f}\n{stars}" if stars else f"{t:+.1f}"
+                fg = "white" if abs(t) > 2.0 else "black"
+                ax.text(j, i, cell_label, ha="center", va="center", fontsize=7,
+                        fontweight="bold" if stars else "normal", color=fg,
+                        linespacing=1.3)
+
+    ax.set_xticks(range(n_out))
+    ax.set_xticklabels([lbl for lbl, _ in outcomes], rotation=40, ha="left", fontsize=9)
+    ax.xaxis.set_label_position("top")
+    ax.xaxis.tick_top()
+    for tick, (_, cat) in zip(ax.get_xticklabels(), outcomes):
+        tick.set_color(CAT_COLOURS.get(cat, "#333"))
+        tick.set_fontweight("bold")
+
+    collinear_feats = {f for pair in (collinear_pairs or []) for f in pair}
+    ax.set_yticks(range(n_feat))
+    ax.set_yticklabels([FEATURE_LABELS[f] for f in features], fontsize=9)
+    for tick, feat in zip(ax.get_yticklabels(), features):
+        tick.set_color("#C0392B" if feat in collinear_feats else "#222")
+        tick.set_fontweight("bold" if feat in collinear_feats else "normal")
+
+    lag_desc = ("near-term (1 year out)" if lag == 1 else
+                "medium-term (3 years out)" if lag == 3 else
+                "long-term (5 years out)")
+    colour_note = ("Green = good  ·  Red = bad" if not flip_sign
+                   else "Green = policy REDUCES this  ·  Red = policy INCREASES this")
+    ax.set_title(
+        f"{panel_title}  —  {lag_desc}\n"
+        f"{colour_note}  ·  Stars = how confident we are  ·  Policy inputs → rows  ·  Outcomes → columns",
+        fontsize=10, fontweight="bold", pad=16, loc="left"
+    )
+
+    legend_patches = [mpatches.Patch(color=CAT_COLOURS[c], label=c) for c in CAT_COLOURS
+                      if any(cat == c for _, cat in outcomes)]
+    ax.legend(handles=legend_patches, loc="upper left", fontsize=8,
+              bbox_to_anchor=(0, -0.06), ncol=len(legend_patches),
+              title="Outcome category", title_fontsize=8, framealpha=0.9)
+
+    cbar_label = ("Green = positive effect  |  Red = negative effect  |  Brighter = stronger"
+                  if not flip_sign else
+                  "Green = policy reduces this outcome  |  Red = policy increases it  |  Brighter = stronger")
+    plt.colorbar(im, ax=ax, orientation="vertical", pad=0.02, shrink=0.8, label=cbar_label)
+
+    if collinear_pairs:
+        warn_text = ("⚠ Red row labels share a strong correlation with another input — "
+                     "hard to tell which one is doing the work: " +
+                     ", ".join(f"{FEATURE_LABELS.get(a,'?')} ↔ {FEATURE_LABELS.get(b,'?')}"
+                               for a, b in collinear_pairs))
+        fig.text(0.01, 0.01, warn_text, fontsize=7.5, color="#C0392B", ha="left", va="bottom")
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    return fig
+
+
+def make_tstat_matrix(results: pd.DataFrame, lag: int,
+                      collinear_pairs: list[tuple[str,str]] | None = None) -> list[plt.Figure]:
+    """
+    Returns two figures: one for 'higher is better' outcomes, one for
+    'lower is better' outcomes (with sign flipped so green = good in both).
+    """
+    all_outcomes = [(r["outcome_label"], r["category"]) for _, r in results.iterrows()
+                    if "n_obs" in r and r.get("n_obs", 0) >= 30]
+
+    hib_set  = {lbl for _, lbl, _, hib in OUTCOMES if hib}
+    lib_set  = {lbl for _, lbl, _, hib in OUTCOMES if not hib}
+
+    higher = [(lbl, cat) for lbl, cat in all_outcomes if lbl in hib_set]
+    lower  = [(lbl, cat) for lbl, cat in all_outcomes if lbl in lib_set]
+
+    figs = []
+    if higher:
+        figs.append(_build_matrix_fig(
+            results, lag, higher, flip_sign=False,
+            panel_title="Outcomes where HIGHER is better (graduation, home values, test scores…)",
+            collinear_pairs=collinear_pairs,
+        ))
+    if lower:
+        figs.append(_build_matrix_fig(
+            results, lag, lower, flip_sign=True,
+            panel_title="Outcomes where LOWER is better (crime, dropout, poverty…)  —  green = policy reduces it",
+            collinear_pairs=collinear_pairs,
+        ))
+    return [f for f in figs if f is not None]
 
     # Wide figure: outcomes across the top, features down the side
     fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(6, n_feat * 0.75 + 3)))
@@ -1168,8 +1280,8 @@ def main(lag: int | None = None):
         _save(pdf, make_plain_english_legend(), "legend")
 
         for l in target_lags:
-            _save(pdf, make_tstat_matrix(all_results[l], l, collinear_pairs),
-                  f"heatmap lag={l}")
+            for fig in make_tstat_matrix(all_results[l], l, collinear_pairs):
+                _save(pdf, fig, f"heatmap lag={l}")
 
         if len(target_lags) > 1:
             _save(pdf, make_decay_chart(all_results), "decay chart")
