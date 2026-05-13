@@ -621,8 +621,8 @@ def make_plain_english_legend() -> plt.Figure:
          "★     90% confident — moderate evidence; treat with some caution\n"
          "(no stars) — not enough evidence; could easily be random"),
 
-        ("What do the row colours mean?",
-         "Each outcome (row) is colour-coded by type:\n"
+        ("What do the column colours mean?",
+         "Each outcome (column) is colour-coded by type:\n"
          "  Blue = Education outcomes (graduation, test scores, dropouts)\n"
          "  Red = Safety outcomes (crime, crashes)\n"
          "  Green = Community outcomes (poverty, absenteeism, enrollment)\n"
@@ -663,32 +663,34 @@ def make_tstat_matrix(results: pd.DataFrame, lag: int,
     if not outcomes:
         return None
 
-    mat = np.full((len(outcomes), len(features)), np.nan)
-    for i, (out_label, _) in enumerate(outcomes):
+    n_feat = len(features)
+    n_out  = len(outcomes)
+
+    # Matrix: rows = policy inputs (features), columns = outcomes
+    mat = np.full((n_feat, n_out), np.nan)
+    for j, (out_label, _) in enumerate(outcomes):
         row = results[results["outcome_label"] == out_label].iloc[0]
-        for j, feat in enumerate(features):
+        for i, feat in enumerate(features):
             mat[i, j] = row.get(f"{feat}_tstat", np.nan)
 
-    n_out = len(outcomes)
-    fig, axes = plt.subplots(1, 2, figsize=(18, max(9, n_out * 0.6 + 3)),
-                             gridspec_kw={"width_ratios": [7, 1]})
-    ax, ax_meta = axes
+    # Wide figure: outcomes across the top, features down the side
+    fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(6, n_feat * 0.75 + 3)))
 
     vmax = 3.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
     im = ax.imshow(mat, cmap="RdYlGn", norm=norm, aspect="auto")
 
-    # Colour-coded row backgrounds by category
-    for i, (_, cat) in enumerate(outcomes):
-        ax.axhspan(i - 0.5, i + 0.5, color=CAT_LIGHT.get(cat, "#f5f5f5"),
-                   alpha=0.45, zorder=0)
+    # Colour-coded column backgrounds by outcome category
+    for j, (_, cat) in enumerate(outcomes):
+        ax.axvspan(j - 0.5, j + 0.5, color=CAT_LIGHT.get(cat, "#f5f5f5"),
+                   alpha=0.5, zorder=0)
 
-    # Cell labels: t-stat + star rating
-    for i in range(mat.shape[0]):
-        for j in range(mat.shape[1]):
+    # Cell labels
+    for i in range(n_feat):
+        for j in range(n_out):
             t = mat[i, j]
             if np.isnan(t):
-                ax.text(j, i, "—", ha="center", va="center", fontsize=8, color="#aaa")
+                ax.text(j, i, "—", ha="center", va="center", fontsize=7.5, color="#aaa")
             else:
                 stars = ("★★★" if abs(t) > 2.58 else
                          "★★"  if abs(t) > 1.96 else
@@ -699,58 +701,53 @@ def make_tstat_matrix(results: pd.DataFrame, lag: int,
                         fontweight="bold" if stars else "normal", color=fg,
                         linespacing=1.3)
 
-    # Feature labels ON TOP
-    ax.set_xticks(range(len(features)))
-    ax.set_xticklabels([FEATURE_LABELS[f] for f in features],
-                       rotation=35, ha="left", fontsize=9)
+    # Outcome labels across the TOP (X-axis), colour-coded by category
+    ax.set_xticks(range(n_out))
+    ax.set_xticklabels([lbl for lbl, _ in outcomes], rotation=40, ha="left", fontsize=9)
     ax.xaxis.set_label_position("top")
     ax.xaxis.tick_top()
-
-    # Collinearity warning markers on x-axis labels
-    if collinear_pairs:
-        collinear_feats = {f for pair in collinear_pairs for f in pair}
-        for j, feat in enumerate(features):
-            if feat in collinear_feats:
-                ax.get_xticklabels()[j].set_color("#C0392B")
-
-    # Outcome labels with category colour
-    ax.set_yticks(range(n_out))
-    ytick_labels = [lbl for lbl, _ in outcomes]
-    ax.set_yticklabels(ytick_labels, fontsize=9)
-    for tick, (_, cat) in zip(ax.get_yticklabels(), outcomes):
+    for tick, (_, cat) in zip(ax.get_xticklabels(), outcomes):
         tick.set_color(CAT_COLOURS.get(cat, "#333"))
         tick.set_fontweight("bold")
+
+    # Policy input labels on the LEFT (Y-axis), red for collinear
+    collinear_feats = {f for pair in (collinear_pairs or []) for f in pair}
+    ax.set_yticks(range(n_feat))
+    ax.set_yticklabels([FEATURE_LABELS[f] for f in features], fontsize=9)
+    for tick, feat in zip(ax.get_yticklabels(), features):
+        if feat in collinear_feats:
+            tick.set_color("#C0392B")
+        tick.set_fontweight("bold" if feat in collinear_feats else "normal")
 
     lag_desc = ("near-term (1 year out)" if lag == 1 else
                 "medium-term (3 years out)" if lag == 3 else
                 "long-term (5 years out)")
     ax.set_title(
         f"Does this policy predict better outcomes — {lag_desc}?\n"
-        "Green = predicts improvement  |  Red = predicts worsening  |  "
-        "Stars = how confident we are",
-        fontsize=10, fontweight="bold", pad=14, loc="left"
+        "Policy inputs → rows  |  Outcomes → columns  |  "
+        "Green = improvement  ·  Red = worsening  ·  Stars = confidence level",
+        fontsize=10, fontweight="bold", pad=16, loc="left"
     )
 
-    # Category legend bar on right
-    for i, (_, cat) in enumerate(outcomes):
-        ax_meta.barh(i, 1, color=CAT_COLOURS.get(cat, "#aaa"), edgecolor="white", height=0.9)
-        ax_meta.text(0.5, i, cat, ha="center", va="center",
-                     fontsize=7, color="white", fontweight="bold")
-    ax_meta.set_xlim(0, 1)
-    ax_meta.set_ylim(-0.5, n_out - 0.5)
-    ax_meta.invert_yaxis()
-    ax_meta.axis("off")
+    # Colour legend for outcome categories — below the chart
+    legend_patches = [mpatches.Patch(color=CAT_COLOURS[c], label=c) for c in CAT_COLOURS]
+    ax.legend(handles=legend_patches, loc="upper left", fontsize=8,
+              bbox_to_anchor=(0, -0.06), ncol=len(CAT_COLOURS),
+              title="Outcome category colours", title_fontsize=8, framealpha=0.9)
 
-    plt.colorbar(im, ax=ax, orientation="vertical", pad=0.01,
-                 label="Strength score: positive (green) = better outcomes, negative (red) = worse outcomes")
+    plt.colorbar(im, ax=ax, orientation="vertical", pad=0.02, shrink=0.8,
+                 label="Strength score  (positive/green = better outcomes, negative/red = worse)")
 
     # Collinearity footnote
     if collinear_pairs:
-        warn_text = "⚠ Red column labels = possibly correlated with another input (interpret with caution): " + \
-                    ", ".join(f"{FEATURE_LABELS.get(a,'?')} ↔ {FEATURE_LABELS.get(b,'?')}"
-                              for a, b in collinear_pairs)
-        fig.text(0.01, 0.01, warn_text, fontsize=7, color="#C0392B",
-                 wrap=True, ha="left", va="bottom")
+        warn_text = (
+            "⚠ Red row labels share a strong correlation with another policy input — "
+            "hard to tell which one is doing the work: " +
+            ", ".join(f"{FEATURE_LABELS.get(a,'?')} ↔ {FEATURE_LABELS.get(b,'?')}"
+                      for a, b in collinear_pairs)
+        )
+        fig.text(0.01, 0.01, warn_text, fontsize=7.5, color="#C0392B",
+                 ha="left", va="bottom")
 
     plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
