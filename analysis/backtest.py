@@ -699,38 +699,190 @@ def make_cover(lag: int) -> plt.Figure:
 
 
 # ---------------------------------------------------------------------------
+# Signal decay chart — t-stats across lag 1, 3, 5 per feature
+# ---------------------------------------------------------------------------
+
+def make_decay_chart(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
+    """
+    For each outcome, plot how each feature's t-statistic evolves across lags.
+    Shows whether effects peak early (operational) or late (structural).
+    """
+    lags = sorted(all_results.keys())
+    features = list(FEATURE_LABELS.keys())
+    cat_colours = {"Education": "#4A90D9", "Safety": "#E05C4A",
+                   "Community": "#5CB85C", "Market": "#F0AD4E", "Fiscal": "#9B59B6"}
+
+    # Collect all (outcome, feature) pairs that have at least one non-nan t-stat
+    valid_outcomes = []
+    for out_key, out_label, category in OUTCOMES:
+        for feat in features:
+            has_data = any(
+                not np.isnan(all_results[lag].loc[
+                    all_results[lag]["outcome_label"] == out_label,
+                    f"{feat}_tstat"
+                ].values[0] if out_label in all_results[lag]["outcome_label"].values
+                  and f"{feat}_tstat" in all_results[lag].columns else np.nan)
+                for lag in lags
+            )
+            if has_data:
+                break
+        else:
+            continue
+        valid_outcomes.append((out_key, out_label, category))
+
+    n_outcomes = len(valid_outcomes)
+    if n_outcomes == 0:
+        return None
+
+    # One row per outcome, columns = features, three lines per cell (lag 1, 3, 5)
+    n_cols = min(4, len(features))
+    n_rows = n_outcomes
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 3.2, n_rows * 1.8),
+        squeeze=False
+    )
+    fig.suptitle("Signal Decay — T-Statistic by Lag  (1, 3, 5 Years)",
+                 fontsize=13, fontweight="bold", y=1.01)
+
+    lag_styles = {1: ("o", "-", "#E05C4A"), 3: ("s", "--", "#4A90D9"), 5: ("^", ":", "#5CB85C")}
+
+    for row_i, (out_key, out_label, category) in enumerate(valid_outcomes):
+        for col_j, feat in enumerate(features[:n_cols]):
+            ax = axes[row_i][col_j]
+            tvals, lvals = [], []
+            for lag in lags:
+                res_df = all_results[lag]
+                match = res_df[res_df["outcome_label"] == out_label]
+                col = f"{feat}_tstat"
+                tval = match[col].values[0] if len(match) > 0 and col in res_df.columns else np.nan
+                tvals.append(tval)
+                lvals.append(lag)
+
+            # Plot line
+            valid_pairs = [(l, t) for l, t in zip(lvals, tvals) if not np.isnan(t)]
+            if valid_pairs:
+                xs, ys = zip(*valid_pairs)
+                ax.plot(xs, ys, "o-", color=cat_colours.get(category, "#888"),
+                        linewidth=1.8, markersize=5)
+                for x, y in zip(xs, ys):
+                    stars = "***" if abs(y) > 2.58 else "**" if abs(y) > 1.96 else "*" if abs(y) > 1.645 else ""
+                    ax.annotate(f"{y:+.1f}{stars}", (x, y),
+                                textcoords="offset points", xytext=(0, 5),
+                                ha="center", fontsize=6.5)
+
+            ax.axhline(0, color="#aaa", linewidth=0.8, linestyle="--")
+            ax.axhline(1.96,  color="#4A90D9", linewidth=0.6, linestyle=":", alpha=0.6)
+            ax.axhline(-1.96, color="#4A90D9", linewidth=0.6, linestyle=":", alpha=0.6)
+            ax.set_xticks(lags)
+            ax.set_xticklabels([f"L{l}" for l in lags], fontsize=7)
+            ax.tick_params(axis="y", labelsize=7)
+
+            if col_j == 0:
+                ax.set_ylabel(out_label, fontsize=7.5, fontweight="bold",
+                              color=cat_colours.get(category, "#333"))
+            if row_i == 0:
+                ax.set_title(FEATURE_LABELS[feat], fontsize=7.5, fontweight="bold")
+
+    # Hide unused axes
+    for row_i in range(n_outcomes):
+        for col_j in range(len(features[:n_cols]), n_cols):
+            axes[row_i][col_j].axis("off")
+
+    plt.tight_layout()
+    return fig
+
+
+def make_multi_lag_cover() -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(11, 8.5))
+    ax.axis("off")
+    ax.text(0.5, 0.72, "Town Policy Backtest", ha="center", va="center",
+            fontsize=30, fontweight="bold", transform=ax.transAxes)
+    ax.text(0.5, 0.60, "16 Outcomes  ×  3 Lags  ×  10 Features",
+            ha="center", va="center", fontsize=16, color="#555", transform=ax.transAxes)
+    ax.text(0.5, 0.50, "Two-Way Fixed Effects (Town + Year FE)\n"
+            "Clustered Standard Errors at Town Level",
+            ha="center", va="center", fontsize=12, color="#777",
+            transform=ax.transAxes, linespacing=1.8)
+    lines = [
+        "Lags tested:  1 year (fast)  ·  3 years (medium)  ·  5 years (structural)",
+        "",
+        "Features:  Per-pupil spending  ·  Teacher staffing  ·  Chapter 70 aid",
+        "           Ed % of budget  ·  Muni revenue/capita  ·  Public works/capita",
+        "           Debt service %  ·  Public safety/capita  ·  Crime rate  ·  Crash rate",
+        "",
+        "Outcomes:  6 Education  ·  4 Safety  ·  3 Community  ·  2 Market  ·  1 Fiscal",
+        "",
+        "Signal decay chart shows how t-statistics evolve across lags —",
+        "peak lag reveals whether an effect is operational or structural.",
+    ]
+    ax.text(0.5, 0.28, "\n".join(lines), ha="center", va="center",
+            fontsize=9.5, color="#444", transform=ax.transAxes,
+            fontfamily="monospace", linespacing=1.7)
+    ax.text(0.5, 0.06, "Saugus Schools Project  —  MA Municipal Data",
+            ha="center", va="center", fontsize=9, color="#aaa", transform=ax.transAxes)
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(lag: int = 3):
+LAGS = [1, 3, 5]
+
+def main(lag: int | None = None):
     engine = get_engine()
     os.makedirs(os.path.dirname(OUTPUT_PDF), exist_ok=True)
 
-    results = run_backtest(engine, lag=lag)
-    results.to_csv(OUTPUT_CSV, index=False)
+    target_lags = [lag] if lag else LAGS
+
+    all_results: dict[int, pd.DataFrame] = {}
+    for l in target_lags:
+        results = run_backtest(engine, lag=l)
+        results["lag"] = l
+        all_results[l] = results
+
+    # Save combined CSV
+    combined = pd.concat(all_results.values(), ignore_index=True)
+    combined.to_csv(OUTPUT_CSV, index=False)
     print(f"[backtest] Results saved to {OUTPUT_CSV}")
 
     print("[backtest] Generating PDF...")
     with PdfPages(OUTPUT_PDF) as pdf:
-        pdf.savefig(make_cover(lag), bbox_inches="tight")
+        # Cover
+        pdf.savefig(make_multi_lag_cover() if len(target_lags) > 1 else make_cover(lag),
+                    bbox_inches="tight")
         plt.close()
 
-        fig = make_tstat_matrix(results, lag)
-        if fig:
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close()
+        # One heatmap per lag
+        for l in target_lags:
+            fig = make_tstat_matrix(all_results[l], l)
+            if fig:
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close()
 
-        fig2 = make_r2_table(results)
-        if fig2:
-            pdf.savefig(fig2, bbox_inches="tight")
-            plt.close()
+        # Signal decay chart (only when multiple lags run)
+        if len(target_lags) > 1:
+            fig_decay = make_decay_chart(all_results)
+            if fig_decay:
+                pdf.savefig(fig_decay, bbox_inches="tight")
+                plt.close()
+
+        # Summary table for each lag
+        for l in target_lags:
+            fig2 = make_r2_table(all_results[l])
+            if fig2:
+                fig2.suptitle(f"Model Fit Summary — Lag {l} Year{'s' if l != 1 else ''}",
+                              fontsize=11, fontweight="bold")
+                pdf.savefig(fig2, bbox_inches="tight")
+                plt.close()
 
     print(f"[backtest] Report saved to {OUTPUT_PDF}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lag", type=int, default=3,
-                        help="Feature lag in years (default 3)")
+    parser.add_argument("--lag", type=int, default=None,
+                        help="Single lag in years (default: runs all three — 1, 3, 5)")
     args = parser.parse_args()
     main(lag=args.lag)
