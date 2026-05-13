@@ -563,109 +563,240 @@ def run_backtest(engine, lag: int = 3) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Shared style constants
+# ---------------------------------------------------------------------------
+CAT_COLOURS = {
+    "Education": "#4A90D9",
+    "Safety":    "#E05C4A",
+    "Community": "#5CB85C",
+    "Market":    "#F0AD4E",
+    "Fiscal":    "#9B59B6",
+}
+CAT_LIGHT = {          # pastel row-background versions
+    "Education": "#D6E9F8",
+    "Safety":    "#FADBD8",
+    "Community": "#D5F5E3",
+    "Market":    "#FDEBD0",
+    "Fiscal":    "#E8DAEF",
+}
+
+def _confidence_label(abs_t: float) -> str:
+    """Plain-English confidence description."""
+    if abs_t > 2.58: return "★★★ 99% confident"
+    if abs_t > 1.96: return "★★  95% confident"
+    if abs_t > 1.645: return "★    90% confident"
+    return "not significant"
+
+
+# ---------------------------------------------------------------------------
 # Visualisation
 # ---------------------------------------------------------------------------
 
-def make_tstat_matrix(results: pd.DataFrame, lag: int) -> None:
+def make_plain_english_legend() -> plt.Figure:
+    """
+    A stand-alone slide explaining the charts in plain English.
+    Intended for audiences without a statistics background.
+    """
+    fig, ax = plt.subplots(figsize=(11, 8.5))
+    ax.axis("off")
+
+    ax.text(0.5, 0.96, "How to Read These Charts", ha="center", va="top",
+            fontsize=18, fontweight="bold", transform=ax.transAxes)
+
+    sections = [
+        ("What are we testing?",
+         "Each chart asks: when a town changed its spending or policies,\n"
+         "did its outcomes improve a few years later?\n"
+         "We look 1 year, 3 years, and 5 years into the future."),
+
+        ("What do the numbers mean?",
+         "Each cell shows a number — a 'strength score' (statisticians call it a t-statistic).\n"
+         "A bigger number means a stronger relationship between policy and outcome.\n"
+         "Green = the policy predicts better outcomes.\n"
+         "Red = the policy is associated with worse outcomes."),
+
+        ("What do the stars mean?",
+         "★★★  99% confident — almost certainly a real effect, not random chance\n"
+         "★★   95% confident — strong evidence of a real effect\n"
+         "★     90% confident — moderate evidence; treat with some caution\n"
+         "(no stars) — not enough evidence; could easily be random"),
+
+        ("What do the row colours mean?",
+         "Each outcome (row) is colour-coded by type:\n"
+         "  Blue = Education outcomes (graduation, test scores, dropouts)\n"
+         "  Red = Safety outcomes (crime, crashes)\n"
+         "  Green = Community outcomes (poverty, absenteeism, enrollment)\n"
+         "  Orange = Market outcomes (home values)\n"
+         "  Purple = Fiscal outcomes (municipal revenue)"),
+
+        ("What is collinearity?",
+         "Some policy inputs move together — e.g. towns that spend more per pupil\n"
+         "also tend to receive more state aid. When two inputs are highly correlated,\n"
+         "it is hard to tell which one is doing the work. We flag these pairs\n"
+         "with ⚠ so you know to interpret those results cautiously."),
+
+        ("Bottom line",
+         "Look for consistent green ★★ or ★★★ cells across multiple rows.\n"
+         "That means the policy input reliably predicts better outcomes\n"
+         "across many different measures — not just one cherry-picked metric."),
+    ]
+
+    y = 0.88
+    for title, body in sections:
+        ax.text(0.05, y, title, ha="left", va="top", fontsize=11,
+                fontweight="bold", color="#222", transform=ax.transAxes)
+        y -= 0.04
+        ax.text(0.07, y, body, ha="left", va="top", fontsize=9.5,
+                color="#444", transform=ax.transAxes, linespacing=1.6)
+        y -= (body.count("\n") + 1) * 0.042 + 0.015
+
+    plt.tight_layout()
+    return fig
+
+
+def make_tstat_matrix(results: pd.DataFrame, lag: int,
+                      collinear_pairs: list[tuple[str,str]] | None = None) -> plt.Figure:
     features = list(FEATURE_LABELS.keys())
     outcomes = [(r["outcome_label"], r["category"]) for _, r in results.iterrows()
                 if "n_obs" in r and r.get("n_obs", 0) >= 30]
 
     if not outcomes:
-        print("[backtest] No outcomes with sufficient data to plot.")
-        return
+        return None
 
-    # Build t-stat matrix
     mat = np.full((len(outcomes), len(features)), np.nan)
     for i, (out_label, _) in enumerate(outcomes):
         row = results[results["outcome_label"] == out_label].iloc[0]
         for j, feat in enumerate(features):
             mat[i, j] = row.get(f"{feat}_tstat", np.nan)
 
-    fig, axes = plt.subplots(1, 2, figsize=(17, max(8, len(outcomes) * 0.55 + 2)),
-                             gridspec_kw={"width_ratios": [6, 1]})
+    n_out = len(outcomes)
+    fig, axes = plt.subplots(1, 2, figsize=(18, max(9, n_out * 0.6 + 3)),
+                             gridspec_kw={"width_ratios": [7, 1]})
     ax, ax_meta = axes
 
-    # Diverging colormap centred at 0, clipped at ±3
     vmax = 3.0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
     im = ax.imshow(mat, cmap="RdYlGn", norm=norm, aspect="auto")
 
-    # Significance markers
+    # Colour-coded row backgrounds by category
+    for i, (_, cat) in enumerate(outcomes):
+        ax.axhspan(i - 0.5, i + 0.5, color=CAT_LIGHT.get(cat, "#f5f5f5"),
+                   alpha=0.45, zorder=0)
+
+    # Cell labels: t-stat + star rating
     for i in range(mat.shape[0]):
         for j in range(mat.shape[1]):
             t = mat[i, j]
             if np.isnan(t):
-                ax.text(j, i, "—", ha="center", va="center", fontsize=8, color="#999")
+                ax.text(j, i, "—", ha="center", va="center", fontsize=8, color="#aaa")
             else:
-                stars = "***" if abs(t) > 2.58 else "**" if abs(t) > 1.96 else "*" if abs(t) > 1.645 else ""
-                label = f"{t:+.1f}{stars}"
-                color = "white" if abs(t) > 2.0 else "black"
-                ax.text(j, i, label, ha="center", va="center", fontsize=7.5,
-                        fontweight="bold" if stars else "normal", color=color)
+                stars = ("★★★" if abs(t) > 2.58 else
+                         "★★"  if abs(t) > 1.96 else
+                         "★"   if abs(t) > 1.645 else "")
+                cell_label = f"{t:+.1f}\n{stars}" if stars else f"{t:+.1f}"
+                fg = "white" if abs(t) > 2.0 else "black"
+                ax.text(j, i, cell_label, ha="center", va="center", fontsize=7,
+                        fontweight="bold" if stars else "normal", color=fg,
+                        linespacing=1.3)
 
+    # Feature labels ON TOP
     ax.set_xticks(range(len(features)))
     ax.set_xticklabels([FEATURE_LABELS[f] for f in features],
-                       rotation=35, ha="right", fontsize=9)
-    ax.set_yticks(range(len(outcomes)))
-    ax.set_yticklabels([lbl for lbl, _ in outcomes], fontsize=9)
-    ax.set_title(f"Panel Regression T-Statistics  |  Lag = {lag} year{'s' if lag != 1 else ''}  |  "
-                 "Two-Way Fixed Effects (Town + Year)",
-                 fontsize=11, fontweight="bold", pad=12)
+                       rotation=35, ha="left", fontsize=9)
+    ax.xaxis.set_label_position("top")
+    ax.xaxis.tick_top()
 
-    # Category colour bar on right
-    categories = [cat for _, cat in outcomes]
-    cat_colours = {"Education": "#4A90D9", "Safety": "#E05C4A",
-                   "Community": "#5CB85C", "Market": "#F0AD4E", "Fiscal": "#9B59B6"}
-    for i, cat in enumerate(categories):
-        ax_meta.barh(i, 1, color=cat_colours.get(cat, "#aaa"), edgecolor="white", height=0.9)
-        ax_meta.text(0.5, i, cat, ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
+    # Collinearity warning markers on x-axis labels
+    if collinear_pairs:
+        collinear_feats = {f for pair in collinear_pairs for f in pair}
+        for j, feat in enumerate(features):
+            if feat in collinear_feats:
+                ax.get_xticklabels()[j].set_color("#C0392B")
+
+    # Outcome labels with category colour
+    ax.set_yticks(range(n_out))
+    ytick_labels = [lbl for lbl, _ in outcomes]
+    ax.set_yticklabels(ytick_labels, fontsize=9)
+    for tick, (_, cat) in zip(ax.get_yticklabels(), outcomes):
+        tick.set_color(CAT_COLOURS.get(cat, "#333"))
+        tick.set_fontweight("bold")
+
+    lag_desc = ("near-term (1 year out)" if lag == 1 else
+                "medium-term (3 years out)" if lag == 3 else
+                "long-term (5 years out)")
+    ax.set_title(
+        f"Does this policy predict better outcomes — {lag_desc}?\n"
+        "Green = predicts improvement  |  Red = predicts worsening  |  "
+        "Stars = how confident we are",
+        fontsize=10, fontweight="bold", pad=14, loc="left"
+    )
+
+    # Category legend bar on right
+    for i, (_, cat) in enumerate(outcomes):
+        ax_meta.barh(i, 1, color=CAT_COLOURS.get(cat, "#aaa"), edgecolor="white", height=0.9)
+        ax_meta.text(0.5, i, cat, ha="center", va="center",
+                     fontsize=7, color="white", fontweight="bold")
     ax_meta.set_xlim(0, 1)
-    ax_meta.set_ylim(-0.5, len(outcomes) - 0.5)
+    ax_meta.set_ylim(-0.5, n_out - 0.5)
     ax_meta.invert_yaxis()
     ax_meta.axis("off")
 
     plt.colorbar(im, ax=ax, orientation="vertical", pad=0.01,
-                 label="T-Statistic  (green = positive effect, red = negative effect)")
+                 label="Strength score: positive (green) = better outcomes, negative (red) = worse outcomes")
 
-    # Legend
-    legend_items = [
-        mpatches.Patch(color="white", label="*** p<0.01   ** p<0.05   * p<0.10"),
-    ]
-    ax.legend(handles=legend_items, loc="upper left", fontsize=8,
-              framealpha=0.9, bbox_to_anchor=(0, -0.18))
+    # Collinearity footnote
+    if collinear_pairs:
+        warn_text = "⚠ Red column labels = possibly correlated with another input (interpret with caution): " + \
+                    ", ".join(f"{FEATURE_LABELS.get(a,'?')} ↔ {FEATURE_LABELS.get(b,'?')}"
+                              for a, b in collinear_pairs)
+        fig.text(0.01, 0.01, warn_text, fontsize=7, color="#C0392B",
+                 wrap=True, ha="left", va="bottom")
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
 def make_r2_table(results: pd.DataFrame) -> plt.Figure:
-    valid = results[results.get("n_obs", pd.Series(dtype=float)).notna() if "n_obs" in results.columns else
-                    results["n_obs"].notna()].copy() if "n_obs" in results.columns else results.copy()
     valid = results.dropna(subset=["r2_within"] if "r2_within" in results.columns else [])
     if valid.empty:
         return None
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(valid) * 0.4 + 1.5)))
+    fig, ax = plt.subplots(figsize=(11, max(4, len(valid) * 0.42 + 2)))
     ax.axis("off")
 
-    cols = ["Outcome", "Category", "N Obs", "N Towns", "R² (within)"]
+    cols = ["Outcome", "Type", "Towns\nanalysed", "Data\npoints", "How well\nmodel fits"]
     rows = []
+    cats = []
     for _, r in valid.iterrows():
+        r2 = r.get("r2_within", np.nan)
+        fit = ("Strong" if r2 > 0.3 else "Moderate" if r2 > 0.1 else
+               "Weak" if r2 > 0 else "—")
         rows.append([
             r.get("outcome_label", ""),
             r.get("category", ""),
-            f"{int(r.get('n_obs', 0)):,}",
             f"{int(r.get('n_towns', 0)):,}",
-            f"{r.get('r2_within', np.nan):.3f}",
+            f"{int(r.get('n_obs', 0)):,}",
+            f"{fit}  ({r2:.2f})",
         ])
+        cats.append(r.get("category", ""))
 
     tbl = ax.table(cellText=rows, colLabels=cols, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(9)
-    tbl.scale(1, 1.4)
-    ax.set_title("Regression Summary — Observations and Model Fit", fontsize=11,
-                 fontweight="bold", pad=16)
+    tbl.scale(1, 1.5)
+
+    # Colour rows by category
+    for i, cat in enumerate(cats):
+        for j in range(len(cols)):
+            tbl[(i + 1, j)].set_facecolor(CAT_LIGHT.get(cat, "#f9f9f9"))
+        tbl[(i + 1, 0)].get_text().set_color(CAT_COLOURS.get(cat, "#333"))
+        tbl[(i + 1, 0)].get_text().set_fontweight("bold")
+
+    ax.set_title(
+        "Model Summary — How many towns and data points were used, and how well does the model fit?\n"
+        "'How well model fits' (0–1): higher means the policy inputs explain more of the variation in outcomes.",
+        fontsize=9, fontweight="bold", pad=14
+    )
     plt.tight_layout()
     return fig
 
@@ -753,6 +884,44 @@ def make_decay_chart(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
     return fig
 
 
+def compute_collinearity(panel: pd.DataFrame,
+                         threshold: float = 0.70) -> list[tuple[str, str]]:
+    """Return pairs of features with absolute correlation above threshold."""
+    features = [f for f in FEATURE_LABELS if f in panel.columns]
+    sub = panel[features].dropna()
+    if len(sub) < 10:
+        return []
+    corr = sub.corr().abs()
+    pairs = []
+    for i, f1 in enumerate(features):
+        for f2 in features[i+1:]:
+            if corr.loc[f1, f2] >= threshold:
+                pairs.append((f1, f2))
+    return pairs
+
+
+def _trend_label(t1: float, t3: float, t5: float) -> str:
+    """Plain-English description of how a signal changes across lags."""
+    vals = [v for v in [t1, t3, t5] if not np.isnan(v)]
+    if len(vals) < 2:
+        return "—"
+    first, last = vals[0], vals[-1]
+    if np.isnan(t1) or np.isnan(t5):
+        return "partial data"
+    delta = last - first
+    # Check for sign reversal
+    if first * last < 0:
+        return "⚠ Reverses direction"
+    if abs(delta) < 0.3:
+        return "→ Stable across years"
+    peak_idx = int(np.argmax([abs(v) for v in vals]))
+    if peak_idx == len(vals) - 1:
+        return "↑ Grows stronger over time"
+    if peak_idx == 0:
+        return "↓ Weakens over time"
+    return "▲ Peaks in medium term"
+
+
 def make_feature_ranking(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
     """
     Summary slide: rank policy inputs by how consistently and strongly they
@@ -816,78 +985,107 @@ def make_feature_ranking(all_results: dict[int, pd.DataFrame]) -> plt.Figure:
                              ["feature","lag"]].rename(columns={"lag":"best_lag"})
     agg = agg.merge(best_lag, on="feature", how="left")
 
-    # Sort: most effective first (highest mean_t), least effective last
-    agg = agg.sort_values("mean_t", ascending=True)  # ascending → weakest at top for bottom-up plot
+    # Sort weakest at top, strongest at bottom (as requested)
+    agg = agg.sort_values("mean_t", ascending=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, max(5, len(agg) * 0.7 + 2.5)),
-                             gridspec_kw={"width_ratios": [2, 1.6]})
+    # Compute per-feature trend across lags
+    lags_sorted = sorted(all_results.keys())
+    trend_col = {}
+    for feat in features:
+        lag_means = {}
+        for lag in lags_sorted:
+            col = f"{feat}_tstat"
+            res_df = all_results[lag]
+            if col in res_df.columns:
+                # sign-adjust before averaging
+                vals = []
+                for out_key, out_label, _, hib in OUTCOMES:
+                    m = res_df[res_df["outcome_label"] == out_label]
+                    if len(m) > 0 and col in m.columns and not pd.isna(m.iloc[0][col]):
+                        sign = 1 if hib else -1
+                        vals.append(sign * m.iloc[0][col])
+                lag_means[lag] = np.mean(vals) if vals else np.nan
+        t1 = lag_means.get(lags_sorted[0], np.nan)
+        t3 = lag_means.get(lags_sorted[1], np.nan) if len(lags_sorted) > 1 else np.nan
+        t5 = lag_means.get(lags_sorted[2], np.nan) if len(lags_sorted) > 2 else np.nan
+        trend_col[feat] = _trend_label(t1, t3, t5)
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, max(5, len(agg) * 0.75 + 3)),
+                             gridspec_kw={"width_ratios": [1.8, 2.2]})
     ax_bar, ax_tbl = axes
 
     # --- Bar chart ---
-    colours = ["#E05C4A" if v < 0 else "#4A90D9" if v < 1.0 else "#27AE60"
+    colours = ["#E05C4A" if v < 0 else "#4A90D9" if v < 0.8 else "#27AE60"
                for v in agg["mean_t"]]
-    bars = ax_bar.barh(range(len(agg)), agg["mean_t"], color=colours,
-                       edgecolor="white", height=0.65)
+    ax_bar.barh(range(len(agg)), agg["mean_t"], color=colours,
+                edgecolor="white", height=0.65)
 
     ax_bar.axvline(0,     color="#333", linewidth=1.0)
-    ax_bar.axvline(1.645, color="#F0AD4E", linewidth=1.0, linestyle="--", label="p<0.10")
-    ax_bar.axvline(1.960, color="#4A90D9", linewidth=1.0, linestyle="--", label="p<0.05")
-    ax_bar.axvline(2.576, color="#27AE60", linewidth=1.0, linestyle="--", label="p<0.01")
+    ax_bar.axvline(1.645, color="#F0AD4E", linewidth=1.2, linestyle="--",
+                   label="90% confident")
+    ax_bar.axvline(1.960, color="#4A90D9", linewidth=1.2, linestyle="--",
+                   label="95% confident")
+    ax_bar.axvline(2.576, color="#27AE60", linewidth=1.2, linestyle="--",
+                   label="99% confident")
     ax_bar.axvline(-1.645, color="#F0AD4E", linewidth=1.0, linestyle="--")
 
     ax_bar.set_yticks(range(len(agg)))
     ax_bar.set_yticklabels([FEATURE_LABELS.get(f, f) for f in agg["feature"]], fontsize=9)
-    ax_bar.set_xlabel("Mean Beneficial T-Statistic\n(sign-adjusted: positive = good outcome)",
-                      fontsize=9)
-    ax_bar.set_title("Policy Input Effectiveness\n(averaged across 16 outcomes × 3 lags)",
+    ax_bar.set_xlabel(
+        "Average strength score across all outcomes and time horizons\n"
+        "(positive = predicts better town outcomes, negative = predicts worse)",
+        fontsize=8.5
+    )
+    ax_bar.set_title("What works?\n(Weakest at top → Strongest at bottom)",
                      fontsize=10, fontweight="bold")
-    ax_bar.legend(fontsize=8, loc="lower right")
-    ax_bar.invert_yaxis()  # strongest at bottom as requested
+    ax_bar.legend(fontsize=8, loc="lower right", title="Confidence thresholds")
+    ax_bar.invert_yaxis()
 
-    # Value labels on bars
-    for i, (val, row_) in enumerate(zip(agg["mean_t"], agg.itertuples())):
-        ax_bar.text(val + (0.05 if val >= 0 else -0.05), i,
+    for i, val in enumerate(agg["mean_t"]):
+        ax_bar.text(val + (0.04 if val >= 0 else -0.04), i,
                     f"{val:+.2f}", va="center",
                     ha="left" if val >= 0 else "right", fontsize=8)
 
-    # --- Summary table ---
+    # --- Summary table (sorted strongest → weakest for reading top-to-bottom) ---
     tbl_data = []
-    for _, row_ in agg.sort_values("mean_t", ascending=False).iterrows():
-        stars = ("***" if row_["pct_sig05"] > 50 else
-                 "**"  if row_["pct_sig05"] > 25 else
-                 "*"   if row_["pct_sig10"] > 25 else "")
+    tbl_rows_sorted = agg.sort_values("mean_t", ascending=False)
+    for _, row_ in tbl_rows_sorted.iterrows():
+        conf = ("★★★ 99%" if row_["pct_sig05"] > 50 else
+                "★★  95%" if row_["pct_sig05"] > 25 else
+                "★   90%" if row_["pct_sig10"] > 25 else
+                "not significant")
         tbl_data.append([
             FEATURE_LABELS.get(row_["feature"], row_["feature"]),
-            f"{row_['mean_t']:+.2f}{stars}",
-            f"{row_['pct_sig05']:.0f}%",
-            f"{row_['pct_sig10']:.0f}%",
-            f"{int(row_['best_lag'])}yr",
-            str(int(row_["n_cells"])),
+            f"{row_['mean_t']:+.2f}",
+            conf,
+            f"{int(row_['best_lag'])} year{'s' if row_['best_lag'] != 1 else ''}",
+            trend_col.get(row_["feature"], "—"),
         ])
 
     ax_tbl.axis("off")
-    col_labels = ["Feature", "Mean T\n(adj.)", "Sig@5%", "Sig@10%", "Best\nLag", "N"]
+    col_labels = ["Policy Input", "Avg\nStrength", "Confidence", "Best\nTime Horizon", "Trend over time"]
     tbl = ax_tbl.table(cellText=tbl_data, colLabels=col_labels,
-                       loc="center", cellLoc="center")
+                       loc="center", cellLoc="left")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(8.5)
-    tbl.scale(1, 1.5)
+    tbl.scale(1, 1.55)
+    tbl.auto_set_column_width([0, 1, 2, 3, 4])
 
-    # Colour table rows by rank
-    n = len(tbl_data)
     for i, row_vals in enumerate(tbl_data):
-        mt = float(row_vals[1].replace("*","").replace("+",""))
-        colour = ("#d4efdf" if mt > 1.0 else
-                  "#fef9e7" if mt > 0   else
-                  "#fadbd8")
+        mt = float(row_vals[1])
+        bg = ("#d4efdf" if mt > 1.0 else "#fef9e7" if mt > 0 else "#fadbd8")
         for j in range(len(col_labels)):
-            tbl[(i+1, j)].set_facecolor(colour)
+            tbl[(i+1, j)].set_facecolor(bg)
+            tbl[(i+1, j)].set_text_props(ha="left")
 
-    ax_tbl.set_title("Ranked: most effective → least\n*** >50% sig@5%  ** >25%  * >25%@10%",
-                     fontsize=9, fontweight="bold", pad=12)
+    ax_tbl.set_title(
+        "Strongest effects at top  |  ★★★ = very strong evidence  ★★ = strong  ★ = moderate\n"
+        "Trend: does the effect get stronger (↑), weaker (↓), or peak in the middle (▲)?",
+        fontsize=8.5, fontweight="bold", pad=12
+    )
 
-    fig.suptitle("Which Policy Inputs Work?  —  Feature Effectiveness Summary",
-                 fontsize=12, fontweight="bold", y=1.01)
+    fig.suptitle("Which Policy Inputs Predict Better Town Outcomes?",
+                 fontsize=13, fontweight="bold", y=1.01)
     plt.tight_layout()
     return fig
 
@@ -936,10 +1134,19 @@ def main(lag: int | None = None):
     target_lags = [lag] if lag else LAGS
 
     all_results: dict[int, pd.DataFrame] = {}
+    collinear_pairs: list[tuple[str,str]] = []
+
     for l in target_lags:
         results = run_backtest(engine, lag=l)
         results["lag"] = l
         all_results[l] = results
+        # Compute collinearity once from the first panel
+        if not collinear_pairs:
+            panel_for_corr = load_panel(engine, lag=l)
+            collinear_pairs = compute_collinearity(panel_for_corr)
+            if collinear_pairs:
+                print(f"[backtest] Collinear feature pairs (|r|≥0.70): "
+                      + ", ".join(f"{a}↔{b}" for a, b in collinear_pairs))
 
     # Save combined CSV
     combined = pd.concat(all_results.values(), ignore_index=True)
@@ -959,9 +1166,11 @@ def main(lag: int | None = None):
     print("[backtest] Generating PDF...")
     with PdfPages(OUTPUT_PDF) as pdf:
         _save(pdf, make_multi_lag_cover() if len(target_lags) > 1 else make_cover(lag), "cover")
+        _save(pdf, make_plain_english_legend(), "legend")
 
         for l in target_lags:
-            _save(pdf, make_tstat_matrix(all_results[l], l), f"heatmap lag={l}")
+            _save(pdf, make_tstat_matrix(all_results[l], l, collinear_pairs),
+                  f"heatmap lag={l}")
 
         if len(target_lags) > 1:
             _save(pdf, make_decay_chart(all_results), "decay chart")
@@ -969,7 +1178,7 @@ def main(lag: int | None = None):
         for l in target_lags:
             fig2 = make_r2_table(all_results[l])
             if fig2:
-                fig2.suptitle(f"Model Fit Summary — Lag {l} Year{'s' if l != 1 else ''}",
+                fig2.suptitle(f"Model Summary — {l}-Year Lag",
                               fontsize=11, fontweight="bold")
             _save(pdf, fig2, f"r2 table lag={l}")
 
