@@ -612,8 +612,10 @@ def make_plain_english_legend() -> plt.Figure:
         ("What do the numbers mean?",
          "Each cell shows a number — a 'strength score' (statisticians call it a t-statistic).\n"
          "A bigger number means a stronger relationship between policy and outcome.\n"
-         "Green = the policy predicts better outcomes.\n"
-         "Red = the policy is associated with worse outcomes."),
+         "Green = the policy predicts BETTER outcomes (always, regardless of direction).\n"
+         "Red = the policy is associated with WORSE outcomes.\n"
+         "The colours are already adjusted: for outcomes where lower is better\n"
+         "(like dropout rate or crime), the score is flipped so green still means good."),
 
         ("What do the stars mean?",
          "★★★  99% confident — almost certainly a real effect, not random chance\n"
@@ -666,12 +668,19 @@ def make_tstat_matrix(results: pd.DataFrame, lag: int,
     n_feat = len(features)
     n_out  = len(outcomes)
 
+    # Sign multiplier: flip t-stat for outcomes where LOWER is better,
+    # so green always means "this policy input moves things in a good direction"
+    sign_map = {out_label: (1 if hib else -1)
+                for _, out_label, _, hib in OUTCOMES}
+
     # Matrix: rows = policy inputs (features), columns = outcomes
     mat = np.full((n_feat, n_out), np.nan)
     for j, (out_label, _) in enumerate(outcomes):
         row = results[results["outcome_label"] == out_label].iloc[0]
+        sign = sign_map.get(out_label, 1)
         for i, feat in enumerate(features):
-            mat[i, j] = row.get(f"{feat}_tstat", np.nan)
+            raw = row.get(f"{feat}_tstat", np.nan)
+            mat[i, j] = sign * raw if not np.isnan(raw) else np.nan
 
     # Wide figure: outcomes across the top, features down the side
     fig, ax = plt.subplots(figsize=(max(14, n_out * 1.1 + 3), max(6, n_feat * 0.75 + 3)))
@@ -736,7 +745,7 @@ def make_tstat_matrix(results: pd.DataFrame, lag: int,
               title="Outcome category colours", title_fontsize=8, framealpha=0.9)
 
     plt.colorbar(im, ax=ax, orientation="vertical", pad=0.02, shrink=0.8,
-                 label="Strength score  (positive/green = better outcomes, negative/red = worse)")
+                 label="Green = policy predicts GOOD outcomes  |  Red = policy predicts BAD outcomes  |  Brighter = stronger effect")
 
     # Collinearity footnote
     if collinear_pairs:
