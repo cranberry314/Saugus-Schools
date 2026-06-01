@@ -23,7 +23,7 @@ import matplotlib.ticker as mticker
 from matplotlib.backends.backend_pdf import PdfPages
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports")
-OUTPUT_PDF = os.path.join(OUTPUT_DIR, "municipal_finance_report.pdf")
+OUTPUT_PDF = os.path.join(OUTPUT_DIR, "saugus_municipal_finance.pdf")
 
 # ── Color palette ─────────────────────────────────────────────────────────────
 NAVY          = "#1B2A4A"   # slide backgrounds, dark elements
@@ -3189,7 +3189,7 @@ def run():
     outcomes = load_school_outcomes(engine, peer_names=consensus_names)
 
     import shutil, tempfile
-    tmp_pdf = os.path.join(tempfile.gettempdir(), "municipal_finance_report.pdf")
+    tmp_pdf = os.path.join(tempfile.gettempdir(), "saugus_municipal_finance.pdf")
     print("[municipal_finance] Writing PDF...")
     with PdfPages(tmp_pdf) as _raw_pdf:
         pdf = _PageNumberedPdf(_raw_pdf, total=17, skip_first=True)

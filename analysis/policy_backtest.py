@@ -10,14 +10,14 @@ Two panels:
 
 Method: Two-way fixed effects OLS (town FE + year FE), clustered SEs at town level.
 
-Output: Reports/backtest_report.pdf
-        Reports/backtest_results.csv
+Output: Reports/policy_backtest_panel_regression.pdf
+        Reports/policy_backtest_raw_results.csv
 
 Run:
-    python analysis/backtest.py
-    python analysis/backtest.py --lag 3        # default lag in years
-    python analysis/backtest.py --lag 1
-    python analysis/backtest.py --lag 5
+    python analysis/policy_backtest.py
+    python analysis/policy_backtest.py --lag 3        # default lag in years
+    python analysis/policy_backtest.py --lag 1
+    python analysis/policy_backtest.py --lag 5
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -37,8 +37,8 @@ from config import get_engine
 
 warnings.filterwarnings("ignore")
 
-OUTPUT_PDF = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports", "backtest_report.pdf")
-OUTPUT_CSV = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports", "backtest_results.csv")
+OUTPUT_PDF = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports", "policy_backtest_panel_regression.pdf")
+OUTPUT_CSV = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports", "policy_backtest_raw_results.csv")
 
 # ---------------------------------------------------------------------------
 # 16 outcome definitions
@@ -64,17 +64,18 @@ OUTCOMES = [
 ]
 
 # Feature labels for display
+# All features are year-over-year changes to ask "did INCREASING X predict better outcomes?"
+# rather than "do high-X towns do better?" — the latter conflates cause and effect
+# (e.g. struggling districts reactively hire more teachers, creating spurious negative correlation).
 FEATURE_LABELS = {
-    "log_pp_exp":        "Log Per-Pupil Spending",
-    "teachers_per1k":    "Teachers / 1k Students",
-    "ch70_per_pupil":    "Ch70 Aid / Pupil ($k)",
-    "ed_pct_budget":     "Ed % of Muni Budget",
-    "log_muni_rev_pc":   "Log Muni Revenue / Capita",
-    "public_works_pc":   "Public Works / Capita",
-    "debt_pct_budget":   "Debt Service % of Budget",
-    "public_safety_pc":  "Public Safety / Capita",
-    "crime_rate_feat":   "Crime Rate / 100k (t-lag)",
-    "crash_rate_feat":   "Crash Rate / 1k pop (t-lag)",
+    "delta_pp_exp":          "Per-Pupil Spending Growth %",
+    "delta_teachers_per1k":  "Teacher Staffing Change %",
+    "delta_ch70_per_pupil":  "Ch70 Aid Growth % / Pupil",
+    "delta_ed_pct_budget":   "Ed Budget Share Chg (pp)",
+    "delta_muni_rev_pc":     "Muni Revenue/Capita Growth %",
+    "delta_public_works_pc": "Public Works Growth %",
+    "delta_debt_pct_budget": "Debt Service Share Chg (pp)",
+    "delta_public_safety_pc":"Public Safety Growth %",
 }
 
 
@@ -334,6 +335,57 @@ def load_panel(engine, lag: int) -> pd.DataFrame:
     feat = feat.merge(rev_m[["town","year","log_muni_rev_pc"]], on=["town","year"], how="left")
 
     # -----------------------------------------------------------------------
+    # Year-over-year CHANGE features
+    # Asking "did INCREASING X predict better outcomes?" avoids reverse causality:
+    # struggling towns reactively spend more (reactive hiring, aid inflow), which
+    # creates a spurious negative correlation between LEVELS and outcomes.
+    # pct_change() for dollar/ratio features; diff() for features already in %.
+    # -----------------------------------------------------------------------
+    # % change in real per-pupil spending
+    pp_delta = pp[["town","year","pp_exp"]].sort_values(["town","year"]).copy()
+    pp_delta["delta_pp_exp"] = pp_delta.groupby("town")["pp_exp"].pct_change() * 100
+    feat = feat.merge(pp_delta[["town","year","delta_pp_exp"]], on=["town","year"], how="left")
+
+    # % change in teachers per 1k students
+    tp_delta = feat[["town","year","teachers_per1k"]].sort_values(["town","year"]).copy()
+    tp_delta["delta_teachers_per1k"] = tp_delta.groupby("town")["teachers_per1k"].pct_change() * 100
+    feat = feat.merge(tp_delta[["town","year","delta_teachers_per1k"]], on=["town","year"], how="left")
+
+    # % change in Ch70 per pupil (real)
+    ch70_delta = ch70_m[["town","year","ch70_per_pupil"]].sort_values(["town","year"]).copy()
+    ch70_delta["delta_ch70_per_pupil"] = ch70_delta.groupby("town")["ch70_per_pupil"].pct_change() * 100
+    feat = feat.merge(ch70_delta[["town","year","delta_ch70_per_pupil"]], on=["town","year"], how="left")
+
+    # Budget share changes (already %, so use pp diff not pct_change)
+    exp_delta = exp_df[["town","year","ed_pct_budget","debt_pct_budget",
+                         "public_works_pc","public_safety_pc"]].sort_values(["town","year"]).copy()
+    exp_delta["delta_ed_pct_budget"]    = exp_delta.groupby("town")["ed_pct_budget"].diff()
+    exp_delta["delta_debt_pct_budget"]  = exp_delta.groupby("town")["debt_pct_budget"].diff()
+    exp_delta["delta_public_works_pc"]  = exp_delta.groupby("town")["public_works_pc"].pct_change() * 100
+    exp_delta["delta_public_safety_pc"] = exp_delta.groupby("town")["public_safety_pc"].pct_change() * 100
+    feat = feat.merge(
+        exp_delta[["town","year","delta_ed_pct_budget","delta_debt_pct_budget",
+                   "delta_public_works_pc","delta_public_safety_pc"]],
+        on=["town","year"], how="left"
+    )
+
+    # % change in real municipal revenue per capita
+    rev_delta = rev_m[["town","year","muni_rev_pc"]].sort_values(["town","year"]).copy()
+    rev_delta["delta_muni_rev_pc"] = rev_delta.groupby("town")["muni_rev_pc"].pct_change() * 100
+    feat = feat.merge(rev_delta[["town","year","delta_muni_rev_pc"]], on=["town","year"], how="left")
+
+    # Winsorise extreme % changes at ±50 pct to dampen one-time budget shocks
+    pct_cols = ["delta_pp_exp","delta_teachers_per1k","delta_ch70_per_pupil",
+                "delta_muni_rev_pc","delta_public_works_pc","delta_public_safety_pc"]
+    for c in pct_cols:
+        if c in feat.columns:
+            feat[c] = feat[c].clip(-50, 50)
+    pp_cols = ["delta_ed_pct_budget","delta_debt_pct_budget"]
+    for c in pp_cols:
+        if c in feat.columns:
+            feat[c] = feat[c].clip(-15, 15)
+
+    # -----------------------------------------------------------------------
     # Construct outcome panel
     # -----------------------------------------------------------------------
     # Start from feature town×year grid, then build outcomes at year+lag
@@ -457,6 +509,19 @@ def run_regression(panel: pd.DataFrame, outcome: str, features: list[str]) -> di
         return {"n_obs": len(sub), "n_towns": sub["town"].nunique() if len(sub) else 0}
 
     sub = sub.set_index(["town","year"])
+
+    # Guard against degenerate outcomes: if entity+time FEs explain >95% of
+    # the outcome's variance, the within residual is essentially floating-point
+    # noise and the regression produces arbitrary inflated t-stats.
+    y_raw = sub[outcome]
+    em = y_raw.groupby(level="town").transform("mean")
+    tm = y_raw.groupby(level="year").transform("mean")
+    within_std = (y_raw - em - tm + y_raw.mean()).std()
+    raw_std    = y_raw.std()
+    if raw_std > 0 and within_std / raw_std < 0.05:
+        return {"n_obs": len(sub), "n_towns": sub.index.get_level_values("town").nunique(),
+                "error": f"degenerate (within/raw={within_std/raw_std:.4f})"}
+
     y = sub[outcome]
     X = sm_add_constant(sub[use_features])
 
@@ -500,49 +565,66 @@ def run_backtest(engine, lag: int = 3) -> pd.DataFrame:
     print(f"[backtest] Panel: {len(panel):,} rows, {panel['town'].nunique()} towns, "
           f"years {panel['year'].min()}–{panel['year'].max()}")
 
-    # All policy input features — ordered from widest to narrowest coverage so the
-    # greedy selector below can add them one at a time without collapsing the sample.
+    # Year-over-year CHANGE features — ordered widest to narrowest coverage so the
+    # greedy selector can add them one at a time without collapsing the sample.
+    # Using changes rather than levels avoids reverse-causality bias
+    # (e.g. struggling districts reactively hire teachers, making level-based
+    # teacher density appear harmful when it is actually a symptom, not a cause).
     all_features = [
-        "log_pp_exp", "teachers_per1k", "ch70_per_pupil",      # DESE — ~335 districts
-        "ed_pct_budget", "log_muni_rev_pc",                    # Schedule A — fiscal
-        "public_works_pc", "debt_pct_budget", "public_safety_pc",  # Schedule A — civic
+        "delta_pp_exp", "delta_teachers_per1k", "delta_ch70_per_pupil",    # DESE
+        "delta_ed_pct_budget", "delta_muni_rev_pc",                        # Schedule A
+        "delta_public_works_pc", "delta_debt_pct_budget", "delta_public_safety_pc",
     ]
-    MIN_TOWNS = 30  # never run a regression with fewer unique towns than this
+    MIN_TOWNS = 50  # prevents Schedule A features (only ~61 muni coverage) from
+    # collapsing DESE-outcome samples to ~31 towns via inner join.
+    # Effect: education outcomes use the 3 DESE delta features (~242 towns);
+    # safety/community use the same 3 features (~215–308 towns).
+    # real_rev_growth (Schedule A outcome) has no qualifying features at this
+    # threshold and is skipped — acceptable given its narrow geographic coverage.
 
+    # Bivariate regression: one feature at a time per outcome.
+    # Avoids multicollinearity between correlated inputs (e.g. delta_pp_exp ↔
+    # delta_teachers_per1k r≈0.40), which in a joint model inflates t-stats and
+    # causes sign reversals across lags.  Each cell in the heatmap represents an
+    # independent bivariate panel regression: outcome ~ feature + town FE + year FE.
     results = []
     for out_key, out_label, category, higher_is_better in OUTCOMES:
         if out_key not in panel.columns:
             print(f"  SKIP {out_key} — not in panel")
             continue
 
-        # Greedy feature selection: add features in order, keeping only those
-        # that maintain at least MIN_TOWNS unique towns in the joint sample.
-        features = []
+        combined = {
+            "outcome_key":   out_key,
+            "outcome_label": out_label,
+            "category":      category,
+            "n_obs":   0,
+            "n_towns": 0,
+        }
+        r2_vals = []
+
+        print(f"  {out_label}", end="", flush=True)
         for f in all_features:
             if f not in panel.columns:
                 continue
-            trial = panel[["town", "year", out_key] + features + [f]].dropna()
-            if trial["town"].nunique() >= MIN_TOWNS:
-                features.append(f)
-        if not features:
-            # fallback: use any feature that has ≥ MIN_TOWNS pairwise with outcome
-            features = [f for f in all_features if f in panel.columns and
-                        panel[["town", out_key, f]].dropna()["town"].nunique() >= MIN_TOWNS]
+            trial = panel[["town", "year", out_key, f]].dropna()
+            if trial["town"].nunique() < MIN_TOWNS:
+                continue
+            r = run_regression(panel, out_key, [f])
+            for k in (f"{f}_tstat", f"{f}_coef", f"{f}_pval"):
+                if k in r:
+                    combined[k] = r[k]
+            if "r2_within" in r:
+                r2_vals.append(r["r2_within"])
+            combined["n_obs"]   = max(combined["n_obs"],   r.get("n_obs",   0))
+            combined["n_towns"] = max(combined["n_towns"], r.get("n_towns", 0))
 
-        print(f"  {out_label}...", end="", flush=True)
-        r = run_regression(panel, out_key, features)
-        r["outcome_key"]   = out_key
-        r["outcome_label"] = out_label
-        r["category"]      = category
-        results.append(r)
+        combined["r2_within"] = float(np.mean(r2_vals)) if r2_vals else np.nan
+        results.append(combined)
 
-        n = r.get("n_obs", 0)
-        t = r.get("n_towns", 0)
-        if "r2_within" in r:
-            print(f" n={n:,} towns={t} R²={r.get('r2_within', np.nan):.3f}")
-        else:
-            err = r.get("error", "no data")
-            print(f" n={n} towns={t} ERR: {err[:80]}")
+        n = combined["n_obs"]
+        t = combined["n_towns"]
+        r2 = combined.get("r2_within", np.nan)
+        print(f"... towns={t:,} R²={r2:.3f}" if not np.isnan(r2) else f"... no data")
 
     return pd.DataFrame(results)
 
@@ -590,9 +672,21 @@ def make_plain_english_legend() -> plt.Figure:
 
     sections = [
         ("What are we testing?",
-         "Each chart asks: when a town changed its spending or policies,\n"
-         "did its outcomes improve a few years later?\n"
-         "We look 1 year, 3 years, and 5 years into the future."),
+         "Each cell asks one precise question: when a town INCREASED its spending or investment\n"
+         "in ONE specific area, did that particular outcome improve a few years later?\n"
+         "\n"
+         "Two methodological choices make the results more trustworthy:\n"
+         "\n"
+         "  1) Year-over-year GROWTH RATES, not absolute levels.\n"
+         "     Struggling towns often spend more (extra teachers, extra aid) as a reaction\n"
+         "     to poor outcomes — so 'high spending towns' appear to have worse outcomes\n"
+         "     even though spending may help. Using % changes asks 'did growing this input\n"
+         "     help?' — a more policy-relevant and causally cleaner question.\n"
+         "\n"
+         "  2) One feature at a time (bivariate regressions).\n"
+         "     When multiple inputs are tested together, correlated inputs (e.g. per-pupil\n"
+         "     spending and teacher staffing move together) can produce inflated or even\n"
+         "     wrong-signed results. Each cell here comes from its OWN regression."),
 
         ("What do the numbers mean?",
          "Each cell shows a strength score — how strongly a policy predicts a good outcome.\n"
@@ -882,15 +976,16 @@ def make_cover(lag: int) -> plt.Figure:
     ax.text(0.5, 0.60, "16-Outcome Panel Regression Analysis",
             ha="center", va="center", fontsize=16, color="#555", transform=ax.transAxes)
     ax.text(0.5, 0.48, f"Lag = {lag} year{'s' if lag != 1 else ''}  |  "
-            "Two-Way Fixed Effects (Town + Year FE)\n"
+            "Two-Way Fixed Effects (Town + Year FE)  |  Bivariate (one feature at a time)\n"
             "Clustered Standard Errors at Town Level",
             ha="center", va="center", fontsize=12, color="#777",
             transform=ax.transAxes, linespacing=1.8)
     lines = [
-        "Features:  Per-pupil spending  ·  Teacher staffing  ·  Chapter 70 aid",
-        "           Education % of budget  ·  Municipal revenue per capita",
-        "           Public works per capita  ·  Debt service % of budget",
-        "           Public safety per capita  ·  Lagged crime rate  ·  Lagged crash rate",
+        "Features:  Year-over-year % change in each policy input",
+        "           Per-pupil spending growth  ·  Teacher staffing change",
+        "           Chapter 70 aid growth  ·  Ed budget share change",
+        "           Muni revenue/capita growth  ·  Public works growth",
+        "           Debt service share change  ·  Public safety growth",
         "",
         "Outcomes:  6 Education  ·  4 Safety  ·  3 Community  ·  2 Market  ·  1 Fiscal",
     ]
@@ -1206,21 +1301,23 @@ def make_multi_lag_cover() -> plt.Figure:
             fontsize=30, fontweight="bold", transform=ax.transAxes)
     ax.text(0.5, 0.60, "16 Outcomes  ×  3 Lags  ×  10 Features",
             ha="center", va="center", fontsize=16, color="#555", transform=ax.transAxes)
-    ax.text(0.5, 0.50, "Two-Way Fixed Effects (Town + Year FE)\n"
+    ax.text(0.5, 0.50, "Two-Way Fixed Effects (Town + Year FE)  |  Bivariate Regressions\n"
             "Clustered Standard Errors at Town Level",
             ha="center", va="center", fontsize=12, color="#777",
             transform=ax.transAxes, linespacing=1.8)
     lines = [
         "Lags tested:  1 year (fast)  ·  3 years (medium)  ·  5 years (structural)",
         "",
-        "Features:  Per-pupil spending  ·  Teacher staffing  ·  Chapter 70 aid",
-        "           Ed % of budget  ·  Muni revenue/capita  ·  Public works/capita",
-        "           Debt service %  ·  Public safety/capita  ·  Crime rate  ·  Crash rate",
+        "Features:  Year-over-year % change in each policy input",
+        "           Per-pupil spending growth  ·  Teacher staffing change",
+        "           Ch70 aid growth  ·  Ed budget share change (pp)",
+        "           Muni revenue/capita growth  ·  Public works growth",
+        "           Debt service share change (pp)  ·  Public safety growth",
         "",
         "Outcomes:  6 Education  ·  4 Safety  ·  3 Community  ·  2 Market  ·  1 Fiscal",
         "",
-        "Signal decay chart shows how t-statistics evolve across lags —",
-        "peak lag reveals whether an effect is operational or structural.",
+        "Using growth rates (not levels) to ask: did INCREASING a policy",
+        "predict better outcomes — avoiding reverse-causality bias.",
     ]
     ax.text(0.5, 0.28, "\n".join(lines), ha="center", va="center",
             fontsize=9.5, color="#444", transform=ax.transAxes,

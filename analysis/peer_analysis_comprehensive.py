@@ -10,10 +10,10 @@ Uses all Tier 1-3 variables from db/queries.py:
   Bonus:  ela_me_pct, math_me_pct
 
 Outputs:
-  Reports/saugus_peers_comprehensive.xlsx  — Excel workbook (multi-sheet)
-  Reports/saugus_peers_comprehensive.pdf   — PDF report with plain-language explanations
+  Reports/saugus_peer_analysis_comprehensive.xlsx  — Excel workbook (multi-sheet)
+  Reports/saugus_peer_analysis_comprehensive.pdf   — PDF report with plain-language explanations
 
-Run: python analysis/peers_comprehensive.py [--district 02620000] [--top 20]
+Run: python analysis/peer_analysis_comprehensive.py [--district 02620000] [--top 20]
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -40,8 +40,8 @@ DEFAULT_DISTRICT = "02620000"   # Saugus
 YEARS_TO_TRY     = [2024]
 TOP_N            = 20
 OUTPUT_DIR       = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports")
-XLSX_PATH        = os.path.join(OUTPUT_DIR, "saugus_peers_comprehensive.xlsx")
-PDF_PATH         = os.path.join(OUTPUT_DIR, "saugus_peers_comprehensive.pdf")
+XLSX_PATH        = os.path.join(OUTPUT_DIR, "saugus_peer_analysis_comprehensive.xlsx")
+PDF_PATH         = os.path.join(OUTPUT_DIR, "saugus_peer_analysis_comprehensive.pdf")
 
 # Features used for Mahalanobis: all tiers (Tier 1 + Tier 2 + Tier 3 + outcomes)
 MAHAL_COLS = ALL_FEATURE_COLS

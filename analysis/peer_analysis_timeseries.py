@@ -6,14 +6,14 @@ For each available school year:
   2. Computes 7 leave-one-out distances (drop each feature in turn) to test
      how sensitive the peer rankings are to any single variable
 
-Output: Reports/saugus_peers_timeseries.xlsx
+Output: Reports/saugus_peer_analysis_timeseries.xlsx
   Sheet "Summary"       — top-5 peers per year + Saugus feature values
   Sheet "Peers_YYYY"    — full ranked list for each year (top 30)
   Sheet "Sensitivity"   — for each year × dropped feature:
                             overlap of top-10 vs full top-10
                             Spearman rank correlation
 
-Run: python analysis/peers_timeseries.py [--district 02620000] [--top 30]
+Run: python analysis/peer_analysis_timeseries.py [--district 02620000] [--top 30]
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -25,14 +25,14 @@ import pandas as pd
 from scipy.stats import spearmanr
 from sqlalchemy import text
 from config import get_engine
-from analysis.peers import fetch_feature_matrix, FEATURE_COLS
+from analysis.peer_finder_basic import fetch_feature_matrix, FEATURE_COLS
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DEFAULT_DISTRICT = "02620000"   # Saugus
 YEARS_TO_TRY     = list(range(2017, 2026))   # MCAS available from ~2017
 TOP_N            = 30
 OUTPUT_DIR       = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports")
-OUTPUT_FILE      = os.path.join(OUTPUT_DIR, "saugus_peers_timeseries.xlsx")
+OUTPUT_FILE      = os.path.join(OUTPUT_DIR, "saugus_peer_analysis_timeseries.xlsx")
 
 FEATURE_LABELS = {
     "total_enrollment": "Total Enrollment",

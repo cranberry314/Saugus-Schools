@@ -27,7 +27,7 @@ Each test returns a list of finding dicts:
   { table, test, year/district, value, expected, severity, note }
   severity: INFO | WARNING | FAIL
 
-Output: Reports/data_integrity_report.pdf + console summary
+Output: Reports/data_integrity_checks.pdf + console summary
 
 Run: python analysis/data_integrity.py
 """
@@ -47,7 +47,7 @@ import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Reports")
-OUTPUT_PDF = os.path.join(OUTPUT_DIR, "data_integrity_report.pdf")
+OUTPUT_PDF = os.path.join(OUTPUT_DIR, "data_integrity_checks.pdf")
 
 NAVY  = "#1F3864"
 STEEL = "#2F5496"

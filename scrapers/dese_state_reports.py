@@ -46,7 +46,7 @@ REPORTS = {
         "url": "https://profiles.doe.mass.edu/statereport/gradsattendingcollege.aspx",
         "year_select": "ctl00$ContentPlaceHolder1$ddYear",
         "type_select": "ctl00$ContentPlaceHolder1$ddReportType",
-        "type_value": "DISTRICT",
+        "type_value": "District",
         "submit": "ctl00$ContentPlaceHolder1$btnViewReport",
         "table": "district_postsecondary",
         "source_name": "dese_postsecondary",
@@ -150,20 +150,66 @@ def _get_page(session: requests.Session, url: str) -> tuple[BeautifulSoup, dict]
     return soup, hidden
 
 def _fetch_table(session: requests.Session, cfg: dict, year: str) -> list[list[str]]:
-    """POST the form for a given year and return rows as list-of-lists."""
-    url = cfg["url"]
-    soup0, hidden = _get_page(session, url)
+    """POST the form for a given year and return rows as list-of-lists.
 
-    post_data = {
-        **hidden,
-        cfg["year_select"]:  year,
-        cfg["type_select"]:  cfg["type_value"],
-        "__EVENTTARGET":     "",
-        "__EVENTARGUMENT":   "",
-        cfg["submit"]:       "View Report",
-        **cfg.get("extra_fields", {}),
-    }
-    r = session.post(url, data=post_data, timeout=60)
+    Finds the report form on the page (not the site-search form), collects all
+    field defaults, then POSTs with the requested year.  This handles pages with
+    multiple forms and extra hidden dropdowns that earlier versions missed.
+    """
+    url = cfg["url"]
+
+    # GET the page
+    r0 = session.get(url, timeout=30)
+    r0.raise_for_status()
+    soup0 = BeautifulSoup(r0.text, "html.parser")
+
+    # Find the report form: the one whose action points back to this page
+    # (not the site-search form whose action goes elsewhere)
+    report_form = None
+    for form in soup0.find_all("form"):
+        action = form.get("action", "")
+        if action and "search_link" not in action and "/search/" not in action:
+            report_form = form
+            break
+    if report_form is None:
+        # Fall back: use all hidden fields from page
+        report_form = soup0
+
+    # Collect all current field values from the report form
+    fields: dict[str, str] = {}
+    for inp in report_form.find_all("input"):
+        name = inp.get("name")
+        if name:
+            fields[name] = inp.get("value", "")
+    for sel in report_form.find_all("select"):
+        name = sel.get("name")
+        if name:
+            selected_opt = sel.find("option", selected=True)
+            fields[name] = selected_opt.get("value", "") if selected_opt else ""
+
+    # Resolve config keys: ASP.NET names may be full ("ctl00$...$ddYear") or
+    # short ("ddYear") — match whichever is actually in the form.
+    def _resolve(key: str) -> str:
+        if key in fields:
+            return key
+        short = key.split("$")[-1]
+        return short if short in fields else key
+
+    fields["__EVENTTARGET"]   = ""
+    fields["__EVENTARGUMENT"] = ""
+    fields[_resolve(cfg["year_select"])] = year
+    if cfg.get("type_select") and cfg.get("type_value"):
+        fields[_resolve(cfg["type_select"])] = cfg["type_value"]
+    for k, v in cfg.get("extra_fields", {}).items():
+        fields[_resolve(k)] = v
+    # Include submit button only if it has a name attribute (some pages use
+    # <button name=""> with no name, in which case the server ignores it)
+    submit_short = cfg["submit"].split("$")[-1]
+    submit_el = report_form.find(attrs={"id": submit_short})
+    if submit_el and submit_el.get("name"):
+        fields[submit_el["name"]] = "View Report"
+
+    r = session.post(url, data=fields, timeout=60)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     tbl = soup.find("table")
