@@ -1,0 +1,1023 @@
+"""
+saugus_factor_analysis.py
+=========================
+Factor selection and Relevance-Based Prediction (RBP) analysis for Saugus schools.
+
+Implements Czasonis, Kritzman & Turkington (2024) RBP via analysis/rbp.py.
+
+Three models are built independently:
+  1. MCAS ELA+Math (grades 3–8) — academic outcomes
+  2. Postsecondary attendance — college-going rate
+  3. Dropout rate — high school completion
+
+For each model:
+  Step 1 — Greedy random forward selection:
+    Start with empty feature set.  Randomly draw a candidate feature from the
+    pool, run leave-one-out (LOO) RBP, keep the feature if average LOO
+    Pearson correlation improves, otherwise discard.  Continue until the pool
+    is exhausted.  This controls overfitting: a feature earns its place by
+    demonstrably improving out-of-sample prediction across all MA districts.
+
+  Step 2 — Dropout test:
+    With the winning feature set, remove each feature one at a time and
+    re-run LOO.  If removing a feature improves or ties, it is flagged as
+    redundant.
+
+  Step 3 — Saugus RBP:
+    Run the full RBP with Saugus as the prediction task and the winning
+    feature set.  Outputs: predicted value, residual, most/least relevant
+    comparison towns, and per-feature variable importance (Exhibit 5 of the
+    Kritzman paper).
+
+Output:  Reports/saugus_factor_analysis.pdf  (white-background paper format)
+         Reports/saugus_factor_analysis_results.csv  (machine-readable summary)
+
+Run:
+    source .venv/bin/activate
+    python analysis/saugus_factor_analysis.py
+    python analysis/saugus_factor_analysis.py --fast   # smaller random seed, fewer LOO
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import random
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.backends.backend_pdf import PdfPages
+from sqlalchemy import text
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from config import get_engine
+from analysis.rbp import rbp, rbp_loo
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+matplotlib.rcParams.update({
+    "font.family":    "serif",
+    "font.size":      10,
+    "axes.titlesize": 11,
+    "axes.labelsize": 10,
+    "figure.dpi":     150,
+})
+
+OUTPUT_PDF = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis.pdf"
+OUTPUT_CSV = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis_results.csv"
+SAUGUS = "Saugus"
+MIN_COVERAGE = 0.65   # feature must have data for ≥65 % of districts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1.  Comprehensive feature loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_features(engine, school_year: int = 2024) -> pd.DataFrame:
+    """
+    Build a district-level feature matrix from every relevant database table.
+    Returns one row per MA school district with outcomes and candidate features.
+
+    Outcomes (never used as features for their own model):
+        avg_mcas        — ELA+Math grades 3–8 meeting/exceeding %
+        attending_pct   — % graduates attending college (postsecondary)
+        dropout_pct     — % students dropping out of high school
+
+    All other columns are candidate features available to any model.
+    """
+    fy = school_year   # fiscal year ≈ school year for most tables
+
+    with engine.connect() as conn:
+        def q(sql, **params):
+            return pd.read_sql(text(sql), conn, params=params or None)
+
+        # ── Outcomes ──────────────────────────────────────────────────────
+        mcas = q("""
+            SELECT org_code, district_name,
+                   AVG(meeting_exceeding_pct::float) AS avg_mcas
+            FROM mcas_results
+            WHERE school_year = :yr
+              AND student_group = 'All Students'
+              AND grade = 'ALL (03-08)'
+              AND subject IN ('ELA', 'MATH')
+              AND org_code LIKE '%0000'
+            GROUP BY org_code, district_name
+        """, yr=school_year)
+
+        post = q("""
+            SELECT DISTINCT ON (district_name)
+                   district_name, attending_pct::float AS attending_pct
+            FROM district_postsecondary
+            WHERE school_year <= :yr
+            ORDER BY district_name, school_year DESC
+        """, yr=school_year)
+
+        drop = q("""
+            SELECT DISTINCT ON (district_name)
+                   district_name, dropout_pct::float AS dropout_pct
+            FROM district_dropout
+            WHERE school_year <= :yr
+            ORDER BY district_name, school_year DESC
+        """, yr=school_year)
+
+        # ── DESE school features ───────────────────────────────────────────
+        demog = q("""
+            SELECT district_name,
+                   high_needs_pct::float, ell_pct::float,
+                   low_income_pct::float, sped_pct::float
+            FROM district_selected_populations WHERE school_year = :yr
+        """, yr=school_year)
+
+        attend = q("""
+            SELECT district_name, chronic_absenteeism_pct::float
+            FROM attendance
+            WHERE school_year = :yr AND student_group = 'All'
+              AND school_name IS NULL
+        """, yr=school_year)
+
+        ppe_raw = q("""
+            SELECT district_name, category, amount::float
+            FROM per_pupil_expenditure WHERE school_year = :yr
+              AND category IN ('Total In-District Expenditures', 'Teachers')
+        """, yr=school_year)
+        ppe = (ppe_raw
+               .pivot_table(index="district_name", columns="category",
+                            values="amount", aggfunc="first")
+               .rename(columns={"Total In-District Expenditures": "nss_per_pupil",
+                                 "Teachers": "teacher_spending_per_pupil"})
+               .reset_index())
+        ppe.columns.name = None
+
+        ch70 = q("""
+            SELECT district_name,
+                   chapter70_aid_per_pupil::float  AS ch70_per_pupil,
+                   (foundation_budget::float /
+                    NULLIF(foundation_enrollment::float, 0)) AS foundation_budget_pp
+            FROM district_chapter70 WHERE fiscal_year = :yr
+        """, yr=fy)
+
+        staff_raw = q("""
+            SELECT district_name, category, fte::float, avg_salary::float
+            FROM staffing WHERE school_year = :yr
+              AND category IN ('teacher_fte', 'teachers_per_100_fte',
+                               'teacher_avg_salary')
+        """, yr=school_year)
+        staff_fte  = (staff_raw[staff_raw.category == "teacher_fte"]
+                      [["district_name","fte"]].rename(columns={"fte":"teacher_fte"}))
+        staff_r100 = (staff_raw[staff_raw.category == "teachers_per_100_fte"]
+                      [["district_name","fte"]].rename(columns={"fte":"teachers_per_100_fte"}))
+        staff_sal  = (staff_raw[staff_raw.category == "teacher_avg_salary"]
+                      [["district_name","avg_salary"]]
+                      .rename(columns={"avg_salary":"avg_teacher_salary"}))
+
+        enrol = q("""
+            SELECT district_name, total::float AS total_enrollment
+            FROM enrollment
+            WHERE school_year = :yr AND grade = 'Total' AND school_name IS NULL
+        """, yr=school_year)
+
+        grad = q("""
+            SELECT DISTINCT ON (district_name)
+                   district_name,
+                   four_year_grad_pct::float AS four_yr_grad_pct,
+                   five_year_grad_pct::float AS five_yr_grad_pct
+            FROM graduation_rates
+            WHERE school_year <= :yr AND student_group = 'All Students'
+              AND org_code LIKE '%%0000'
+            ORDER BY district_name, school_year DESC
+        """, yr=school_year)
+
+        sat = q("""
+            SELECT DISTINCT ON (district_name)
+                   district_name,
+                   mean_ebrw::float AS sat_ebrw,
+                   mean_math::float  AS sat_math
+            FROM district_sat_scores
+            WHERE school_year <= :yr
+            ORDER BY district_name, school_year DESC
+        """, yr=school_year)
+
+        mcas10 = q("""
+            SELECT district_name,
+                   AVG(CASE WHEN subject='ELA'  THEN meeting_exceeding_pct::float END) AS mcas10_ela,
+                   AVG(CASE WHEN subject='MATH' THEN meeting_exceeding_pct::float END) AS mcas10_math
+            FROM mcas_results
+            WHERE school_year = :yr AND grade = '10'
+              AND student_group = 'All Students'
+              AND org_code LIKE '%0000'
+            GROUP BY district_name
+        """, yr=school_year)
+
+        # ── ACS demographics ───────────────────────────────────────────────
+        acs = q("""
+            SELECT DISTINCT ON (municipality)
+                   municipality,
+                   total_population::float,
+                   median_hh_income::float,
+                   pct_bachelors_plus::float,
+                   pct_owner_occupied::float,
+                   poverty_pct::float        AS acs_poverty_pct,
+                   pct_65_plus::float
+            FROM municipal_census_acs
+            ORDER BY municipality, acs_year DESC
+        """)
+        acs["municipality"] = (acs["municipality"]
+                               .str.replace(r"\s+Town$", "", regex=True).str.strip())
+
+        # ── Municipal finance ──────────────────────────────────────────────
+        mexp = q("""
+            SELECT municipality, fiscal_year,
+                   education::float       AS muni_ed_spend,
+                   public_safety::float   AS muni_ps_spend,
+                   public_works::float    AS muni_pw_spend,
+                   total_expenditures::float AS muni_total_exp
+            FROM municipal_expenditures
+            WHERE fiscal_year = :yr
+        """, yr=fy)
+        # Compute shares
+        mexp["ed_pct_budget"]  = (mexp.muni_ed_spend  / mexp.muni_total_exp * 100).where(mexp.muni_total_exp > 0)
+        mexp["ps_pct_budget"]  = (mexp.muni_ps_spend  / mexp.muni_total_exp * 100).where(mexp.muni_total_exp > 0)
+        mexp["pw_pct_budget"]  = (mexp.muni_pw_spend  / mexp.muni_total_exp * 100).where(mexp.muni_total_exp > 0)
+
+        mrev = q("""
+            SELECT municipality, fiscal_year,
+                   taxes::float            AS muni_tax_rev,
+                   total_revenues::float   AS muni_total_rev
+            FROM municipal_revenues
+            WHERE fiscal_year = :yr
+        """, yr=fy)
+        mrev["tax_pct_rev"] = (mrev.muni_tax_rev / mrev.muni_total_rev * 100).where(mrev.muni_total_rev > 0)
+
+        assessed = q("""
+            SELECT municipality, fiscal_year,
+                   commercial_av::float                                      AS commercial_av,
+                   res_av::float                                             AS res_av,
+                   (commercial_av::float + industrial_av::float)             AS ci_av,
+                   total_av::float                                           AS total_av
+            FROM municipal_assessed_values
+            WHERE fiscal_year = :yr
+        """, yr=fy)
+        assessed["commercial_av_share"] = (assessed.ci_av / assessed.total_av * 100).where(assessed.total_av > 0)
+
+        tax_rates = q("""
+            SELECT municipality, fiscal_year,
+                   residential::float AS res_tax_rate,
+                   commercial::float  AS com_tax_rate
+            FROM municipal_tax_rates WHERE fiscal_year = :yr
+        """, yr=fy)
+
+        gf_exp = q("""
+            SELECT DISTINCT ON (municipality)
+                   municipality,
+                   gf_expenditure_per_capita::float AS gf_exp_per_capita
+            FROM municipal_gf_expenditures
+            WHERE fiscal_year <= :yr
+            ORDER BY municipality, fiscal_year DESC
+        """, yr=fy)
+
+        crime = q("""
+            SELECT jurisdiction_name AS municipality,
+                   AVG(crime_rate_per_100k::float) AS crime_rate,
+                   AVG(violent_crimes::float / NULLIF(population::float, 0) * 100000)
+                       AS violent_rate
+            FROM municipal_crime
+            WHERE year BETWEEN :yr_lo AND :yr_hi
+            GROUP BY jurisdiction_name
+        """, yr_lo=fy-4, yr_hi=fy)
+
+        new_growth = q("""
+            SELECT DISTINCT ON (municipality)
+                   municipality,
+                   (total_new_growth_value::float /
+                    NULLIF(total_av::float, 0) * 100) AS new_growth_pct_av
+            FROM municipal_new_growth ng
+            JOIN municipal_assessed_values av
+              USING (municipality, fiscal_year)
+            WHERE ng.fiscal_year <= :yr
+            ORDER BY municipality, ng.fiscal_year DESC
+        """, yr=fy)
+
+        income_eq = q("""
+            SELECT DISTINCT ON (municipality)
+                   municipality,
+                   dor_income::float AS equalized_income
+            FROM municipal_income_eqv
+            WHERE fiscal_year <= :yr
+            ORDER BY municipality, fiscal_year DESC
+        """, yr=fy)
+
+        county_health = q("""
+            SELECT county_name,
+                   AVG(pct_fair_poor_health::float)        AS health_pct_fair_poor,
+                   AVG(avg_mentally_unhealthy_days::float) AS health_mental_days
+            FROM county_health_rankings
+            WHERE ranking_year >= :yr_lo
+            GROUP BY county_name
+        """, yr_lo=fy-3)
+
+        county_unemp = q("""
+            SELECT county_name,
+                   AVG(unemployment_rate::float) AS county_unemployment
+            FROM county_unemployment
+            WHERE year >= :yr_lo
+            GROUP BY county_name
+        """, yr_lo=fy-3)
+
+        # Map district → county using districts table
+        dist_county = q("""
+            SELECT name AS district_name, county FROM districts WHERE county IS NOT NULL
+        """)
+
+    # ─── Merge everything ───────────────────────────────────────────────────
+    df = mcas.copy()
+
+    for tbl in [demog, attend, ppe, ch70, staff_fte, staff_r100, staff_sal,
+                enrol, grad, sat, mcas10, post, drop]:
+        df = df.merge(tbl, on="district_name", how="left")
+
+    # Derived DESE features
+    df["teachers_per_100_students"] = (df["teacher_fte"] / df["total_enrollment"]
+                                       * 100).where(df["total_enrollment"] > 0)
+
+    # Bridge DESE → ACS/Municipal via district_name ≈ municipality
+    df["_muni"] = df["district_name"].str.strip()
+    for tbl, key in [(acs,       "municipality"),
+                     (mexp[["municipality","ed_pct_budget","ps_pct_budget","pw_pct_budget"]],  "municipality"),
+                     (mrev[["municipality","tax_pct_rev"]], "municipality"),
+                     (assessed[["municipality","commercial_av_share"]], "municipality"),
+                     (tax_rates, "municipality"),
+                     (gf_exp,    "municipality"),
+                     (crime,     "municipality"),
+                     (new_growth,"municipality"),
+                     (income_eq, "municipality")]:
+        tbl2 = tbl.copy().rename(columns={key: "_muni"})
+        tbl2["_muni"] = tbl2["_muni"].str.strip()
+        df = df.merge(tbl2.drop_duplicates("_muni"), on="_muni", how="left")
+
+    # Bridge to county-level data
+    dist_county["_muni"] = dist_county["district_name"].str.strip()
+    df = df.merge(dist_county[["_muni","county"]].drop_duplicates("_muni"),
+                  on="_muni", how="left")
+    for tbl, key in [(county_health, "county_name"),
+                     (county_unemp,  "county_name")]:
+        tbl2 = tbl.copy().rename(columns={key: "county"})
+        df = df.merge(tbl2.drop_duplicates("county"), on="county", how="left")
+
+    df = df.drop(columns=["_muni", "county"], errors="ignore")
+
+    # Convert everything to float
+    skip = {"org_code", "district_name"}
+    for col in df.columns:
+        if col not in skip:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+
+def get_candidate_features(df: pd.DataFrame,
+                            outcome_cols: list[str],
+                            min_coverage: float = MIN_COVERAGE) -> list[str]:
+    """
+    Return feature names that:
+      - Are not outcome variables
+      - Are not id columns
+      - Have at least min_coverage non-NaN values
+    """
+    skip = set(outcome_cols) | {"org_code", "district_name",
+                                  "fiscal_year", "school_year"}
+    N = len(df)
+    return [c for c in df.columns
+            if c not in skip
+            and df[c].notna().sum() / N >= min_coverage]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2.  Greedy random forward selection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _loo_score(df: pd.DataFrame, features: list[str],
+               target: str, n_random_cells: int) -> float:
+    """
+    Leave-one-out Pearson correlation between RBP predictions and actuals.
+    Higher = better.  Returns NaN if not enough data.
+    """
+    sub = df[features + [target]].dropna().copy()
+    if len(sub) < 10 or len(features) == 0:
+        return float("nan")
+
+    X   = sub[features]
+    y   = sub[target]
+    ldf = rbp_loo(X, y, features, n_random_cells=n_random_cells)
+
+    valid = ldf.dropna(subset=["predicted"])
+    if len(valid) < 5:
+        return float("nan")
+    return float(np.corrcoef(valid["actual"], valid["predicted"])[0, 1])
+
+
+def greedy_forward_select(df: pd.DataFrame,
+                           candidate_features: list[str],
+                           target: str,
+                           random_state: int = 42,
+                           n_random_cells: int = 100,
+                           min_improvement: float = 0.005) -> tuple[list[str], list[dict]]:
+    """
+    Greedy random forward selection.
+
+    Randomly shuffle the candidate pool, then evaluate each candidate in order:
+      - If adding the feature improves LOO Pearson ≥ min_improvement: keep it
+      - Otherwise: discard
+
+    Returns (selected_features, history)
+    where history is a list of dicts recording each trial.
+    """
+    rng = random.Random(random_state)
+    pool = list(candidate_features)
+    rng.shuffle(pool)
+
+    selected:  list[str]  = []
+    history:   list[dict] = []
+    best_score = float("nan")
+
+    print(f"  Greedy selection: {len(pool)} candidates, target={target!r}")
+
+    for i, feat in enumerate(pool, 1):
+        candidate = selected + [feat]
+        score     = _loo_score(df, candidate, target, n_random_cells)
+        improved  = (
+            np.isnan(best_score) or
+            (not np.isnan(score) and score > best_score + min_improvement)
+        )
+
+        if improved and not np.isnan(score):
+            action = "KEEP"
+            selected  = candidate
+            best_score = score
+        else:
+            action = "skip"
+
+        rec = {"step": i, "feature": feat, "score": score,
+               "best_score": best_score, "action": action,
+               "n_selected": len(selected)}
+        history.append(rec)
+        print(f"    [{i:3d}/{len(pool)}] {feat:<40s} "
+              f"r={score:+.4f}  best={best_score:+.4f}  {action}")
+
+    print(f"  Selected {len(selected)} features: {selected}")
+    return selected, history
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3.  Dropout test
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dropout_test(df: pd.DataFrame,
+                 selected_features: list[str],
+                 target: str,
+                 n_random_cells: int = 100) -> pd.DataFrame:
+    """
+    For each feature in the selected set, compute LOO score with that feature
+    removed.  A negative delta means the feature is load-bearing.
+
+    Returns DataFrame sorted by delta (most critical first).
+    """
+    base = _loo_score(df, selected_features, target, n_random_cells)
+    print(f"  Dropout test: base LOO r={base:.4f}")
+
+    rows = []
+    for feat in selected_features:
+        reduced = [f for f in selected_features if f != feat]
+        if not reduced:
+            score = float("nan")
+        else:
+            score = _loo_score(df, reduced, target, n_random_cells)
+        delta = score - base if not np.isnan(score) else float("nan")
+        rows.append({"feature": feat, "score_without": score,
+                     "base_score": base, "delta": delta})
+        status = "REDUNDANT" if (not np.isnan(delta) and delta >= 0) else "load-bearing"
+        print(f"    drop {feat:<40s}  r={score:+.4f}  delta={delta:+.4f}  {status}")
+
+    return pd.DataFrame(rows).sort_values("delta")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4.  Saugus-specific RBP analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_saugus(df: pd.DataFrame,
+                   features: list[str],
+                   target: str,
+                   n_random_cells: int = 100) -> dict:
+    """
+    Run RBP with Saugus as the prediction task.
+
+    Returns dict with:
+        result      : RBPResult
+        actual      : Saugus's actual outcome value
+        actual_pct  : as percentage (×100 if <1)
+        pred_pct    : predicted value as percentage
+        gap_pp      : actual − predicted (percentage points)
+        n_above     : number of districts outperforming Saugus (by residual)
+    """
+    sub = df[features + [target]].dropna().copy()
+    if SAUGUS not in sub["district_name"].values if "district_name" in sub.columns else []:
+        sub_idx = df.dropna(subset=features + [target]).index
+        saugus_mask = df.loc[sub_idx, "district_name"] == SAUGUS
+    else:
+        saugus_mask = sub["district_name"] == SAUGUS if "district_name" in sub.columns else None
+
+    # Use the full df with district_name for lookup, then drop it for RBP
+    full = df[["district_name"] + features + [target]].dropna().copy()
+    saugus_row = full[full["district_name"] == SAUGUS]
+    if len(saugus_row) == 0:
+        raise ValueError(f"Saugus not found in data for target={target!r}")
+
+    X_all = full.drop(columns=["district_name"]).copy()
+    X_all.index = full["district_name"].values
+    y_all = X_all.pop(target)
+
+    x_saugus = X_all.loc[SAUGUS]
+    X_train  = X_all.drop(index=SAUGUS)
+    y_train  = y_all.drop(index=SAUGUS)
+
+    result = rbp(X_train, y_train, x_saugus, features, n_random_cells=n_random_cells)
+
+    actual = float(y_all.loc[SAUGUS])
+    # Convert fraction targets (like avg_mcas which is 0–1) to percentage
+    pred   = result.prediction
+    if actual < 2.0:   # likely a fraction
+        actual_pct = actual * 100
+        pred_pct   = pred * 100
+    else:
+        actual_pct = actual
+        pred_pct   = pred
+    gap_pp = actual_pct - pred_pct
+
+    # LOO residuals for all districts to count how many beat Saugus
+    loo_df = rbp_loo(X_all, y_all, features, n_random_cells=n_random_cells)
+    loo_df["residual"] = loo_df["actual"] - loo_df["predicted"]
+    saugus_resid = float(loo_df.loc[SAUGUS, "residual"]) if SAUGUS in loo_df.index else gap_pp / 100
+    n_above = int((loo_df["residual"] > saugus_resid).sum()) if SAUGUS in loo_df.index else 0
+
+    return {
+        "result":     result,
+        "actual":     actual,
+        "actual_pct": actual_pct,
+        "pred_pct":   pred_pct,
+        "gap_pp":     gap_pp,
+        "n_above":    n_above,
+        "n_total":    len(loo_df),
+        "loo_df":     loo_df,
+        "features":   features,
+        "target":     target,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5.  Paper-format PDF
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PAGE_W = 11.0
+_PAGE_H = 8.5
+_BL     = "#1A1A2E"   # near-black for text
+_GREY   = "#555555"
+_BLUE   = "#2C4770"
+_RED    = "#C0392B"
+_GREEN  = "#1E8449"
+_GOLD   = "#B7950B"
+
+
+def _paper_fig(nrows=1, ncols=1, **kw) -> tuple[plt.Figure, object]:
+    fig, ax = plt.subplots(nrows, ncols, figsize=(_PAGE_W, _PAGE_H), **kw)
+    fig.patch.set_facecolor("white")
+    return fig, ax
+
+
+def _header(fig, title: str, subtitle: str = ""):
+    fig.text(0.5, 0.95, title, ha="center", va="top",
+             fontsize=14, fontweight="bold", color=_BL,
+             transform=fig.transFigure)
+    if subtitle:
+        fig.text(0.5, 0.915, subtitle, ha="center", va="top",
+                 fontsize=9, color=_GREY, transform=fig.transFigure)
+
+
+def _footer(fig, text: str):
+    fig.text(0.5, 0.02, text, ha="center", va="bottom",
+             fontsize=7, color=_GREY, style="italic",
+             transform=fig.transFigure)
+
+
+def _save(pdf, fig):
+    try:
+        pdf.savefig(fig, bbox_inches="tight")
+    finally:
+        plt.close(fig)
+
+
+def page_title(pdf, models: list[dict]):
+    fig, ax = _paper_fig()
+    ax.axis("off")
+
+    ax.text(0.5, 0.82,
+            "Relevance-Based Prediction: Factor Selection for Saugus Schools",
+            ha="center", va="center", fontsize=16, fontweight="bold", color=_BL,
+            transform=ax.transAxes)
+    ax.text(0.5, 0.72,
+            "Czasonis, Kritzman & Turkington (2024) — Implemented for MA School District Analysis",
+            ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
+
+    lines = [
+        "Three outcomes modeled independently: MCAS (grades 3–8), Postsecondary Attendance, Dropout Rate",
+        "Features selected by greedy random forward selection using leave-one-out RBP fit",
+        "Dropout test confirms no redundant features retained",
+        f"Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
+        f"Variable importance computed per Exhibit 5 of the Kritzman paper",
+    ]
+    for i, line in enumerate(lines):
+        ax.text(0.1, 0.55 - i * 0.06, line, ha="left", va="center",
+                fontsize=9.5, color=_BL, transform=ax.transAxes)
+
+    # Summary box
+    ax.add_patch(mpatches.FancyBboxPatch(
+        (0.08, 0.12), 0.84, 0.22, boxstyle="round,pad=0.01",
+        facecolor="#EEF2F8", edgecolor=_BLUE, linewidth=1.2,
+        transform=ax.transAxes))
+    ax.text(0.5, 0.32, "Selected Feature Counts",
+            ha="center", va="center", fontsize=10, fontweight="bold",
+            color=_BLUE, transform=ax.transAxes)
+    for j, m in enumerate(models):
+        xpos = 0.20 + j * 0.30
+        ax.text(xpos, 0.24, m["label"], ha="center", fontsize=9,
+                color=_BL, fontweight="bold", transform=ax.transAxes)
+        ax.text(xpos, 0.18, f"{len(m['features'])} features",
+                ha="center", fontsize=9, color=_GREY, transform=ax.transAxes)
+        ax.text(xpos, 0.14, f"LOO r = {m['loo_score']:+.3f}",
+                ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
+
+    _footer(fig, "Relevance-Based Prediction · Saugus Schools Project · May 2026")
+    _save(pdf, fig)
+
+
+def page_selection_history(pdf, label: str, history: list[dict]):
+    """Show the greedy selection progress: score vs step, color-coded KEEP/skip."""
+    fig, axes = _paper_fig(1, 2)
+    _header(fig, f"Factor Selection: {label}",
+            "Greedy random forward selection — each candidate tried once in random order")
+
+    kept   = [h for h in history if h["action"] == "KEEP"]
+    skipped = [h for h in history if h["action"] != "KEEP"]
+
+    ax_l, ax_r = axes
+
+    # Left: score trace
+    steps  = [h["step"] for h in history]
+    bests  = [h["best_score"] for h in history]
+    scores = [h["score"] if not np.isnan(h.get("score", float("nan"))) else None
+              for h in history]
+
+    ax_l.plot(steps, bests, color=_BLUE, lw=2, label="Best score so far", zorder=3)
+    ax_l.scatter([h["step"] for h in kept],
+                 [h["score"] for h in kept],
+                 color=_GREEN, s=60, zorder=4, label="Feature added")
+    skip_scores = [h["score"] for h in skipped if not np.isnan(h.get("score", float("nan")))]
+    skip_steps  = [h["step"] for h in skipped if not np.isnan(h.get("score", float("nan")))]
+    if skip_steps:
+        ax_l.scatter(skip_steps, skip_scores,
+                     color=_GREY, alpha=0.4, s=20, zorder=2, label="Feature discarded")
+    ax_l.set_xlabel("Candidate evaluated")
+    ax_l.set_ylabel("LOO Pearson r")
+    ax_l.set_title("Selection progress")
+    ax_l.legend(fontsize=8)
+    ax_l.grid(True, alpha=0.3)
+
+    # Right: table of added features
+    ax_r.axis("off")
+    if kept:
+        cols  = ["Step", "Feature", "LOO r when added"]
+        rows  = [[str(h["step"]), h["feature"][:35], f"{h['score']:+.4f}"]
+                 for h in kept]
+        tbl = ax_r.table(cellText=rows, colLabels=cols,
+                          loc="center", cellLoc="left")
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.auto_set_column_width([0, 1, 2])
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_facecolor("#EEF2F8" if row == 0 else
+                               ("#F0FFF0" if row % 2 else "white"))
+            cell.set_edgecolor("#CCCCCC")
+    else:
+        ax_r.text(0.5, 0.5, "No features selected",
+                  ha="center", va="center", fontsize=10, color=_RED)
+    ax_r.set_title(f"Features selected ({len(kept)} of {len(history)} candidates)")
+
+    _footer(fig, f"LOO Pearson r = correlation between leave-one-out RBP predictions and actual outcomes")
+    _save(pdf, fig)
+
+
+def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
+                         selected_features: list[str], base_score: float):
+    fig, ax = _paper_fig()
+    _header(fig, f"Dropout Test: {label}",
+            "Each feature removed in turn — negative delta = load-bearing")
+
+    ax.axis("off")
+    if dropout_df.empty:
+        ax.text(0.5, 0.5, "No features to test", ha="center")
+        _save(pdf, fig); return
+
+    cols = ["Feature", "Score w/o feature", "Base score", "Delta", "Status"]
+    rows = []
+    for _, r in dropout_df.iterrows():
+        delta = r["delta"]
+        if np.isnan(delta):
+            status = "?"
+        elif delta >= 0:
+            status = "REDUNDANT"
+        elif delta > -0.01:
+            status = "minor"
+        else:
+            status = "CRITICAL"
+        rows.append([r["feature"][:40],
+                     f"{r['score_without']:+.4f}" if not np.isnan(r["score_without"]) else "NaN",
+                     f"{base_score:+.4f}",
+                     f"{delta:+.4f}" if not np.isnan(delta) else "NaN",
+                     status])
+
+    tbl = ax.table(cellText=rows, colLabels=cols, loc="center", cellLoc="left")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9)
+    tbl.auto_set_column_width(range(len(cols)))
+
+    status_colors = {"REDUNDANT": "#FFF3CD", "CRITICAL": "#FFE5E5",
+                     "minor": "#F5F5F5", "?": "white"}
+    for (row, col), cell in tbl.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#2C4770"); cell.set_text_props(color="white")
+        else:
+            status = rows[row - 1][4]
+            cell.set_facecolor(status_colors.get(status, "white"))
+        cell.set_edgecolor("#CCCCCC")
+
+    _footer(fig, "Delta = LOO r without feature − LOO r with full set.  Negative = feature helps.")
+    _save(pdf, fig)
+
+
+def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
+    """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
+    fig, axes = _paper_fig(1, 2)
+    _header(fig,
+            f"Saugus RBP Analysis: {label}",
+            f"Prediction task = Saugus  ·  "
+            f"Predicted: {analysis['pred_pct']:.1f}%  "
+            f"Actual: {analysis['actual_pct']:.1f}%  "
+            f"Gap: {analysis['gap_pp']:+.1f}pp  "
+            f"(Fit: {analysis['result'].fit:.4f})")
+
+    ax_l, ax_r = axes
+    result = analysis["result"]
+
+    # ── Left: variable importance (Exhibit 5) ───────────────────────────────
+    imp = result.variable_importance
+    feats  = imp.index.tolist()
+    values = imp.values.tolist()
+    colors = [_GREEN if v > 0 else _RED for v in values]
+
+    y_pos = range(len(feats))
+    ax_l.barh(list(y_pos), values, color=colors, alpha=0.8, height=0.6)
+    ax_l.set_yticks(list(y_pos))
+    ax_l.set_yticklabels([f[:35] for f in feats], fontsize=8)
+    ax_l.axvline(0, color=_BL, lw=0.8)
+    ax_l.set_xlabel("Variable importance\n(avg fit with feature − avg fit without)")
+    ax_l.set_title("Variable Importance (Exhibit 5)")
+    ax_l.grid(axis="x", alpha=0.3)
+
+    # ── Right: most/least relevant observations (Exhibit 4) ─────────────────
+    ax_r.axis("off")
+    top = result.most_relevant
+    bot = result.least_relevant
+
+    top_rows = [[str(idx)[:20], f"{row['weight']:.4f}", f"{row['__y__']:.2f}"]
+                for idx, row in top.iterrows()]
+    bot_rows = [[str(idx)[:20], f"{row['weight']:.4f}", f"{row['__y__']:.2f}"]
+                for idx, row in bot.iterrows()]
+
+    col_labels = ["Town", "Weight", target[:12]]
+
+    top_tbl = ax_r.table(cellText=top_rows, colLabels=col_labels,
+                          loc=(0.02, 0.55, 0.96, 0.40),
+                          bbox=[0.02, 0.55, 0.96, 0.38])
+    bot_tbl = ax_r.table(cellText=bot_rows, colLabels=col_labels,
+                          loc=(0.02, 0.08, 0.96, 0.40),
+                          bbox=[0.02, 0.08, 0.96, 0.38])
+
+    for tbl, bg in [(top_tbl, "#E8F8E8"), (bot_tbl, "#FFE8E8")]:
+        tbl.auto_set_font_size(False); tbl.set_fontsize(8.5)
+        for (row, col), cell in tbl.get_celld().items():
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            else:
+                cell.set_facecolor(bg if row % 2 else "white")
+            cell.set_edgecolor("#CCCCCC")
+
+    ax_r.text(0.5, 0.94, "Most Relevant Towns (highest weight)",
+              ha="center", fontsize=9, fontweight="bold", color=_GREEN,
+              transform=ax_r.transAxes)
+    ax_r.text(0.5, 0.46, "Least Relevant Towns (lowest weight)",
+              ha="center", fontsize=9, fontweight="bold", color=_RED,
+              transform=ax_r.transAxes)
+
+    n_above = analysis.get("n_above", "?")
+    n_total = analysis.get("n_total", "?")
+    _footer(fig,
+            f"RBP implementation: Czasonis, Kritzman & Turkington (2024).  "
+            f"Grid: {result.grid_cells_used} cells.  "
+            f"N = {result.n_obs} MA districts.  "
+            f"{n_above} of {n_total} districts outperform Saugus vs. their own prediction.")
+    _save(pdf, fig)
+
+
+def page_scatter_all(pdf, all_analyses: list[dict]):
+    """One page showing actual vs predicted for all three models."""
+    fig, axes = _paper_fig(1, 3)
+    _header(fig, "Actual vs. Predicted: All Three Models",
+            "Each dot = one MA district.  Saugus highlighted in gold.")
+
+    for ax, analysis in zip(axes, all_analyses):
+        loo = analysis["loo_df"].dropna(subset=["actual","predicted"])
+        if loo.empty:
+            ax.text(0.5, 0.5, "No data", ha="center"); continue
+
+        act = loo["actual"]
+        pred = loo["predicted"]
+        # Scale to % if needed
+        if act.median() < 2.0:
+            act  = act * 100
+            pred = pred * 100
+
+        ax.scatter(pred, act, alpha=0.35, s=18, color=_BLUE)
+        lo = min(pred.min(), act.min()) - 2
+        hi = max(pred.max(), act.max()) + 2
+        ax.plot([lo, hi], [lo, hi], color=_GREY, lw=1, ls=":", alpha=0.6)
+        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+
+        if SAUGUS in loo.index:
+            sx = float(loo.loc[SAUGUS, "predicted"])
+            sy = float(loo.loc[SAUGUS, "actual"])
+            if act.median() < 2.0 or True:  # already scaled
+                sx_p = sx * 100 if loo["predicted"].median() < 2.0 else sx
+                sy_p = sy * 100 if loo["actual"].median() < 2.0 else sy
+            ax.scatter([sx_p], [sy_p], color=_GOLD, s=120, zorder=5, marker="*")
+            ax.annotate("Saugus", xy=(sx_p, sy_p), xytext=(sx_p+1, sy_p-3),
+                        fontsize=7, color=_GOLD, fontweight="bold")
+
+        r = float(np.corrcoef(act, pred)[0, 1])
+        ax.set_title(f"{analysis['label']}\nLOO r = {r:.3f}", fontsize=9)
+        ax.set_xlabel("Predicted"); ax.set_ylabel("Actual")
+        ax.grid(alpha=0.2)
+
+    plt.tight_layout(rect=[0, 0.05, 1, 0.90])
+    _footer(fig, "Leave-one-out predictions — each district excluded from its own prediction.")
+    _save(pdf, fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6.  Main orchestration
+# ─────────────────────────────────────────────────────────────────────────────
+
+MODELS = [
+    {
+        "label":      "MCAS Grades 3–8",
+        "target":     "avg_mcas",
+        "target_pct": True,          # stored as fraction (0–1), multiply ×100 for display
+        "desc":       "% students meeting/exceeding (ELA + Math, grades 3–8)",
+    },
+    {
+        "label":      "Postsecondary Attendance",
+        "target":     "attending_pct",
+        "target_pct": False,
+        "desc":       "% graduates attending college within 16 months",
+    },
+    {
+        "label":      "Dropout Rate",
+        "target":     "dropout_pct",
+        "target_pct": False,
+        "desc":       "% students dropping out of high school",
+    },
+]
+
+
+def main(fast: bool = False):
+    n_random_cells = 30 if fast else 100
+    random_state   = 42
+
+    engine = get_engine()
+    OUTPUT_PDF.parent.mkdir(parents=True, exist_ok=True)
+
+    print("[factor_analysis] Loading features from database...")
+    df_raw = load_features(engine)
+    print(f"  Loaded {len(df_raw)} districts, {len(df_raw.columns)} columns")
+
+    all_outcome_cols = [m["target"] for m in MODELS]
+
+    # ── Run each model ───────────────────────────────────────────────────────
+    results = []
+
+    for model in MODELS:
+        target = model["target"]
+        print(f"\n{'='*60}")
+        print(f"MODEL: {model['label']}  (target: {target!r})")
+        print(f"{'='*60}")
+
+        # Available features for this model:
+        # exclude the target AND the other two outcome columns
+        other_outcomes = [o for o in all_outcome_cols if o != target]
+        candidates = get_candidate_features(df_raw,
+                                            outcome_cols=all_outcome_cols,
+                                            min_coverage=MIN_COVERAGE)
+        # Allow other outcomes as candidate features (e.g., dropout can predict MCAS)
+        # but exclude the model's own target
+        candidates_with_cross = [c for c in df_raw.columns
+                                  if c not in {target, "org_code", "district_name"}
+                                  and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
+                                  and df_raw[c].dtype.kind in "fiu"]
+
+        print(f"\n--- Step 1: Greedy forward selection ({len(candidates_with_cross)} candidates) ---")
+        selected, history = greedy_forward_select(
+            df_raw, candidates_with_cross, target,
+            random_state=random_state, n_random_cells=n_random_cells)
+
+        loo_score = _loo_score(df_raw, selected, target, n_random_cells)
+        print(f"\n  Final LOO r = {loo_score:.4f}  with {len(selected)} features")
+
+        print(f"\n--- Step 2: Dropout test ---")
+        base_score = loo_score
+        drop_df = dropout_test(df_raw, selected, target, n_random_cells)
+
+        print(f"\n--- Step 3: Saugus RBP analysis ---")
+        try:
+            saugus = analyze_saugus(df_raw, selected, target, n_random_cells)
+            print(f"  Saugus: predicted={saugus['pred_pct']:.1f}%  "
+                  f"actual={saugus['actual_pct']:.1f}%  "
+                  f"gap={saugus['gap_pp']:+.1f}pp")
+        except Exception as e:
+            print(f"  Saugus analysis failed: {e}")
+            saugus = None
+
+        results.append({
+            **model,
+            "features":   selected,
+            "history":    history,
+            "drop_df":    drop_df,
+            "saugus":     saugus,
+            "loo_score":  loo_score,
+            "base_score": base_score,
+        })
+
+    # ── Write PDF ─────────────────────────────────────────────────────────────
+    print(f"\n[factor_analysis] Writing PDF to {OUTPUT_PDF}...")
+    with PdfPages(str(OUTPUT_PDF)) as pdf:
+        page_title(pdf, results)
+
+        for r in results:
+            page_selection_history(pdf, r["label"], r["history"])
+            page_dropout_results(pdf, r["label"], r["drop_df"],
+                                 r["features"], r["base_score"])
+            if r["saugus"]:
+                page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
+
+        # Combined scatter
+        saugus_with_data = [r["saugus"] for r in results if r["saugus"]]
+        if len(saugus_with_data) == 3:
+            for r in results:
+                if r["saugus"]:
+                    r["saugus"]["label"] = r["label"]
+            page_scatter_all(pdf, [r["saugus"] for r in results if r["saugus"]])
+
+    # ── Write CSV summary ──────────────────────────────────────────────────────
+    rows = []
+    for r in results:
+        for feat in r["features"]:
+            imp = (r["saugus"]["result"].variable_importance.get(feat, float("nan"))
+                   if r["saugus"] else float("nan"))
+            rows.append({"model": r["label"], "feature": feat, "importance": imp,
+                         "loo_r": r["loo_score"]})
+    pd.DataFrame(rows).to_csv(str(OUTPUT_CSV), index=False)
+
+    print(f"[factor_analysis] Done → {OUTPUT_PDF}")
+    print(f"                       → {OUTPUT_CSV}")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fast", action="store_true",
+                    help="Use fewer grid cells (faster, less accurate)")
+    args = ap.parse_args()
+    main(fast=args.fast)

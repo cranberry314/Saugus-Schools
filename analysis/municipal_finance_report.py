@@ -61,17 +61,6 @@ EXCLUDED_PEER_CODES = {302, 195, 318, 84, 197}
 EXCLUDED_PEER_NAMES = {"Tyringham", "Mount Washington", "Wellfleet",
                        "East Brookfield", "Nantucket"}
 
-# RBP feature list (all 14 candidates) and number to use for peer matching
-RBP_ALL_FEATURES = [
-    "high_needs_pct", "low_income_pct", "ell_pct", "sped_pct",
-    "nss_per_pupil", "teacher_spending_per_pupil", "ch70_per_pupil",
-    "avg_teacher_salary",
-    "chronic_absenteeism_pct", "teachers_per_100_students",
-    "teachers_per_100_fte", "total_enrollment", "median_hh_income",
-    "pct_bachelors_plus", "pct_owner_occupied",
-]
-N_TOP_RBP = 6   # top features by importance used for Mahalanobis/clustering
-
 # CPI base year for real dollar conversion (FY2010 = 100)
 CPI_BASE_YEAR = 2010
 
@@ -2442,9 +2431,12 @@ def grade10_ela_appendix_page(pdf, outcomes: dict):
     plt.close(fig)
 
 
-# ── Comprehensive RBP feature load ───────────────────────────────────────────
-
 def load_rbp_features(engine, year: int = 2024) -> pd.DataFrame:
+    # NOTE: This function is preserved as a data loader only.
+    # The Ridge-based prediction functions (rbp_predict, rbp_fitted_predict,
+    # rbp_feature_importance, rbp_outcomes_page) that used to live here have been
+    # deleted — they were mislabeled as RBP but implemented Ridge regression.
+    # Correct RBP per Kritzman et al. (2024) lives in analysis/rbp.py.
     """
     Build a district-level feature matrix for RBP from all available DESE/ACS tables.
     Returns one row per district with 14 predictors + avg_mcas target.
@@ -2570,409 +2562,6 @@ def load_rbp_features(engine, year: int = 2024) -> pd.DataFrame:
     # Saugus flag
     df["is_saugus"] = df["district_name"] == SAUGUS_NAME
     return df
-
-
-# ── Relevance-Based Prediction ───────────────────────────────────────────────
-
-def rbp_predict(df: pd.DataFrame, features: list[str], target: str,
-                _bandwidth: float | None = None) -> pd.DataFrame:
-    """
-    Leave-one-out Ridge regression prediction.
-    Predicts each district's MCAS using a model trained on all other districts.
-    Returns input df with added columns: rbp_pred (%), rbp_resid (pp), rbp_weight.
-    """
-    sub = df[features + [target]].dropna().copy()
-    n = len(sub)
-
-    X_raw = sub[features].values.astype(float)
-    y     = sub[target].values.astype(float)
-
-    # Z-score normalise features
-    mu  = X_raw.mean(axis=0)
-    sig = X_raw.std(axis=0)
-    sig[sig == 0] = 1.0
-    X = (X_raw - mu) / sig
-
-    alpha = 0.1   # mild L2 regularisation (Ridge)
-    p_dim = X.shape[1]
-    preds = np.full(n, np.nan)
-
-    for i in range(n):
-        X_tr = np.delete(X, i, axis=0)
-        y_tr = np.delete(y, i)
-        # Ridge: solve (X^T X + alpha * I) beta = X^T y
-        A = X_tr.T @ X_tr + alpha * np.eye(p_dim)
-        b = X_tr.T @ y_tr
-        coef = np.linalg.solve(A, b)
-        preds[i] = X[i] @ coef
-
-    out = df.copy()
-    idx = sub.index
-    out.loc[idx, "rbp_pred"]   = preds * 100            # fraction → pct
-    out.loc[idx, "rbp_resid"]  = (out.loc[idx, target].astype(float) * 100
-                                   - out.loc[idx, "rbp_pred"])
-    out["rbp_weight"] = 1.0
-    return out
-
-
-def rbp_fitted_predict(df: pd.DataFrame, features: list[str], target: str) -> pd.DataFrame:
-    """
-    In-sample Ridge regression fitted values (fit on all districts, predict in-sample).
-    Used for the scatter plot — avoids LOO extrapolation issues for outlier districts.
-    Includes an intercept so predictions are centered on the actual mean of the target.
-    """
-    sub = df[features + [target]].dropna().copy()
-    X_raw = sub[features].values.astype(float)
-    y     = sub[target].values.astype(float)
-
-    mu  = X_raw.mean(axis=0)
-    sig = X_raw.std(axis=0)
-    sig[sig == 0] = 1.0
-    X = (X_raw - mu) / sig
-
-    # Add intercept column; regularize only slope terms (not intercept)
-    n, p_dim = X.shape
-    X_int = np.column_stack([np.ones(n), X])
-    alpha = 0.1
-    pen = np.diag([0.0] + [alpha] * p_dim)   # no penalty on intercept
-    A = X_int.T @ X_int + pen
-    coef = np.linalg.solve(A, X_int.T @ y)
-    preds = X_int @ coef  # in-sample fitted values (no LOO)
-
-    out = df.copy()
-    idx = sub.index
-    out.loc[idx, "rbp_pred"]  = preds * 100          # fraction → pct
-    out.loc[idx, "rbp_resid"] = (out.loc[idx, target].astype(float) * 100
-                                  - out.loc[idx, "rbp_pred"])
-    out["rbp_weight"] = 1.0
-    return out
-
-
-def rbp_feature_importance(df: pd.DataFrame, features: list[str], target: str,
-                            saugus_name: str = "Saugus") -> pd.DataFrame:
-    """
-    Leave-one-feature-out importance for the Saugus prediction.
-    Uses Ridge regression; importance = change in Saugus predicted value.
-    """
-    base = rbp_predict(df, features, target)
-    saugus_rows = base.loc[base["municipality"] == saugus_name, "rbp_pred"]
-    if len(saugus_rows) == 0:
-        return pd.DataFrame()
-    saugus_full = float(saugus_rows.iloc[0])
-
-    rows = []
-    for feat in features:
-        reduced = [f for f in features if f != feat]
-        if not reduced:
-            continue
-        sub = rbp_predict(df.dropna(subset=reduced + [target]), reduced, target)
-        saugus_row = sub[sub["municipality"] == saugus_name]
-        if len(saugus_row) == 0:
-            continue
-        drop_pred = float(saugus_row["rbp_pred"].iloc[0])
-        rows.append({"feature": feat, "full_pred": saugus_full,
-                     "drop_pred": drop_pred,
-                     "importance": abs(saugus_full - drop_pred)})
-    return pd.DataFrame(rows).sort_values("importance", ascending=False)
-
-
-def rbp_outcomes_page(pdf, outcomes: dict, rbp_features: pd.DataFrame,
-                      top_features: list, fi: pd.DataFrame):
-    """APPENDIX: Relevance-Based Prediction of MCAS outcomes.
-    top_features: pre-computed top-N features used for scatter prediction.
-    fi: pre-computed feature importance DataFrame for all 14 features.
-    """
-    TARGET = "avg_mcas"
-
-    rbp_df = rbp_features.dropna(subset=RBP_ALL_FEATURES + [TARGET]).copy()
-    rbp_df = rbp_df.rename(columns={"district_name": "municipality"})
-    rbp_df["avg_me_pct"] = rbp_df["avg_mcas"]
-
-    # Use in-sample Ridge fitted values for scatter (avoids LOO extrapolation for outlier districts)
-    rbp_df = rbp_fitted_predict(rbp_df, top_features, TARGET)
-
-    # Compute R² for in-sample fit
-    _valid = rbp_df.dropna(subset=["rbp_pred", TARGET])
-    _y_true = _valid[TARGET].astype(float) * 100
-    _y_pred = _valid["rbp_pred"]
-    _ss_res = float(((_y_true - _y_pred) ** 2).sum())
-    _ss_tot = float(((_y_true - _y_true.mean()) ** 2).sum())
-    r_squared = 1.0 - _ss_res / _ss_tot if _ss_tot > 0 else float("nan")
-
-    saugus    = rbp_df[rbp_df["municipality"] == SAUGUS_NAME].iloc[0]
-    # avg_mcas is fraction (0-1); rbp_pred is already ×100 (percentage)
-    actual    = float(saugus["avg_mcas"]) * 100   # e.g. 29.0
-    predicted = float(saugus["rbp_pred"])          # e.g. 44.2  (already in %)
-    gap       = actual - predicted                 # e.g. -15.2 pp
-    n_towns   = len(rbp_df)
-    print(f"[Page 17] Saugus predicted={predicted:.1f}%, actual={actual:.1f}%, gap={gap:+.1f}pp, R²={r_squared:.2f}")
-    _gap_color = RED if gap < -2 else GREEN if gap > 2 else STEEL_BLUE
-    gap_sign  = "below" if gap < 0 else "above"
-
-    saugus_rank = int(rbp_df["rbp_resid"].rank().loc[
-        rbp_df["municipality"] == SAUGUS_NAME].iloc[0])
-
-    FEAT_LABELS = {
-        "high_needs_pct":            "% High-needs",
-        "low_income_pct":            "% Low income",
-        "ell_pct":                   "% ELL",
-        "sped_pct":                  "% SPED",
-        "nss_per_pupil":             "Net school spend/pupil",
-        "teacher_spending_per_pupil":"Teacher spend/pupil",
-        "ch70_per_pupil":            "Ch70 aid/pupil",
-        "chronic_absenteeism_pct":   "Chronic absenteeism",
-        "avg_teacher_salary":        "Avg teacher salary",
-        "teachers_per_100_fte":      "Teachers per 100 staff",
-        "teachers_per_100_students": "Teachers per 100 students",
-        "total_enrollment":          "Enrollment",
-        "median_hh_income":          "Median income",
-        "pct_bachelors_plus":        "% College-educated",
-        "pct_owner_occupied":        "% Homeowners",
-    }
-
-    # Compute z-scores for the same top_features used by Mahalanobis peer matching
-    _HIGHER_IS_WORSE = {
-        "chronic_absenteeism_pct": True,
-        "high_needs_pct":          True,
-        "low_income_pct":          True,
-        "ell_pct":                 True,
-        "sped_pct":                True,
-    }
-    zscore_rows = []
-    for feat in top_features:
-        if feat not in rbp_df.columns:
-            continue
-        col = rbp_df[feat].dropna()
-        if len(col) < 5:
-            continue
-        mu, sd = col.mean(), col.std()
-        if sd == 0:
-            continue
-        saugus_val = float(rbp_df.loc[rbp_df["municipality"] == SAUGUS_NAME, feat].iloc[0])
-        z = (saugus_val - mu) / sd
-        if _HIGHER_IS_WORSE.get(feat, False):
-            z = -z  # flip so negative always means disadvantaged
-        zscore_rows.append({"label": FEAT_LABELS.get(feat, feat), "z": z,
-                            "val": saugus_val, "feat": feat})
-    zdf = pd.DataFrame(zscore_rows).sort_values("z")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 17: Scatter (expected vs actual) + stat cards
-    # ══════════════════════════════════════════════════════════════════════════
-    fig = plt.figure(figsize=(11, 8.5))
-    fig.patch.set_facecolor(NAVY)
-
-    n_top = len(top_features)
-    fig.text(0.5, 0.955,
-             "APPENDIX: Saugus vs. Demographically Similar Districts",
-             ha="center", fontsize=18, fontweight="bold", color="white",
-             transform=fig.transFigure)
-    fig.text(0.5, 0.922,
-             f"In-sample Ridge regression (R²={r_squared:.2f}) on top {n_top} outcome-predictive factors (of 14 tested)\n"
-             f"predicts Saugus should score {predicted:.0f}%.  Actual: {actual:.0f}%.  Gap: {abs(gap):.1f} pp {gap_sign} prediction.",
-             ha="center", fontsize=9, color=LIGHT_GRAY, linespacing=1.5,
-             transform=fig.transFigure)
-
-    # Scatter: predicted vs actual, full left panel
-    ax = fig.add_axes([0.07, 0.12, 0.54, 0.76])
-    ax.set_facecolor(CHART_BG)
-    ax.set_clip_on(True)
-
-    non_saugus = rbp_df[rbp_df["municipality"] != SAUGUS_NAME].dropna(subset=["rbp_pred"])
-    ax.scatter(non_saugus["rbp_pred"], non_saugus["avg_mcas"] * 100,
-               color=STEEL_BLUE, alpha=0.45, s=28, zorder=2)
-
-    lim_lo = min(rbp_df["rbp_pred"].min(), rbp_df["avg_mcas"].min() * 100) - 2
-    lim_hi = max(rbp_df["rbp_pred"].max(), rbp_df["avg_mcas"].max() * 100) + 2
-    ax.plot([lim_lo, lim_hi], [lim_lo, lim_hi],
-            color=LIGHT_GRAY, linewidth=1.2, linestyle=":", alpha=0.5,
-            label="Perfect prediction line")
-    ax.set_xlim(lim_lo, lim_hi)
-    ax.set_ylim(lim_lo, lim_hi)
-
-    ax.scatter([predicted], [actual], color=GOLD, s=200, zorder=5, marker="*")
-    ann_tx = lim_lo + (lim_hi - lim_lo) * 0.04
-    ann_ty = lim_hi - (lim_hi - lim_lo) * 0.06
-    ax.annotate(
-        f"★ Saugus\nExpected: {predicted:.0f}%\nActual: {actual:.0f}%\nGap: {gap:+.1f}pp",
-        xy=(predicted, actual),
-        xytext=(ann_tx, ann_ty),
-        fontsize=8, color=GOLD, fontweight="bold", va="top",
-        arrowprops=dict(arrowstyle="->", color=GOLD, lw=1.2),
-        annotation_clip=True)
-
-    ax.set_xlabel("What the model expected (MCAS %)", color="white", fontsize=9)
-    ax.set_ylabel("What the district actually scored", color="white", fontsize=9)
-    ax.tick_params(colors="white", labelsize=8)
-    for spine in ax.spines.values():
-        spine.set_color(CHART_GRID)
-    ax.legend(fontsize=8, framealpha=0.3, labelcolor="white",
-              facecolor=DARK_BLUE, loc="lower right")
-    ax.set_title("Expected vs Actual MCAS — every dot is one MA district",
-                 color="white", fontsize=10, pad=6)
-
-    # Stat cards: right panel
-    rx, cw, ch_card, gap_sp = 0.650, 0.320, 0.170, 0.020
-    card_bottoms = [
-        0.870 - ch_card,
-        0.870 - 2*ch_card - gap_sp,
-        0.870 - 3*ch_card - 2*gap_sp,
-    ]
-
-    if gap >= 0:
-        _card0_label = (f"Saugus scores {abs(gap):.1f}pp above peers with\n"
-                        f"similar demographics — despite underfunding\n"
-                        f"Expected {predicted:.0f}%  ·  Actual {actual:.0f}%")
-        _card0_color = BLUE
-    else:
-        _card0_label = (f"Saugus scores {abs(gap):.1f}pp below what\n"
-                        f"similar districts achieve\n"
-                        f"Expected {predicted:.0f}%  ·  Actual {actual:.0f}%")
-        _card0_color = RED
-    _callout(fig, rx, card_bottoms[0], cw, ch_card,
-             f"{gap:+.1f}pp", _card0_label, _card0_color, value_size=30)
-
-    _n_better = n_towns - saugus_rank
-    _callout(fig, rx, card_bottoms[1], cw, ch_card,
-             f"{_n_better} of {n_towns}",
-             "districts outperform Saugus\n"
-             "relative to their predicted score —\n"
-             "Saugus is near the bottom",
-             DARK_RED, value_size=24)
-
-    _callout(fig, rx, card_bottoms[2], cw, ch_card,
-             f"top {len(top_features)} of 14",
-             "Importance-ranked factors used for\n"
-             "peer matching & this prediction\n"
-             "All public DESE / ACS / DOR data",
-             BLUE, value_size=22)
-
-    fig.text(0.5, 0.028,
-             f"Model: Ridge regression (L2 α=0.1), z-score normalised features, in-sample fitted values (R²={r_squared:.2f}).  "
-             f"14 features tested; top {len(top_features)} selected by importance.  "
-             "Sources: MA DESE, U.S. Census ACS.  Correlation ≠ causation.",
-             ha="center", fontsize=7, color=LIGHT_GRAY, alpha=0.6,
-             transform=fig.transFigure, linespacing=1.4)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 16 (saved first): 2×2 layout — factor profile
-    #   Top-left:    fi chart            Top-right:   fi explanation
-    #   Bottom-left: z-score explanation Bottom-right: z-score chart
-    # PAGE 17 (saved second): scatter + stat cards
-    # ══════════════════════════════════════════════════════════════════════════
-    fig2 = plt.figure(figsize=(11, 8.5))
-    fig2.patch.set_facecolor(NAVY)
-
-    fig2.text(0.5, 0.957,
-              "APPENDIX: What Drives the Prediction — Factor Profile",
-              ha="center", fontsize=18, fontweight="bold", color="white",
-              transform=fig2.transFigure)
-    fig2.text(0.5, 0.922,
-              "Which factors predict MCAS outcomes (top), "
-              "and where Saugus stands on those same factors vs. all MA districts (bottom).",
-              ha="center", fontsize=9.5, color=LIGHT_GRAY,
-              transform=fig2.transFigure)
-
-    # Horizontal divider
-    fig2.add_artist(plt.Line2D([0.04, 0.96], [0.505, 0.505],
-                               transform=fig2.transFigure,
-                               color=CHART_GRID, linewidth=0.8, alpha=0.5))
-
-    # ── TOP-LEFT: feature importance chart ───────────────────────────────────
-    if len(fi) > 0:
-        fi_show = fi.copy()
-        fi_show["label"] = fi_show["feature"].map(FEAT_LABELS).fillna(fi_show["feature"])
-        ax_fi = fig2.add_axes([0.20, 0.525, 0.28, 0.365])
-        ax_fi.set_facecolor(CHART_BG)
-        spending_feats = {"nss_per_pupil", "teacher_spending_per_pupil",
-                          "ch70_per_pupil", "teachers_per_100_fte", "avg_teacher_salary"}
-        ax_fi.barh(fi_show["label"], fi_show["importance"],
-                   color=[GOLD if f in spending_feats else STEEL_BLUE
-                          for f in fi_show["feature"]],
-                   height=0.6)
-        ax_fi.tick_params(colors="white", labelsize=8.5)
-        for spine in ax_fi.spines.values():
-            spine.set_color(CHART_GRID)
-        ax_fi.set_xlabel("Importance — leave-one-feature-out R² drop",
-                         color="white", fontsize=8)
-        ax_fi.set_title("All 14 factors ranked by importance",
-                        color="white", fontsize=9.5, pad=5)
-
-    # ── TOP-RIGHT: fi explanation ─────────────────────────────────────────────
-    tx, ty, ts = 0.52, 0.872, 9.5
-    fig2.text(tx, ty, "How to read this chart",
-              ha="left", fontsize=ts, fontweight="bold", color=GOLD,
-              transform=fig2.transFigure)
-    fi_lines = [
-        "Importance = R² drop when that factor is",
-        "removed (leave-one-feature-out method).",
-        "",
-        "  Gold   Spending / staffing factors —",
-        "          what the school budget controls",
-        "  Blue    Demographic / socioeconomic",
-        "",
-        "A tall gold bar means that investment area",
-        "most strongly predicts student outcomes.",
-        f"The top {len(top_features)} factors are used for peer",
-        "matching and the MCAS prediction.",
-    ]
-    for i, line in enumerate(fi_lines):
-        fig2.text(tx, ty - 0.042 - i * 0.030, line,
-                  ha="left", fontsize=8, color="white", alpha=0.85,
-                  transform=fig2.transFigure, family="monospace" if line.startswith("  ") else "sans-serif")
-
-    # ── BOTTOM-LEFT: z-score explanation ─────────────────────────────────────
-    bx, by, bs = 0.05, 0.462, 9.5
-    fig2.text(bx, by, "How to read this chart",
-              ha="left", fontsize=bs, fontweight="bold", color=GOLD,
-              transform=fig2.transFigure)
-    z_lines = [
-        "Each bar shows Saugus on one of the top",
-        f"{len(top_features)} factors — the same ones used for",
-        "peer matching — vs. all MA districts.",
-        "",
-        "  Red  (< −1)    Significantly disadvantaged",
-        "  Blue (−1 to 1) Near the state average",
-        "  Green (> +1)   Above average",
-        "",
-        "Bars left of 0 = Saugus faces a harder",
-        "challenge; the model adjusts for this",
-        "when setting the expected MCAS score.",
-    ]
-    for i, line in enumerate(z_lines):
-        fig2.text(bx, by - 0.042 - i * 0.030, line,
-                  ha="left", fontsize=8, color="white", alpha=0.85,
-                  transform=fig2.transFigure, family="monospace" if line.startswith("  ") else "sans-serif")
-
-    # ── BOTTOM-RIGHT: z-score chart ───────────────────────────────────────────
-    ax_z = fig2.add_axes([0.48, 0.105, 0.26, 0.365])
-    ax_z.set_facecolor(CHART_BG)
-    if len(zdf) > 0:
-        bar_c = [RED if z < -1 else GREEN if z > 1 else STEEL_BLUE for z in zdf["z"]]
-        ax_z.barh(zdf["label"], zdf["z"], color=bar_c, height=0.65)
-        ax_z.axvline(0,  color="white", linewidth=1.2, alpha=0.5)
-        ax_z.axvline(-1, color=RED,   linewidth=0.9, linestyle=":", alpha=0.5)
-        ax_z.axvline(1,  color=GREEN, linewidth=0.9, linestyle=":", alpha=0.5)
-        ax_z.tick_params(colors="white", labelsize=8.5)
-        for spine in ax_z.spines.values():
-            spine.set_color(CHART_GRID)
-        ax_z.set_xlabel("Standard deviations from state average", color="white", fontsize=8)
-    ax_z.set_title("Saugus — where it stands on each factor",
-                   color="white", fontsize=9.5, pad=5)
-
-    fig2.text(0.5, 0.028,
-              f"Model: Ridge regression (L2 α=0.1), z-score normalised, in-sample (R²={r_squared:.2f}).  "
-              "Sources: MA DESE (MCAS, staffing, demographics, per-pupil, Chapter 70, attendance), "
-              "U.S. Census ACS.  Correlation ≠ causation.",
-              ha="center", fontsize=7, color=LIGHT_GRAY, alpha=0.6,
-              transform=fig2.transFigure, linespacing=1.4)
-
-    pdf.savefig(fig2)
-    plt.close(fig2)
-
-    # Factor profile saved above; now save scatter + stat cards
-    pdf.savefig(fig)
-    plt.close(fig)
 
 
 # ── spending-outcomes scatter (appendix) ──────────────────────────────────────
@@ -3149,7 +2738,6 @@ def run():
     rev, exp, cpi = load_data(engine)
     acs = load_acs_data(engine)
     tax_rates = load_tax_rates(engine)
-    rbp_features = load_rbp_features(engine, year=2024)
 
     srev = rev[rev["dor_code"] == SAUGUS_CODE].copy()
     sexp = exp[exp["dor_code"] == SAUGUS_CODE].copy()
@@ -3162,20 +2750,15 @@ def run():
     print(f"[municipal_finance] Saugus: {len(srev)} years, "
           f"{rev['dor_code'].nunique()} towns downloaded, {n_peer_towns} peers")
 
-    print("[municipal_finance] Computing RBP feature importance...")
-    rbp_work = rbp_features.dropna(subset=RBP_ALL_FEATURES + ["avg_mcas"]).copy()
-    rbp_work = rbp_work.rename(columns={"district_name": "municipality"})
-    rbp_work["avg_me_pct"] = rbp_work["avg_mcas"]
-    fi_full  = rbp_feature_importance(rbp_work, RBP_ALL_FEATURES, "avg_mcas")
-    rbp_top  = fi_full.head(N_TOP_RBP)["feature"].tolist()
-    print(f"  Top {N_TOP_RBP} features: {rbp_top}")
+    # Feature importance previously computed here used Ridge regression mislabeled as RBP.
+    # That code has been deleted. Peer groups now use the fiscal/demographic fallback path.
+    fi_full = None   # placeholder — correct RBP importance in analysis/rbp.py
 
     print("[municipal_finance] Computing peer groups...")
-    feat_desc = f"top {N_TOP_RBP} outcome-predictive factors (demographics, spending, staffing, income)"
-    mahal_peers = compute_mahal_peers(rev, exp, acs, year=2024, n_peers=10,
-                                      rbp_df=rbp_work, rbp_top_features=rbp_top)
+    feat_desc = "fiscal and demographic factors (DLS Schedule A + ACS)"
+    mahal_peers = compute_mahal_peers(rev, exp, acs, year=2024, n_peers=10)
     hclust_peers, Z_linkage, hclust_df, optimal_k = compute_hclust_peers(
-        rev, exp, acs, year=2024, rbp_df=rbp_work, rbp_top_features=rbp_top)
+        rev, exp, acs, year=2024)
     if len(mahal_peers):
         print(f"  Mahalanobis peers: {mahal_peers['municipality'].tolist()}")
     if len(hclust_peers):
@@ -3211,24 +2794,20 @@ def run():
         operating_statement_page(pdf, srev, sexp, years_to_show=[2014, 2020, 2024]) # 13 APPENDIX
         revenue_expenditure_trends_page(pdf, srev, sexp, deflator)                  # 14 APPENDIX
         dendrogram_page(pdf, Z_linkage, hclust_df, optimal_k,
-                        feature_desc=f"Top {N_TOP_RBP} Outcome-Predictive Features",
-                        rbp_work=rbp_work, rbp_top=rbp_top)                          # 15 APPENDIX
+                        feature_desc=feat_desc)                                     # 15 APPENDIX
         grade10_ela_appendix_page(pdf, outcomes)                                    # 16 APPENDIX
-        # rbp_outcomes_page(pdf, outcomes, rbp_features, rbp_top, fi_full)          # APPENDIX (2 pages) — removed: model
-        # shows -1.2pp gap (not compelling) and predicts no effect from $1.5M–$3M spending increase.
-        # Code preserved in rbp_outcomes_page() above for future use.
         data_sources_page(pdf, rev, n_peer_towns)                                   # 17 APPENDIX
 
     shutil.copy2(tmp_pdf, OUTPUT_PDF)
     print(f"[municipal_finance] Done → {OUTPUT_PDF}  ({os.path.getsize(OUTPUT_PDF)//1024}KB)")
 
     save_run_snapshot(engine, srev, sexp, exp, outcomes, peer_stats,
-                      mahal_peers, hclust_peers, consensus_names, fi_full,
+                      mahal_peers, hclust_peers, consensus_names,
                       n_peer_towns)
 
 
 def save_run_snapshot(engine, srev, sexp, exp, outcomes, peer_stats,
-                      mahal_peers, hclust_peers, consensus_names, fi_full,
+                      mahal_peers, hclust_peers, consensus_names,
                       n_peer_towns):
     """
     Persist all computed values for this report run to the database.
@@ -3349,17 +2928,9 @@ def save_run_snapshot(engine, srev, sexp, exp, outcomes, peer_stats,
             VALUES (:run_id, :metric, :fiscal_year, :school_year, :value)
         """), metric_rows)
 
-        # ── Feature importances ──────────────────────────────────────────────
-        fi_rows = [
-            {"run_id": run_id, "rank": i + 1,
-             "feature": row_fi["feature"],
-             "importance": round(float(row_fi["importance"]), 6)}
-            for i, (_, row_fi) in enumerate(fi_full.head(N_TOP_RBP).iterrows())
-        ]
-        conn.execute(text("""
-            INSERT INTO computed_feature_importance (run_id, rank, feature, importance)
-            VALUES (:run_id, :rank, :feature, :importance)
-        """), fi_rows)
+        # Feature importance previously computed here used Ridge regression mislabeled as RBP.
+        # Correct RBP importance is computed in analysis/saugus_factor_analysis.py.
+        # Skipping computed_feature_importance insert until correct RBP is run.
 
     print(f"[municipal_finance] Snapshot saved → run_id={run_id}  "
           f"(FY{fy_max}, SY{sy_max}, {len(peer_rows)} peer rows, {len(metric_rows)} metrics)")
