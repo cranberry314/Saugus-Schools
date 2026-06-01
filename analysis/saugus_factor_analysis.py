@@ -414,7 +414,7 @@ def _loo_score(df: pd.DataFrame, features: list[str],
 
     X   = sub[features]
     y   = sub[target]
-    ldf = rbp_loo(X, y, features, n_random_cells=n_random_cells)
+    ldf = rbp_loo(X, y, features, n_random_cells=n_random_cells, verbose=True)
 
     valid = ldf.dropna(subset=["predicted"])
     if len(valid) < 5:
@@ -655,11 +655,19 @@ def page_title(pdf, models: list[dict]):
             color=_BLUE, transform=ax.transAxes)
     for j, m in enumerate(models):
         xpos = 0.20 + j * 0.30
-        ax.text(xpos, 0.24, m["label"], ha="center", fontsize=9,
+        lean = m.get("lean_features", m["features"])
+        n_red = len(m.get("redundant", []))
+        ax.text(xpos, 0.26, m["label"], ha="center", fontsize=9,
                 color=_BL, fontweight="bold", transform=ax.transAxes)
-        ax.text(xpos, 0.18, f"{len(m['features'])} features",
-                ha="center", fontsize=9, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.14, f"LOO r = {m['loo_score']:+.3f}",
+        ax.text(xpos, 0.21, f"Greedy: {len(m['features'])} features",
+                ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
+        ax.text(xpos, 0.17, f"Lean (post-dropout): {len(lean)} features",
+                ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
+        if n_red:
+            ax.text(xpos, 0.13, f"({n_red} redundant removed)",
+                    ha="center", fontsize=7.5, color=_GREY, style="italic",
+                    transform=ax.transAxes)
+        ax.text(xpos, 0.09, f"LOO r = {m['loo_score']:+.3f}",
                 ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
 
     _footer(fig, "Relevance-Based Prediction · Saugus Schools Project · May 2026")
@@ -724,39 +732,49 @@ def page_selection_history(pdf, label: str, history: list[dict]):
 
 def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
                          selected_features: list[str], base_score: float):
-    fig, ax = _paper_fig()
-    _header(fig, f"Dropout Test: {label}",
-            "Each feature removed in turn — negative delta = load-bearing")
+    fig, axes = _paper_fig(1, 1)
+    ax = axes if hasattr(axes, 'axis') else axes
+
+    redundant = [r["feature"] for _, r in dropout_df.iterrows()
+                 if not np.isnan(r.get("delta", float("nan"))) and r["delta"] >= 0]
+    keepers   = [f for f in selected_features if f not in redundant]
+
+    subtitle = (f"Greedy selected {len(selected_features)} features  ·  "
+                f"Dropout flagged {len(redundant)} redundant  ·  "
+                f"Final lean set: {len(keepers)} features")
+    _header(fig, f"Dropout Test: {label}", subtitle)
 
     ax.axis("off")
     if dropout_df.empty:
         ax.text(0.5, 0.5, "No features to test", ha="center")
         _save(pdf, fig); return
 
-    cols = ["Feature", "Score w/o feature", "Base score", "Delta", "Status"]
+    cols = ["Feature", "Score w/o", "Base", "Delta", "Status", "In final set?"]
     rows = []
     for _, r in dropout_df.iterrows():
         delta = r["delta"]
         if np.isnan(delta):
             status = "?"
         elif delta >= 0:
-            status = "REDUNDANT"
+            status = "REDUNDANT — removed"
         elif delta > -0.01:
             status = "minor"
         else:
             status = "CRITICAL"
-        rows.append([r["feature"][:40],
+        in_final = "YES" if r["feature"] not in redundant else "no — dropped"
+        rows.append([r["feature"][:38],
                      f"{r['score_without']:+.4f}" if not np.isnan(r["score_without"]) else "NaN",
                      f"{base_score:+.4f}",
                      f"{delta:+.4f}" if not np.isnan(delta) else "NaN",
-                     status])
+                     status,
+                     in_final])
 
     tbl = ax.table(cellText=rows, colLabels=cols, loc="center", cellLoc="left")
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(9)
+    tbl.set_fontsize(8.5)
     tbl.auto_set_column_width(range(len(cols)))
 
-    status_colors = {"REDUNDANT": "#FFF3CD", "CRITICAL": "#FFE5E5",
+    status_colors = {"REDUNDANT — removed": "#FFF3CD", "CRITICAL": "#FFE5E5",
                      "minor": "#F5F5F5", "?": "white"}
     for (row, col), cell in tbl.get_celld().items():
         if row == 0:
@@ -766,7 +784,15 @@ def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
             cell.set_facecolor(status_colors.get(status, "white"))
         cell.set_edgecolor("#CCCCCC")
 
-    _footer(fig, "Delta = LOO r without feature − LOO r with full set.  Negative = feature helps.")
+    # Summary box
+    summary = (f"Final lean feature set ({len(keepers)}):\n"
+               + ",  ".join(keepers))
+    ax.text(0.5, 0.02, summary, ha="center", va="bottom", fontsize=8,
+            color=_BLUE, fontweight="bold", transform=ax.transAxes,
+            wrap=True)
+
+    _footer(fig, "Delta = LOO r without feature − LOO r with full set.  "
+            "Negative delta = feature helps.  REDUNDANT = safe to remove without loss.")
     _save(pdf, fig)
 
 
@@ -841,6 +867,252 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
             f"Grid: {result.grid_cells_used} cells.  "
             f"N = {result.n_obs} MA districts.  "
             f"{n_above} of {n_total} districts outperform Saugus vs. their own prediction.")
+    _save(pdf, fig)
+
+
+def page_all_candidates(pdf, label: str, history: list[dict],
+                        selected_features: list[str]):
+    """
+    Bar chart showing every candidate feature tried, sorted by the LOO r
+    achieved when that feature was the marginal addition to the model.
+    Green = kept in final set, grey = discarded.
+    Equivalent to showing 'what we tried and what each feature contributed.'
+    """
+    fig, ax = _paper_fig()
+    _header(fig,
+            f"All Candidates Evaluated: {label}",
+            "Each bar = LOO Pearson r when this feature was the marginal candidate.  "
+            "Green = added to model, grey = discarded.")
+
+    # Sort by score descending, NaN last
+    valid = [(h["feature"], h.get("score", float("nan")), h["action"])
+             for h in history]
+    valid.sort(key=lambda x: (np.isnan(x[1]), -x[1] if not np.isnan(x[1]) else 0))
+
+    feats  = [v[0] for v in valid]
+    scores = [v[1] if not np.isnan(v[1]) else 0 for v in valid]
+    kept   = {f for f in selected_features}
+    colors = [_GREEN if v[0] in kept else _GREY for v in valid]
+    alphas = [0.9 if v[0] in kept else 0.5 for v in valid]
+
+    y_pos = range(len(feats))
+    bars = ax.barh(list(y_pos), scores, color=colors,
+                   alpha=0.8, height=0.7)
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels(feats, fontsize=8.5)
+    ax.set_xlabel("LOO Pearson r (correlation between prediction and actual outcome)")
+    ax.axvline(0, color=_BL, lw=0.8, alpha=0.4)
+    ax.grid(axis="x", alpha=0.25)
+
+    # Annotate bars with scores
+    for bar, score, (feat, raw_score, action) in zip(bars, scores, valid):
+        if not np.isnan(raw_score):
+            ax.text(bar.get_width() + 0.003, bar.get_y() + bar.get_height()/2,
+                    f"{raw_score:+.3f}",
+                    va="center", fontsize=7.5, color=_BL)
+
+    # Legend
+    kept_patch    = mpatches.Patch(color=_GREEN, alpha=0.9, label=f"Added ({len(kept)} features)")
+    discard_patch = mpatches.Patch(color=_GREY,  alpha=0.5,
+                                   label=f"Discarded ({len(valid)-len(kept)} features)")
+    ax.legend(handles=[kept_patch, discard_patch], loc="lower right", fontsize=9)
+
+    plt.tight_layout(rect=[0, 0.05, 1, 0.90])
+    _footer(fig,
+            "Score shown is the LOO r when that feature was evaluated (with all "
+            "previously accepted features already in the set).")
+    _save(pdf, fig)
+
+
+def _find_overachievers(loo_df: pd.DataFrame, target: str,
+                        n: int = 8) -> pd.DataFrame:
+    """
+    Return the top-N districts by positive residual (beating their prediction).
+    For dropout the residual sign is inverted (lower dropout = better).
+    """
+    df = loo_df.dropna(subset=["residual"]).copy()
+    # Dropout: lower is better, so negate residual for ranking
+    if "dropout" in target.lower():
+        df["_rank_resid"] = -df["residual"]
+    else:
+        df["_rank_resid"] = df["residual"]
+    # Exclude Saugus from overachiever list
+    df = df[df.index != "Saugus"]
+    return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
+
+
+def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
+    """Scatter: actual vs predicted for all districts — overachievers highlighted."""
+    fig, ax = _paper_fig()
+    loo = analysis["loo_df"].dropna(subset=["actual", "predicted"])
+
+    is_pct = loo["actual"].median() < 2.0
+    act  = loo["actual"]  * (100 if is_pct else 1)
+    pred = loo["predicted"] * (100 if is_pct else 1)
+    resid = act - pred
+
+    overachievers = _find_overachievers(loo, target, n=8)
+    oa_names = set(overachievers.index)
+
+    # All districts — grey
+    mask_oa = loo.index.isin(oa_names)
+    ax.scatter(pred[~mask_oa], act[~mask_oa],
+               color=_GREY, alpha=0.3, s=18, zorder=2)
+
+    # Overachievers — green
+    ax.scatter(pred[mask_oa], act[mask_oa],
+               color=_GREEN, alpha=0.85, s=60, zorder=4,
+               label=f"Top overachievers (n={len(oa_names)})")
+
+    # Label overachievers
+    for idx in overachievers.index:
+        if idx in pred.index:
+            ax.annotate(str(idx)[:14],
+                        xy=(float(pred[idx]), float(act[idx])),
+                        xytext=(4, 3), textcoords="offset points",
+                        fontsize=6.5, color=_GREEN, alpha=0.85)
+
+    # Saugus
+    if "Saugus" in pred.index:
+        sx, sy = float(pred["Saugus"]), float(act["Saugus"])
+        ax.scatter([sx], [sy], color=_GOLD, s=140, zorder=5, marker="*")
+        ax.annotate("Saugus", xy=(sx, sy), xytext=(4, -10),
+                    textcoords="offset points",
+                    fontsize=8, color=_GOLD, fontweight="bold")
+
+    lo = min(pred.min(), act.min()) - 2
+    hi = max(pred.max(), act.max()) + 2
+    ax.plot([lo, hi], [lo, hi], color=_GREY, lw=1, ls=":", alpha=0.5,
+            label="Perfect prediction")
+    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+
+    r = float(np.corrcoef(act, pred)[0, 1])
+    ax.set_title(f"Actual vs Predicted — {label}  (LOO r = {r:.3f})", fontsize=10)
+    ax.set_xlabel("RBP-predicted value"); ax.set_ylabel("Actual value")
+    ax.legend(fontsize=8); ax.grid(alpha=0.2)
+
+    saugus_resid = float(resid.get("Saugus", float("nan")))
+    _header(fig, f"Overachievers: {label}",
+            f"Districts beating their RBP prediction.  "
+            f"Saugus gap: {saugus_resid:+.1f}  ·  "
+            f"Gold star = Saugus  ·  Green dots = top overachievers")
+    _footer(fig, "Residual = actual − predicted.  Positive = performing better than demographics suggest.")
+    _save(pdf, fig)
+
+
+def page_what_overachievers_did(pdf, label: str, target: str,
+                                 analysis: dict, df_raw: pd.DataFrame,
+                                 lean_features: list[str]):
+    """
+    Feature comparison: overachiever values vs Saugus on each important factor.
+    Ordered by RBP variable importance so the most relevant differences are first.
+    """
+    loo        = analysis["loo_df"]
+    imp        = analysis["result"].variable_importance   # already lean-feature importance
+    overachievers = _find_overachievers(loo, target, n=6)
+
+    # Get feature values for Saugus and overachievers from df_raw
+    feat_df = df_raw[["district_name"] + lean_features].copy()
+    feat_df.index = feat_df["district_name"]
+    feat_df = feat_df.drop(columns=["district_name"])
+
+    oa_names = [idx for idx in overachievers.index if idx in feat_df.index]
+    if "Saugus" not in feat_df.index or not oa_names:
+        fig, ax = _paper_fig()
+        ax.text(0.5, 0.5, "Insufficient data for comparison",
+                ha="center", va="center")
+        _save(pdf, fig); return
+
+    # Order features by |importance| descending
+    feats_ordered = imp.reindex([f for f in lean_features if f in feat_df.columns]).abs().sort_values(ascending=False).index.tolist()
+    if not feats_ordered:
+        feats_ordered = lean_features
+
+    fig, axes = _paper_fig(1, 2)
+    ax_l, ax_r = axes
+
+    _header(fig, f"What Overachievers Do Differently: {label}",
+            "Feature values for top overachievers vs Saugus — ordered by RBP variable importance")
+
+    # ── Left: heatmap of feature values (z-scored relative to all districts) ──
+    ax_l.axis("off")
+    saugus_vals = feat_df.loc["Saugus", feats_ordered]
+    mu  = feat_df[feats_ordered].mean()
+    std = feat_df[feats_ordered].std().replace(0, 1)
+
+    col_names = ["Feature", "Saugus"] + [n[:12] for n in oa_names[:5]] + ["Importance"]
+    rows = []
+    for feat in feats_ordered[:15]:
+        sv = saugus_vals.get(feat, float("nan"))
+        sv_fmt = f"{sv:.1f}" if not np.isnan(sv) else "—"
+        oa_vals = []
+        for name in oa_names[:5]:
+            v = feat_df.loc[name, feat] if feat in feat_df.columns else float("nan")
+            oa_vals.append(f"{v:.1f}" if not np.isnan(v) else "—")
+        imp_val = float(imp.get(feat, 0))
+        rows.append([feat[:30], sv_fmt] + oa_vals + [f"{imp_val:+.3f}"])
+
+    if rows:
+        tbl = ax_l.table(cellText=rows, colLabels=col_names[:len(rows[0])],
+                          loc="center", cellLoc="center")
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(7.5)
+        tbl.auto_set_column_width(range(len(col_names)))
+        for (row, col), cell in tbl.get_celld().items():
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            elif col == 1 and row > 0:
+                cell.set_facecolor("#FFF8E1")   # Saugus column highlighted
+            else:
+                cell.set_facecolor("white")
+            cell.set_edgecolor("#CCCCCC")
+    ax_l.set_title(f"Feature values — Saugus vs overachievers\n(top {len(feats_ordered[:15])} by importance)",
+                   fontsize=9, pad=8)
+
+    # ── Right: residuals + key overachiever stats ─────────────────────────────
+    ax_r.axis("off")
+    is_pct = loo["actual"].dropna().median() < 2.0
+    mult   = 100 if is_pct else 1
+
+    oa_rows = []
+    for name in oa_names:
+        row_loo = loo.loc[name] if name in loo.index else None
+        if row_loo is None or np.isnan(row_loo["residual"]):
+            continue
+        act_v  = float(row_loo["actual"])  * mult
+        pred_v = float(row_loo["predicted"]) * mult
+        resid  = act_v - pred_v
+        label_r = f"{resid:+.1f}pp" if target != "dropout_pct" else f"{-resid:+.1f}pp better"
+        oa_rows.append([name[:22], f"{act_v:.1f}%", f"{pred_v:.1f}%", label_r])
+
+    if oa_rows:
+        saugus_loo = loo.loc["Saugus"] if "Saugus" in loo.index else None
+        s_act  = float(saugus_loo["actual"])  * mult if saugus_loo is not None else float("nan")
+        s_pred = float(saugus_loo["predicted"]) * mult if saugus_loo is not None else float("nan")
+        s_res  = s_act - s_pred
+
+        oa_rows_display = [[">> Saugus",
+                             f"{s_act:.1f}%", f"{s_pred:.1f}%",
+                             f"{s_res:+.1f}pp"]] + oa_rows
+
+        oa_tbl = ax_r.table(cellText=oa_rows_display,
+                             colLabels=["District", "Actual", "Predicted", "Gap"],
+                             loc="upper center", bbox=[0.0, 0.55, 1.0, 0.40])
+        oa_tbl.auto_set_font_size(False); oa_tbl.set_fontsize(8.5)
+        oa_tbl.auto_set_column_width(range(4))
+        for (row, col), cell in oa_tbl.get_celld().items():
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            elif row == 1:
+                cell.set_facecolor("#FFF8E1")   # Saugus row
+            else:
+                cell.set_facecolor("#E8F8E8" if row % 2 else "white")
+            cell.set_edgecolor("#CCCCCC")
+
+    ax_r.set_title("Overachiever residuals vs Saugus", fontsize=9, pad=8)
+
+    _footer(fig, "Gap = actual − predicted.  Positive = outperforming demographic expectation.  "
+            "Feature values shown in raw units; importance scores from RBP Exhibit 5.")
     _save(pdf, fig)
 
 
@@ -961,9 +1233,16 @@ def main(fast: bool = False):
         base_score = loo_score
         drop_df = dropout_test(df_raw, selected, target, n_random_cells)
 
-        print(f"\n--- Step 3: Saugus RBP analysis ---")
+        # Compute pruned (post-dropout) feature set
+        redundant    = [r["feature"] for _, r in drop_df.iterrows()
+                        if not np.isnan(r.get("delta", float("nan")))
+                        and r["delta"] >= 0]
+        lean_features = [f for f in selected if f not in redundant]
+        print(f"  Pruned {len(redundant)} redundant features → lean set: {lean_features}")
+
+        print(f"\n--- Step 3: Saugus RBP analysis (lean feature set) ---")
         try:
-            saugus = analyze_saugus(df_raw, selected, target, n_random_cells)
+            saugus = analyze_saugus(df_raw, lean_features, target, n_random_cells)
             print(f"  Saugus: predicted={saugus['pred_pct']:.1f}%  "
                   f"actual={saugus['actual_pct']:.1f}%  "
                   f"gap={saugus['gap_pp']:+.1f}pp")
@@ -973,12 +1252,14 @@ def main(fast: bool = False):
 
         results.append({
             **model,
-            "features":   selected,
-            "history":    history,
-            "drop_df":    drop_df,
-            "saugus":     saugus,
-            "loo_score":  loo_score,
-            "base_score": base_score,
+            "features":      selected,          # full greedy set
+            "lean_features": lean_features,      # after dropout pruning
+            "redundant":     redundant,
+            "history":       history,
+            "drop_df":       drop_df,
+            "saugus":        saugus,             # run on lean set
+            "loo_score":     loo_score,
+            "base_score":    base_score,
         })
 
     # ── Write PDF ─────────────────────────────────────────────────────────────
@@ -988,10 +1269,15 @@ def main(fast: bool = False):
 
         for r in results:
             page_selection_history(pdf, r["label"], r["history"])
+            page_all_candidates(pdf, r["label"], r["history"], r["features"])
             page_dropout_results(pdf, r["label"], r["drop_df"],
                                  r["features"], r["base_score"])
             if r["saugus"]:
                 page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
+                page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
+                page_what_overachievers_did(pdf, r["label"], r["target"],
+                                            r["saugus"], df_raw,
+                                            r.get("lean_features", r["features"]))
 
         # Combined scatter
         saugus_with_data = [r["saugus"] for r in results if r["saugus"]]

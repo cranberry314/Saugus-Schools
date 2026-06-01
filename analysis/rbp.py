@@ -203,27 +203,46 @@ def _build_grid(n_features: int, n_random: int = 100,
     Sparse grid of variable subsets (Kritzman §Data and Methodology):
       - Full variable set
       - All K single-variable sets
-      - n_random randomly sampled subsets (sizes 2..K-1)
+      - Up to n_random randomly sampled subsets (sizes 2..K-1)
+
+    For small K, enumerate all possible subsets rather than random sampling
+    (avoids infinite loops when 2^K < n_random).
 
     Returns list of frozensets of feature indices.
     """
+    from itertools import combinations as _comb
     rng = random.Random(random_state)
     K = n_features
+
+    # For small K, enumerate the full power set (2^K ≤ 1024 is fine)
+    if K <= 10:
+        all_subsets = []
+        for size in range(1, K + 1):
+            for c in _comb(range(K), size):
+                all_subsets.append(frozenset(c))
+        # Always include full set and all singles; shuffle the rest
+        full  = frozenset(range(K))
+        singles = [frozenset([k]) for k in range(K)]
+        rest = [s for s in all_subsets if s != full and s not in singles]
+        rng.shuffle(rest)
+        return [full] + singles + rest[:n_random]
+
+    # For large K: sparse sampling
     cells: list[frozenset] = []
-
-    # Full set
-    cells.append(frozenset(range(K)))
-
-    # All singles
+    cells.append(frozenset(range(K)))          # full set
     for k in range(K):
-        cells.append(frozenset([k]))
+        cells.append(frozenset([k]))           # all singles
 
-    # Random subsets
-    seen = {frozenset(range(K))} | {frozenset([k]) for k in range(K)}
+    seen = set(cells)
+    max_size = K - 1                           # no single-variable subsets
+    if max_size < 2:
+        return cells                           # K<=2: nothing more to add
+
     attempts = 0
-    while len(cells) < K + 1 + n_random and attempts < n_random * 10:
-        size = rng.randint(2, max(2, K - 1))
-        subset = frozenset(rng.sample(range(K), min(size, K)))
+    target = len(cells) + n_random
+    while len(cells) < target and attempts < n_random * 20:
+        size   = rng.randint(2, max_size)
+        subset = frozenset(rng.sample(range(K), size))
         if subset not in seen:
             cells.append(subset)
             seen.add(subset)
@@ -454,8 +473,8 @@ def rbp_loo(X: pd.DataFrame, y: pd.Series, features: list[str],
                 'fit':       float('nan'),
             })
 
-        if verbose and (i + 1) % 50 == 0:
-            print(f"  LOO {i+1}/{len(X)} done")
+        if verbose and (i + 1) % 25 == 0:
+            print(f"  LOO {i+1}/{len(X)} done", flush=True)
 
     return pd.DataFrame(results, index=X.index)
 
