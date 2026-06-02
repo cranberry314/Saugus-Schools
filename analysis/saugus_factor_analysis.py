@@ -378,6 +378,10 @@ def load_features(engine, school_year: int = 2024) -> pd.DataFrame:
         if col not in skip:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Combined SAT score (EBRW + Math total, ~400–1600 range)
+    if "sat_ebrw" in df.columns and "sat_math" in df.columns:
+        df["sat_combined"] = df["sat_ebrw"] + df["sat_math"]
+
     return df
 
 
@@ -799,12 +803,14 @@ def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
 def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
     fig, axes = _paper_fig(1, 2)
+    is_pct_unit = analysis["actual_pct"] < 200   # SAT scores are 400–1600
+    unit = "%" if is_pct_unit else " pts"
     _header(fig,
             f"Saugus RBP Analysis: {label}",
             f"Prediction task = Saugus  ·  "
-            f"Predicted: {analysis['pred_pct']:.1f}%  "
-            f"Actual: {analysis['actual_pct']:.1f}%  "
-            f"Gap: {analysis['gap_pp']:+.1f}pp  "
+            f"Predicted: {analysis['pred_pct']:.1f}{unit}  "
+            f"Actual: {analysis['actual_pct']:.1f}{unit}  "
+            f"Gap: {analysis['gap_pp']:+.1f}{unit}  "
             f"(Fit: {analysis['result'].fit:.4f})")
 
     ax_l, ax_r = axes
@@ -837,12 +843,16 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
 
     col_labels = ["Town", "Weight", target[:12]]
 
+    ax_r.text(0.5, 0.97, "Most Relevant Towns (highest weight)",
+              ha="center", va="top", fontsize=9, fontweight="bold", color=_GREEN,
+              transform=ax_r.transAxes)
     top_tbl = ax_r.table(cellText=top_rows, colLabels=col_labels,
-                          loc=(0.02, 0.55, 0.96, 0.40),
-                          bbox=[0.02, 0.55, 0.96, 0.38])
+                          bbox=[0.02, 0.53, 0.96, 0.40])
+    ax_r.text(0.5, 0.50, "Least Relevant Towns (lowest weight)",
+              ha="center", va="top", fontsize=9, fontweight="bold", color=_RED,
+              transform=ax_r.transAxes)
     bot_tbl = ax_r.table(cellText=bot_rows, colLabels=col_labels,
-                          loc=(0.02, 0.08, 0.96, 0.40),
-                          bbox=[0.02, 0.08, 0.96, 0.38])
+                          bbox=[0.02, 0.04, 0.96, 0.40])
 
     for tbl, bg in [(top_tbl, "#E8F8E8"), (bot_tbl, "#FFE8E8")]:
         tbl.auto_set_font_size(False); tbl.set_fontsize(8.5)
@@ -852,13 +862,6 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
             else:
                 cell.set_facecolor(bg if row % 2 else "white")
             cell.set_edgecolor("#CCCCCC")
-
-    ax_r.text(0.5, 0.94, "Most Relevant Towns (highest weight)",
-              ha="center", fontsize=9, fontweight="bold", color=_GREEN,
-              transform=ax_r.transAxes)
-    ax_r.text(0.5, 0.46, "Least Relevant Towns (lowest weight)",
-              ha="center", fontsize=9, fontweight="bold", color=_RED,
-              transform=ax_r.transAxes)
 
     n_above = analysis.get("n_above", "?")
     n_total = analysis.get("n_total", "?")
@@ -992,9 +995,10 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     ax.legend(fontsize=8); ax.grid(alpha=0.2)
 
     saugus_resid = float(resid.get("Saugus", float("nan")))
+    unit = "%" if (act.median() < 200) else " pts"
     _header(fig, f"Overachievers: {label}",
             f"Districts beating their RBP prediction.  "
-            f"Saugus gap: {saugus_resid:+.1f}  ·  "
+            f"Saugus gap: {saugus_resid:+.1f}{unit}  ·  "
             f"Gold star = Saugus  ·  Green dots = top overachievers")
     _footer(fig, "Residual = actual − predicted.  Positive = performing better than demographics suggest.")
     _save(pdf, fig)
@@ -1052,24 +1056,28 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         imp_val = float(imp.get(feat, 0))
         rows.append([feat[:30], sv_fmt] + oa_vals + [f"{imp_val:+.3f}"])
 
+    # ── Left: feature comparison table ──────────────────────────────────────────
+    ax_l.text(0.5, 0.98,
+              f"Feature values — Saugus (highlighted) vs overachievers\n"
+              f"Ordered by |importance|, top {min(len(feats_ordered), 15)} shown",
+              ha="center", va="top", fontsize=8.5, fontweight="bold",
+              color=_BLUE, transform=ax_l.transAxes)
     if rows:
         tbl = ax_l.table(cellText=rows, colLabels=col_names[:len(rows[0])],
-                          loc="center", cellLoc="center")
+                          bbox=[0.0, 0.0, 1.0, 0.90], cellLoc="center")
         tbl.auto_set_font_size(False)
-        tbl.set_fontsize(7.5)
+        tbl.set_fontsize(7.2)
         tbl.auto_set_column_width(range(len(col_names)))
         for (row, col), cell in tbl.get_celld().items():
             if row == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
             elif col == 1 and row > 0:
-                cell.set_facecolor("#FFF8E1")   # Saugus column highlighted
+                cell.set_facecolor("#FFF8E1")
             else:
-                cell.set_facecolor("white")
-            cell.set_edgecolor("#CCCCCC")
-    ax_l.set_title(f"Feature values — Saugus vs overachievers\n(top {len(feats_ordered[:15])} by importance)",
-                   fontsize=9, pad=8)
+                cell.set_facecolor("#F7F7F7" if row % 2 else "white")
+            cell.set_edgecolor("#DDDDDD")
 
-    # ── Right: residuals + key overachiever stats ─────────────────────────────
+    # ── Right: residuals table ────────────────────────────────────────────────
     ax_r.axis("off")
     is_pct = loo["actual"].dropna().median() < 2.0
     mult   = 100 if is_pct else 1
@@ -1083,33 +1091,33 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         pred_v = float(row_loo["predicted"]) * mult
         resid  = act_v - pred_v
         label_r = f"{resid:+.1f}pp" if target != "dropout_pct" else f"{-resid:+.1f}pp better"
-        oa_rows.append([name[:22], f"{act_v:.1f}%", f"{pred_v:.1f}%", label_r])
+        oa_rows.append([name[:22], f"{act_v:.1f}", f"{pred_v:.1f}", label_r])
+
+    saugus_loo = loo.loc["Saugus"] if "Saugus" in loo.index else None
+    s_act  = float(saugus_loo["actual"])  * mult if saugus_loo is not None else float("nan")
+    s_pred = float(saugus_loo["predicted"]) * mult if saugus_loo is not None else float("nan")
+    s_res  = s_act - s_pred
 
     if oa_rows:
-        saugus_loo = loo.loc["Saugus"] if "Saugus" in loo.index else None
-        s_act  = float(saugus_loo["actual"])  * mult if saugus_loo is not None else float("nan")
-        s_pred = float(saugus_loo["predicted"]) * mult if saugus_loo is not None else float("nan")
-        s_res  = s_act - s_pred
-
         oa_rows_display = [[">> Saugus",
-                             f"{s_act:.1f}%", f"{s_pred:.1f}%",
+                             f"{s_act:.1f}", f"{s_pred:.1f}",
                              f"{s_res:+.1f}pp"]] + oa_rows
-
+        ax_r.text(0.5, 0.98, "Overachiever residuals vs Saugus",
+                  ha="center", va="top", fontsize=9, fontweight="bold",
+                  color=_BL, transform=ax_r.transAxes)
         oa_tbl = ax_r.table(cellText=oa_rows_display,
                              colLabels=["District", "Actual", "Predicted", "Gap"],
-                             loc="upper center", bbox=[0.0, 0.55, 1.0, 0.40])
+                             bbox=[0.0, 0.52, 1.0, 0.42])
         oa_tbl.auto_set_font_size(False); oa_tbl.set_fontsize(8.5)
         oa_tbl.auto_set_column_width(range(4))
         for (row, col), cell in oa_tbl.get_celld().items():
             if row == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
             elif row == 1:
-                cell.set_facecolor("#FFF8E1")   # Saugus row
+                cell.set_facecolor("#FFF8E1")
             else:
                 cell.set_facecolor("#E8F8E8" if row % 2 else "white")
             cell.set_edgecolor("#CCCCCC")
-
-    ax_r.set_title("Overachiever residuals vs Saugus", fontsize=9, pad=8)
 
     _footer(fig, "Gap = actual − predicted.  Positive = outperforming demographic expectation.  "
             "Feature values shown in raw units; importance scores from RBP Exhibit 5.")
@@ -1164,107 +1172,174 @@ def page_scatter_all(pdf, all_analyses: list[dict]):
 # 6.  Main orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Always exclude: true artifacts with no predictive validity in any model.
+#   fiscal_year — data-availability proxy, not a school system input.
+ALWAYS_EXCLUDE = {
+    "fiscal_year",
+    "org_code",
+    "district_name",
+}
+
+# Model-specific exclusions handle circularity case by case.
+# Rule: exclude a predictor when it measures the SAME thing as the target
+# through a different instrument (circular), not merely when it's correlated.
+# Cross-outcome relationships with a plausible causal pathway are allowed
+# and left to the greedy selection + dropout test to evaluate.
+
 MODELS = [
     {
-        "label":      "MCAS Grades 3–8",
-        "target":     "avg_mcas",
-        "target_pct": True,          # stored as fraction (0–1), multiply ×100 for display
-        "desc":       "% students meeting/exceeding (ELA + Math, grades 3–8)",
+        "label":        "MCAS Grades 3–8",
+        "target":       "avg_mcas",
+        "target_pct":   True,
+        "desc":         "% students meeting/exceeding (ELA + Math, grades 3–8)",
+        # Grade 10 MCAS and SAT measure the same district academic quality
+        # through different instruments/cohorts — circular with grades 3–8.
+        # dropout_pct and attending_pct are allowed: struggling systems have
+        # high dropout AND poor elementary MCAS (shared signal, not circular).
+        "also_exclude": {"mcas10_ela", "mcas10_math",
+                         "sat_ebrw", "sat_math", "sat_combined"},
     },
     {
-        "label":      "Postsecondary Attendance",
-        "target":     "attending_pct",
-        "target_pct": False,
-        "desc":       "% graduates attending college within 16 months",
+        "label":        "Postsecondary Attendance",
+        "target":       "attending_pct",
+        "target_pct":   False,
+        "desc":         "% graduates attending college within 16 months",
+        # Nothing excluded beyond the target itself: dropout (fewer dropouts →
+        # more graduates → more college), avg_mcas (academic pipeline), and
+        # grade 10 MCAS / SAT (HS performance → college admissions) are all
+        # causally valid predictors.
+        "also_exclude": set(),
     },
     {
-        "label":      "Dropout Rate",
-        "target":     "dropout_pct",
-        "target_pct": False,
-        "desc":       "% students dropping out of high school",
+        "label":        "Dropout Rate",
+        "target":       "dropout_pct",
+        "target_pct":   False,
+        "desc":         "% students dropping out of high school",
+        # avg_mcas (poor grades → disengagement → dropout) and attending_pct
+        # (fewer dropouts → more graduates → more college) are causal, not
+        # circular.  Grade 10 MCAS → dropout is also causal (HS performance
+        # predicts whether students stay).  All allowed.
+        # Graduation rates are the inverse of dropout (90% grad ≈ 10% dropout)
+        # and are circular — excluded here.  Coverage is currently 0% so the
+        # filter catches them anyway, but the reason is circularity.
+        "also_exclude": {"four_yr_grad_pct", "five_yr_grad_pct"},
+    },
+    {
+        "label":        "SAT Performance",
+        "target":       "sat_combined",
+        "target_pct":   False,
+        "desc":         "Combined SAT score (EBRW + Math, ~400–1600)",
+        # Exclude raw SAT components (predicting total from its own parts)
+        # and grade 10 MCAS (circular: both measure HS academic performance
+        # of the same cohort).  avg_mcas (elementary pipeline → HS) and
+        # dropout/attending (school environment signals) are allowed.
+        "also_exclude": {"sat_ebrw", "sat_math",
+                         "mcas10_ela", "mcas10_math"},
     },
 ]
 
 
-def main(fast: bool = False):
+def _run_one_model(args: tuple) -> dict:
+    """
+    Top-level worker function — must be at module level to be picklable
+    on macOS (which uses 'spawn' for multiprocessing).
+
+    Each worker loads its own database connection and feature data so
+    workers are fully independent and can run on separate cores.
+    """
+    model, n_random_cells, random_state = args
+    tag   = model["label"]
+    target = model["target"]
+
+    def _p(msg):
+        print(f"[{tag}] {msg}", flush=True)
+
+    _p(f"Starting  (target={target!r})")
+    engine = get_engine()
+    df_raw = load_features(engine)
+
+    exclude = ALWAYS_EXCLUDE | {target} | model.get("also_exclude", set())
+    candidates = [c for c in df_raw.columns
+                  if c not in exclude
+                  and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
+                  and df_raw[c].dtype.kind in "fiu"]
+
+    _p(f"Step 1: greedy selection ({len(candidates)} candidates)")
+    selected, history = greedy_forward_select(
+        df_raw, candidates, target,
+        random_state=random_state, n_random_cells=n_random_cells)
+
+    loo_score = _loo_score(df_raw, selected, target, n_random_cells)
+    _p(f"LOO r = {loo_score:.4f}  ({len(selected)} features selected)")
+
+    _p("Step 2: dropout test")
+    drop_df = dropout_test(df_raw, selected, target, n_random_cells)
+
+    redundant     = [r["feature"] for _, r in drop_df.iterrows()
+                     if not np.isnan(r.get("delta", float("nan")))
+                     and r["delta"] >= 0]
+    lean_features = [f for f in selected if f not in redundant]
+    _p(f"Pruned {len(redundant)} redundant → lean set: {lean_features}")
+
+    _p("Step 3: Saugus RBP analysis")
+    try:
+        saugus = analyze_saugus(df_raw, lean_features, target, n_random_cells)
+        _p(f"Saugus predicted={saugus['pred_pct']:.1f}%  "
+           f"actual={saugus['actual_pct']:.1f}%  gap={saugus['gap_pp']:+.1f}pp")
+    except Exception as e:
+        _p(f"Saugus analysis failed: {e}")
+        saugus = None
+
+    _p("Done.")
+    return {
+        **model,
+        "features":      selected,
+        "lean_features": lean_features,
+        "redundant":     redundant,
+        "history":       history,
+        "drop_df":       drop_df,
+        "saugus":        saugus,
+        "loo_score":     loo_score,
+        "base_score":    loo_score,
+    }
+
+
+def main(fast: bool = False, parallel: bool = False):
     n_random_cells = 30 if fast else 100
     random_state   = 42
 
-    engine = get_engine()
     OUTPUT_PDF.parent.mkdir(parents=True, exist_ok=True)
 
-    print("[factor_analysis] Loading features from database...")
+    worker_args = [(m, n_random_cells, random_state) for m in MODELS]
+
+    if parallel:
+        import multiprocessing as mp
+        n_cores = min(len(MODELS), mp.cpu_count())
+        print(f"[factor_analysis] Running {len(MODELS)} models in parallel "
+              f"({n_cores} cores)...")
+        # 'spawn' context is safe on macOS and avoids fork-related issues
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=n_cores) as pool:
+            results = pool.map(_run_one_model, worker_args)
+        # Restore MODELS order (pool.map preserves order, but be explicit)
+        label_order = [m["label"] for m in MODELS]
+        results.sort(key=lambda r: label_order.index(r["label"]))
+    else:
+        print(f"[factor_analysis] Running {len(MODELS)} models sequentially...")
+        results = [_run_one_model(a) for a in worker_args]
+
+    # PDF generation uses df_raw for the overachiever comparison table;
+    # load it once on the main process.
+    print("\n[factor_analysis] Loading features for PDF generation...")
+    engine = get_engine()
     df_raw = load_features(engine)
-    print(f"  Loaded {len(df_raw)} districts, {len(df_raw.columns)} columns")
+    print(f"  {len(df_raw)} districts, {len(df_raw.columns)} columns")
 
-    all_outcome_cols = [m["target"] for m in MODELS]
-
-    # ── Run each model ───────────────────────────────────────────────────────
-    results = []
-
-    for model in MODELS:
-        target = model["target"]
-        print(f"\n{'='*60}")
-        print(f"MODEL: {model['label']}  (target: {target!r})")
-        print(f"{'='*60}")
-
-        # Available features for this model:
-        # exclude the target AND the other two outcome columns
-        other_outcomes = [o for o in all_outcome_cols if o != target]
-        candidates = get_candidate_features(df_raw,
-                                            outcome_cols=all_outcome_cols,
-                                            min_coverage=MIN_COVERAGE)
-        # Allow other outcomes as candidate features (e.g., dropout can predict MCAS)
-        # but exclude the model's own target
-        candidates_with_cross = [c for c in df_raw.columns
-                                  if c not in {target, "org_code", "district_name"}
-                                  and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
-                                  and df_raw[c].dtype.kind in "fiu"]
-
-        print(f"\n--- Step 1: Greedy forward selection ({len(candidates_with_cross)} candidates) ---")
-        selected, history = greedy_forward_select(
-            df_raw, candidates_with_cross, target,
-            random_state=random_state, n_random_cells=n_random_cells)
-
-        loo_score = _loo_score(df_raw, selected, target, n_random_cells)
-        print(f"\n  Final LOO r = {loo_score:.4f}  with {len(selected)} features")
-
-        print(f"\n--- Step 2: Dropout test ---")
-        base_score = loo_score
-        drop_df = dropout_test(df_raw, selected, target, n_random_cells)
-
-        # Compute pruned (post-dropout) feature set
-        redundant    = [r["feature"] for _, r in drop_df.iterrows()
-                        if not np.isnan(r.get("delta", float("nan")))
-                        and r["delta"] >= 0]
-        lean_features = [f for f in selected if f not in redundant]
-        print(f"  Pruned {len(redundant)} redundant features → lean set: {lean_features}")
-
-        print(f"\n--- Step 3: Saugus RBP analysis (lean feature set) ---")
-        try:
-            saugus = analyze_saugus(df_raw, lean_features, target, n_random_cells)
-            print(f"  Saugus: predicted={saugus['pred_pct']:.1f}%  "
-                  f"actual={saugus['actual_pct']:.1f}%  "
-                  f"gap={saugus['gap_pp']:+.1f}pp")
-        except Exception as e:
-            print(f"  Saugus analysis failed: {e}")
-            saugus = None
-
-        results.append({
-            **model,
-            "features":      selected,          # full greedy set
-            "lean_features": lean_features,      # after dropout pruning
-            "redundant":     redundant,
-            "history":       history,
-            "drop_df":       drop_df,
-            "saugus":        saugus,             # run on lean set
-            "loo_score":     loo_score,
-            "base_score":    base_score,
-        })
-
-    # ── Write PDF ─────────────────────────────────────────────────────────────
-    print(f"\n[factor_analysis] Writing PDF to {OUTPUT_PDF}...")
-    with PdfPages(str(OUTPUT_PDF)) as pdf:
+    # ── Write PDF (write to /tmp first, then copy to avoid network timeouts) ──
+    import tempfile, shutil as _shutil
+    _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
+    print(f"\n[factor_analysis] Writing PDF...")
+    with PdfPages(str(_tmp_pdf)) as pdf:
         page_title(pdf, results)
 
         for r in results:
@@ -1297,6 +1372,7 @@ def main(fast: bool = False):
                          "loo_r": r["loo_score"]})
     pd.DataFrame(rows).to_csv(str(OUTPUT_CSV), index=False)
 
+    _shutil.copy2(str(_tmp_pdf), str(OUTPUT_PDF))
     print(f"[factor_analysis] Done → {OUTPUT_PDF}")
     print(f"                       → {OUTPUT_CSV}")
 
@@ -1305,5 +1381,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--fast", action="store_true",
                     help="Use fewer grid cells (faster, less accurate)")
+    ap.add_argument("--parallel", action="store_true",
+                    help="Run all models concurrently on separate CPU cores")
     args = ap.parse_args()
-    main(fast=args.fast)
+    main(fast=args.fast, parallel=args.parallel)
