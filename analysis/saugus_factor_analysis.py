@@ -646,7 +646,7 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
-        "Four outcomes modeled independently: MCAS (grades 3–8), Postsecondary, Dropout Rate, SAT",
+        "Three outcomes modeled independently: MCAS (grades 3–8), Postsecondary Attendance, Dropout Rate",
         "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
         "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
         f"Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
@@ -1496,18 +1496,13 @@ MODELS = [
         # filter catches them anyway, but the reason is circularity.
         "also_exclude": {"four_yr_grad_pct", "five_yr_grad_pct"},
     },
-    {
-        "label":        "SAT Performance",
-        "target":       "sat_combined",
-        "target_pct":   False,
-        "desc":         "Combined SAT score (EBRW + Math, ~400–1600)",
-        # Exclude raw SAT components (predicting total from its own parts)
-        # and grade 10 MCAS (circular: both measure HS academic performance
-        # of the same cohort).  avg_mcas (elementary pipeline → HS) and
-        # dropout/attending (school environment signals) are allowed.
-        "also_exclude": {"sat_ebrw", "sat_math",
-                         "mcas10_ela", "mcas10_math"},
-    },
+    # SAT removed: scores above ~1200 in MA are driven by private prep spending
+    # (Kaplan, Princeton Review, private tutors) rather than school quality.
+    # The model cannot distinguish between school contribution and private prep,
+    # making Saugus comparisons to wealthy districts methodologically unfair.
+    # The joint 28-feature model also collapsed (all features showed negative
+    # importance) due to severe collinearity — every feature is measuring the
+    # same underlying wealth dimension from a different angle.
 ]
 
 
@@ -1722,6 +1717,10 @@ def regen_pdf():
         cache = _pickle.load(f)
     results = cache["results"]
     df_raw  = cache["df_raw"]
+    # Filter to only models still in MODELS list — lets us drop a model from
+    # the PDF without rerunning by removing it from MODELS and calling --regen-pdf
+    active_labels = {m["label"] for m in MODELS}
+    results = [r for r in results if r.get("label") in active_labels]
     print(f"[regen-pdf] Regenerating PDF ({len(results)} models)...")
     _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
     with PdfPages(str(_tmp_pdf)) as pdf:
