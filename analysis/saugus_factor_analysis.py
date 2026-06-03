@@ -1084,14 +1084,18 @@ def page_combined_summary(pdf, results: list[dict]):
 
 def page_importance_selection(pdf, label: str, all_candidates: list[str],
                               full_importance: pd.Series,
-                              lean_features: list[str]):
+                              lean_features: list[str],
+                              univariate_loo: dict | None = None):
     """
-    Replaces greedy selection + dropout pages with a single Exhibit 5 view
-    over ALL candidate features.
+    Exhibit 5 view over ALL candidate features, plus a univariate-LOO comparison.
 
     Left  — horizontal bar chart: variable importance for every candidate.
              Green = positive importance (kept), red/grey = pruned.
-    Right — table: lean feature set with importance values.
+    Right — scatter: Exhibit 5 importance (y) vs univariate LOO r (x).
+             Quadrants reveal whether the two metrics agree.
+             Agreement = feature is independently AND combinatorially useful.
+             High LOO / low importance = redundant with other features.
+             Low LOO / high importance = interaction effect, only helps in combo.
     """
     fig, axes = _paper_fig(1, 2)
     ax_l, ax_r = axes
@@ -1099,13 +1103,14 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     n_pruned = len(all_candidates) - len(lean_features)
 
     _header(fig, f"Factor Selection via Variable Importance: {label}",
-            f"RBP run once with all {len(all_candidates)} candidates — "
-            f"Exhibit 5 importance identifies the {len(lean_features)} contributing features "
-            f"({n_pruned} pruned: importance ≤ 0)")
+            f"RBP run once with all {len(all_candidates)} candidates  ·  "
+            f"n_random={1000}  ·  "
+            f"{len(lean_features)} features kept (importance > 0)  ·  "
+            f"{n_pruned} pruned")
 
     # ── Left: importance bar chart for all candidates ────────────────────────
-    imp_vals = full_importance.reindex(all_candidates).fillna(0)
-    imp_sorted = imp_vals.sort_values()          # ascending so most positive is top
+    imp_vals   = full_importance.reindex(all_candidates).fillna(0)
+    imp_sorted = imp_vals.sort_values()
 
     feats  = imp_sorted.index.tolist()
     values = imp_sorted.values.tolist()
@@ -1118,10 +1123,9 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     ax_l.axvline(0, color=_BL, lw=1.0)
     ax_l.set_xlabel("Variable importance  (avg fit with feature − avg fit without)")
     ax_l.set_title("All Candidates — Kritzman Exhibit 5\n"
-                   "Green = positive (kept)  ·  Grey/red = pruned", fontsize=9)
+                   "Green = kept (importance > 0)  ·  Grey/red = pruned", fontsize=9)
     ax_l.grid(axis="x", alpha=0.25)
 
-    # Annotate selected features only
     for bar, (feat, val) in zip(ax_l.patches, zip(feats, values)):
         if feat in lean_set:
             ax_l.text(val + 0.005 if val >= 0 else val - 0.005,
@@ -1130,40 +1134,60 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
                       fontsize=6.5, color=_GREEN, fontweight="bold",
                       ha="left" if val >= 0 else "right")
 
-    kept_p  = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Kept ({len(lean_features)})")
-    drop_p  = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Pruned ({n_pruned})")
+    kept_p = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Kept ({len(lean_features)})")
+    drop_p = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Pruned ({n_pruned})")
     ax_l.legend(handles=[kept_p, drop_p], loc="lower right", fontsize=8)
 
-    # ── Right: lean feature set table ────────────────────────────────────────
-    ax_r.axis("off")
-    ax_r.text(0.5, 0.97,
-              f"Lean feature set — {len(lean_features)} features\n"
-              "(positive importance only, sorted by contribution)",
-              ha="center", va="top", fontsize=9, fontweight="bold",
-              color=_BLUE, transform=ax_r.transAxes)
+    # ── Right: scatter — Exhibit 5 importance vs univariate LOO r ───────────
+    if univariate_loo:
+        valid_feats = [f for f in all_candidates
+                       if f in univariate_loo and not np.isnan(univariate_loo[f])]
+        x_vals = [univariate_loo[f] for f in valid_feats]
+        y_vals = [float(full_importance.get(f, 0)) for f in valid_feats]
+        pt_colors = [_GREEN if f in lean_set else _GREY for f in valid_feats]
 
-    lean_rows = [[f[:38], f"{float(full_importance.get(f, 0)):+.4f}"]
-                 for f in lean_features]
-    if lean_rows:
-        tbl = ax_r.table(cellText=lean_rows,
-                         colLabels=["Feature", "Importance"],
-                         bbox=[0.02, 0.05, 0.96, 0.85])
-        tbl.auto_set_font_size(False); tbl.set_fontsize(9)
-        char_w = [max(len(str(r[c])) for r in [["Feature","Importance"]] + lean_rows)
-                  for c in range(2)]
-        tot = max(sum(char_w), 1)
-        for (row, col), cell in tbl.get_celld().items():
-            cell.set_width(char_w[col] / tot)
-            if row == 0:
-                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-            else:
-                cell.set_facecolor("#E8F8E8" if row % 2 else "white")
-            cell.set_edgecolor("#CCCCCC")
+        ax_r.scatter(x_vals, y_vals, c=pt_colors, alpha=0.7, s=55, zorder=3)
+        ax_r.axhline(0, color=_GREY, lw=0.8, ls="--", alpha=0.6)
+        ax_r.axvline(0, color=_GREY, lw=0.8, ls="--", alpha=0.6)
+
+        # Label features in lean set (or those near the axes — interesting cases)
+        for feat, xv, yv in zip(valid_feats, x_vals, y_vals):
+            if feat in lean_set or abs(xv) > 0.3 or abs(yv) > 0.05:
+                ax_r.annotate(feat[:22], (xv, yv),
+                              textcoords="offset points", xytext=(3, 2),
+                              fontsize=5.5, color=_BL, alpha=0.8)
+
+        ax_r.set_xlabel("Univariate LOO r\n(single-feature leave-one-out correlation)",
+                        fontsize=8)
+        ax_r.set_ylabel("Exhibit 5 importance\n(multivariate, relative to all candidates)",
+                        fontsize=8)
+        ax_r.set_title("Do the two metrics agree?\n"
+                       "Upper-right = strong both ways  ·  "
+                       "Upper-left = combo effect only", fontsize=8)
+        ax_r.grid(alpha=0.2)
+
+        # Quadrant labels
+        xlim = ax_r.get_xlim(); ylim = ax_r.get_ylim()
+        ax_r.text(xlim[1]*0.98, ylim[1]*0.98,
+                  "High LOO\nHigh imp\n(robust)",
+                  ha="right", va="top", fontsize=6, color=_GREEN, alpha=0.6)
+        ax_r.text(xlim[0]*0.98 if xlim[0] < 0 else 0,
+                  ylim[1]*0.98,
+                  "Low LOO\nHigh imp\n(interaction)",
+                  ha="left", va="top", fontsize=6, color=_GOLD, alpha=0.6)
+        ax_r.text(xlim[1]*0.98, ylim[0]*0.98 if ylim[0] < 0 else 0,
+                  "High LOO\nLow imp\n(redundant)",
+                  ha="right", va="bottom", fontsize=6, color=_GREY, alpha=0.6)
+    else:
+        ax_r.axis("off")
+        ax_r.text(0.5, 0.5, "Univariate LOO data not available",
+                  ha="center", va="center", fontsize=9, color=_GREY,
+                  transform=ax_r.transAxes)
 
     _footer(fig,
-            "Variable importance = avg adjusted fit of grid cells containing this feature "
-            "minus avg adjusted fit of cells not containing it.  "
-            "Positive = feature improves prediction reliability.")
+            "Variable importance: avg adjusted fit of grid cells containing feature − "
+            "avg fit of cells without it (Kritzman 2024 Exhibit 5).  "
+            "Univariate LOO r: single-feature leave-one-out correlation.")
     _save(pdf, fig)
 
 
@@ -1533,6 +1557,27 @@ def _run_one_model(args: tuple) -> dict:
         _p(f"  Full model failed: {e}")
         return {}
 
+    # ── Step 1b: Univariate LOO r for every candidate (diagnostic only) ────────
+    # Run single-feature RBP LOO for each candidate.  K=1 grids are tiny
+    # (the full power set is just one cell), so this step is fast regardless
+    # of n_random_cells.  Results are NOT used to drop features — they are
+    # shown alongside Exhibit 5 importance to let you see whether the two
+    # metrics agree.
+    #   Agreement: feature ranks high on both → independently predictive AND
+    #              useful in the multivariate context.
+    #   Disagreement (high LOO r, low importance): feature predicts well alone
+    #              but is made redundant by others in the full model.
+    #   Disagreement (low LOO r, high importance): feature only helps in
+    #              combination — a genuine interaction captured by RBP.
+    _p(f"Step 1b: Univariate LOO r for {len(candidates)} candidates")
+    univariate_loo: dict[str, float] = {}
+    for feat in candidates:
+        univariate_loo[feat] = _loo_score(df_raw, [feat], target, n_random_cells)
+    ulo_summary = sorted(univariate_loo.items(), key=lambda x: x[1]
+                         if not np.isnan(x[1]) else -999, reverse=True)
+    for feat, score in ulo_summary[:5]:
+        _p(f"  top: {feat} = {score:+.4f}")
+
     # ── Step 2: Prune by variable importance ────────────────────────────────
     # Keep only features with positive importance — they help the prediction.
     # Features with ≤ 0 importance are adding noise to the reliability signal.
@@ -1566,6 +1611,7 @@ def _run_one_model(args: tuple) -> dict:
         **model,
         "all_candidates":   candidates,
         "full_importance":  full_importance,
+        "univariate_loo":   univariate_loo,
         "lean_features":    lean_features,
         "features":         lean_features,   # kept for PDF backward compat
         "saugus":           saugus,
@@ -1575,7 +1621,10 @@ def _run_one_model(args: tuple) -> dict:
 
 
 def main(fast: bool = False, parallel: bool = False):
-    n_random_cells = 30 if fast else 100
+    # n_random controls grid density for importance estimation.
+    # Paper used 100 with K=14 (~7 appearances/feature in random cells).
+    # With K≈32 candidates, 1000 gives ~500 appearances/feature — reliable.
+    n_random_cells = 30 if fast else 1000
     random_state   = 42
 
     OUTPUT_PDF.parent.mkdir(parents=True, exist_ok=True)
@@ -1618,7 +1667,8 @@ def main(fast: bool = False, parallel: bool = False):
                                       r.get("full_importance",
                                             r["saugus"]["result"].variable_importance
                                             if r.get("saugus") else pd.Series()),
-                                      r.get("lean_features", r["features"]))
+                                      r.get("lean_features", r["features"]),
+                                      univariate_loo=r.get("univariate_loo"))
             if r["saugus"]:
                 page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
                 page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
@@ -1682,7 +1732,8 @@ def regen_pdf():
                                       r.get("full_importance",
                                             r["saugus"]["result"].variable_importance
                                             if r.get("saugus") else pd.Series()),
-                                      r.get("lean_features", r["features"]))
+                                      r.get("lean_features", r["features"]),
+                                      univariate_loo=r.get("univariate_loo"))
             if r["saugus"]:
                 page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
                 page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
