@@ -1,4 +1,5 @@
 """
+
 Relevance-Based Prediction (RBP)
 =================================
 Exact implementation of Czasonis, Kritzman & Turkington (2024)
@@ -120,42 +121,62 @@ def _relevance(X: np.ndarray, x_t: np.ndarray,
     return sim + 0.5 * (info_i + info_t)
 
 
-def _prediction_weights(r: np.ndarray, r_star_pctile: float,
-                        use_similarity_only: bool = False) -> np.ndarray:
+def _compute_delta(r_censor: np.ndarray, r_star_pctile: float) -> np.ndarray:
     """
-    Equations 1, 6–10: compute prediction weights for one grid cell.
+    Equation 6: compute binary censoring mask δ.
 
-    r_star_pctile : censoring threshold as a percentile (0–1).
-                    0 = no censoring (equivalent to linear regression).
-    use_similarity_only : censor only on the sim component of r (not full relevance).
+    r_censor      : scores used to SET the threshold.
+                    Standard mode  → full relevance r_it.
+                    Similarity mode → sim(x_i, x_t) component only (Eq 3).
+    r_star_pctile : percentile threshold (0 = no censoring, retain all).
+
+    WHY SEPARATE FROM _prediction_weights:
+    The paper distinguishes two censoring modes (§Data and Methodology):
+      "We consider censoring based on relevance as well as censoring based on
+       similarity."
+    In similarity-only mode the CENSORING CRITERION differs (use sim component),
+    but the WEIGHT FORMULA (Eq 1) still uses full relevance r_it for the tilts.
+    Separating delta-computation from weight-computation makes this explicit.
+    """
+    N = len(r_censor)
+    if r_star_pctile <= 0:
+        return np.ones(N, dtype=float)           # retain all (Eq 6: r* = −∞)
+    r_star = np.percentile(r_censor, r_star_pctile * 100)
+    return (r_censor >= r_star).astype(float)    # Eq 6
+
+
+def _prediction_weights(r: np.ndarray, delta: np.ndarray) -> np.ndarray:
+    """
+    Equations 1, 7–10: compute prediction weights given pre-computed delta.
+
+    r     : full relevance r_it — ALWAYS used for the weight tilts (Eq 1).
+            Do NOT pass sim-only scores here; similarity censoring only
+            affects which observations are *retained* (delta), not the tilts.
+    delta : binary censoring mask from _compute_delta (Eq 6).
 
     Returns w : (N,) weights summing to 1.
+
+    MATHEMATICAL CHECK — weights sum to 1:
+      Σ w = N × (1/N) + λ²/(n−1) × [Σ δ r − N × φ × r̄_sub]
+           = 1 + λ²/(n−1) × [n r̄_sub − N × (n/N) × r̄_sub]
+           = 1 + 0  =  1  ✓
     """
     N = len(r)
-
-    # Censoring threshold r* (Eq 6)
-    if r_star_pctile <= 0:
-        delta = np.ones(N, dtype=float)          # retain all
-    else:
-        r_star = np.percentile(r, r_star_pctile * 100)
-        delta  = (r >= r_star).astype(float)     # Eq 6
-
-    n    = delta.sum()                           # Eq 7
+    n = delta.sum()                              # Eq 7
     if n < 2:                                    # degenerate — uniform weights
         return np.full(N, 1.0 / N)
 
-    phi      = n / N                             # Eq 8
-    r_sub    = (delta * r).sum() / n             # Eq 9: r̄_sub
+    phi   = n / N                                # Eq 8
+    r_bar = (delta * r).sum() / n               # Eq 9: r̄_sub (mean of retained r)
 
-    # λ² = σ²_r,full / σ²_r,partial   (Eq 10 — second moments, not variances)
+    # λ² = σ²_r,full / σ²_r,partial  (Eq 10 — second moments, not variances)
     ss_full    = (r ** 2).sum() / (N - 1)
     ss_partial = ((delta * r) ** 2).sum() / (n - 1)
     lam2 = ss_full / ss_partial if ss_partial > 0 else 1.0
 
-    # Eq 1: w_itθ = 1/N + λ²/(n−1) × (δ(r_it)r_it − φ r̄_sub)
-    tilt = lam2 / (n - 1) * (delta * r - phi * r_sub)
-    w    = 1.0 / N + tilt
-    return w
+    # Eq 1: w_itθ = 1/N + λ²/(n−1) × (δ(r_it) r_it − φ r̄_sub)
+    tilt = lam2 / (n - 1) * (delta * r - phi * r_bar)
+    return 1.0 / N + tilt
 
 
 def _adjusted_fit(w: np.ndarray, y: np.ndarray, K: int,
@@ -331,18 +352,28 @@ def rbp(X:         pd.DataFrame,
         X_sub    = X_z[:, feat_idx]
         xt_sub   = xt_z[feat_idx]
         Om_inv   = _covariance_inv(X_sub)
-        r_sub    = _relevance(X_sub, xt_sub, Om_inv)
+        r_sub    = _relevance(X_sub, xt_sub, Om_inv)   # full relevance (Eq 2–5)
+
+        # Similarity-only component for this cell — used as censoring criterion
+        # when use_sim=True.  This is Eq 3 alone: sim(x_i, x_t) = −½ Δ Ω⁻¹ Δ'
+        # The informativeness terms (Eq 4–5) are intentionally omitted here;
+        # the paper tests whether censoring on *proximity* alone (without
+        # informativeness) yields a better prediction for this task.
+        diff_sim = X_sub - xt_sub                      # (N, K_cell)
+        sim_sub  = -0.5 * np.einsum('ij,jk,ik->i',
+                                    diff_sim, Om_inv, diff_sim)  # Eq 3 only
 
         for threshold in CENSORING_THRESHOLDS:
-            for use_sim in (False, True):            # relevance + similarity censoring
-                w       = _prediction_weights(r_sub, threshold,
-                                              use_similarity_only=use_sim)
-                if threshold <= 0:
-                    delta = np.ones(N, dtype=float)
-                else:
-                    r_star = np.percentile(r_sub, threshold * 100)
-                    delta  = (r_sub >= r_star).astype(float)
+            for use_sim in (False, True):
+                # Choose censoring criterion (Eq 6):
+                #   use_sim=False → censor on full relevance r_it  (standard)
+                #   use_sim=True  → censor on similarity only       (paper §Data)
+                r_censor = sim_sub if use_sim else r_sub
+                delta    = _compute_delta(r_censor, threshold)
 
+                # Weights ALWAYS use full relevance r_sub (Eq 1).
+                # Only the censoring criterion differs between modes.
+                w       = _prediction_weights(r_sub, delta)
                 adj_fit = _adjusted_fit(w, y_arr, cell_K, delta)
                 pred    = _cell_prediction(w, y_arr)
 

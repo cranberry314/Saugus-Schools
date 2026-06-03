@@ -70,10 +70,15 @@ matplotlib.rcParams.update({
     "figure.dpi":     150,
 })
 
-OUTPUT_PDF = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis.pdf"
-OUTPUT_CSV = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis_results.csv"
+OUTPUT_PDF   = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis.pdf"
+OUTPUT_CSV   = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis_results.csv"
+OUTPUT_CACHE = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis_cache.pkl"
 SAUGUS = "Saugus"
-MIN_COVERAGE = 0.65   # feature must have data for ≥65 % of districts
+MIN_COVERAGE   = 0.65   # feature must have data for ≥65 % of districts
+MIN_IMPROVEMENT = 0.005  # greedy: add if LOO r improves by ≥ this amount
+                          # dropout: remove only if LOO r improves by ≥ this amount when dropped
+                          # (symmetric threshold — a feature earns its place on the same
+                          #  standard it was selected on)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -431,7 +436,7 @@ def greedy_forward_select(df: pd.DataFrame,
                            target: str,
                            random_state: int = 42,
                            n_random_cells: int = 100,
-                           min_improvement: float = 0.005) -> tuple[list[str], list[dict]]:
+                           min_improvement: float = MIN_IMPROVEMENT) -> tuple[list[str], list[dict]]:
     """
     Greedy random forward selection.
 
@@ -448,17 +453,19 @@ def greedy_forward_select(df: pd.DataFrame,
 
     selected:  list[str]  = []
     history:   list[dict] = []
-    best_score = float("nan")
+    # Baseline: a model with zero features has zero predictive correlation.
+    # The first candidate must improve over 0 by ≥ min_improvement to be kept.
+    # Using NaN here was a bug — it caused the first candidate to be accepted
+    # unconditionally regardless of its LOO r (even negative values like −0.23).
+    best_score = 0.0
 
     print(f"  Greedy selection: {len(pool)} candidates, target={target!r}")
 
     for i, feat in enumerate(pool, 1):
         candidate = selected + [feat]
         score     = _loo_score(df, candidate, target, n_random_cells)
-        improved  = (
-            np.isnan(best_score) or
-            (not np.isnan(score) and score > best_score + min_improvement)
-        )
+        improved  = (not np.isnan(score) and
+                     score > best_score + min_improvement)
 
         if improved and not np.isnan(score):
             action = "KEEP"
@@ -505,7 +512,7 @@ def dropout_test(df: pd.DataFrame,
         delta = score - base if not np.isnan(score) else float("nan")
         rows.append({"feature": feat, "score_without": score,
                      "base_score": base, "delta": delta})
-        status = "REDUNDANT" if (not np.isnan(delta) and delta >= 0) else "load-bearing"
+        status = "REDUNDANT" if (not np.isnan(delta) and delta >= MIN_IMPROVEMENT) else "load-bearing"
         print(f"    drop {feat:<40s}  r={score:+.4f}  delta={delta:+.4f}  {status}")
 
     return pd.DataFrame(rows).sort_values("delta")
@@ -639,11 +646,11 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
-        "Three outcomes modeled independently: MCAS (grades 3–8), Postsecondary Attendance, Dropout Rate",
-        "Features selected by greedy random forward selection using leave-one-out RBP fit",
-        "Dropout test confirms no redundant features retained",
+        "Four outcomes modeled independently: MCAS (grades 3–8), Postsecondary, Dropout Rate, SAT",
+        "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
+        "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
         f"Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
-        f"Variable importance computed per Exhibit 5 of the Kritzman paper",
+        f"Leave-one-out LOO r validates lean feature set across all MA districts",
     ]
     for i, line in enumerate(lines):
         ax.text(0.1, 0.55 - i * 0.06, line, ha="left", va="center",
@@ -740,7 +747,7 @@ def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
     ax = axes if hasattr(axes, 'axis') else axes
 
     redundant = [r["feature"] for _, r in dropout_df.iterrows()
-                 if not np.isnan(r.get("delta", float("nan"))) and r["delta"] >= 0]
+                 if not np.isnan(r.get("delta", float("nan"))) and r["delta"] >= MIN_IMPROVEMENT]
     keepers   = [f for f in selected_features if f not in redundant]
 
     subtitle = (f"Greedy selected {len(selected_features)} features  ·  "
@@ -759,7 +766,7 @@ def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
         delta = r["delta"]
         if np.isnan(delta):
             status = "?"
-        elif delta >= 0:
+        elif delta >= MIN_IMPROVEMENT:
             status = "REDUNDANT — removed"
         elif delta > -0.01:
             status = "minor"
@@ -804,7 +811,7 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
     fig, axes = _paper_fig(1, 2)
     is_pct_unit = analysis["actual_pct"] < 200   # SAT scores are 400–1600
-    unit = "%" if is_pct_unit else " pts"
+    unit = "pp" if is_pct_unit else " pts"
     _header(fig,
             f"Saugus RBP Analysis: {label}",
             f"Prediction task = Saugus  ·  "
@@ -854,9 +861,16 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     bot_tbl = ax_r.table(cellText=bot_rows, colLabels=col_labels,
                           bbox=[0.02, 0.04, 0.96, 0.40])
 
-    for tbl, bg in [(top_tbl, "#E8F8E8"), (bot_tbl, "#FFE8E8")]:
+    for tbl, bg, t_rows in [(top_tbl, "#E8F8E8", top_rows),
+                             (bot_tbl, "#FFE8E8", bot_rows)]:
         tbl.auto_set_font_size(False); tbl.set_fontsize(8.5)
+        all_text = [col_labels] + t_rows
+        char_w = [max(len(str(r[c])) for r in all_text if c < len(r))
+                  for c in range(len(col_labels))]
+        total_c = max(sum(char_w), 1)
         for (row, col), cell in tbl.get_celld().items():
+            if col < len(char_w):
+                cell.set_width(char_w[col] / total_c)
             if row == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
             else:
@@ -907,12 +921,12 @@ def page_all_candidates(pdf, label: str, history: list[dict],
     ax.axvline(0, color=_BL, lw=0.8, alpha=0.4)
     ax.grid(axis="x", alpha=0.25)
 
-    # Annotate bars with scores
+    # Annotate only selected (kept) bars to avoid crowding with 30+ bars
     for bar, score, (feat, raw_score, action) in zip(bars, scores, valid):
-        if not np.isnan(raw_score):
+        if not np.isnan(raw_score) and action == "KEEP":
             ax.text(bar.get_width() + 0.003, bar.get_y() + bar.get_height()/2,
                     f"{raw_score:+.3f}",
-                    va="center", fontsize=7.5, color=_BL)
+                    va="center", fontsize=7, color=_GREEN, fontweight="bold")
 
     # Legend
     kept_patch    = mpatches.Patch(color=_GREEN, alpha=0.9, label=f"Added ({len(kept)} features)")
@@ -924,6 +938,232 @@ def page_all_candidates(pdf, label: str, history: list[dict],
     _footer(fig,
             "Score shown is the LOO r when that feature was evaluated (with all "
             "previously accepted features already in the set).")
+    _save(pdf, fig)
+
+
+def page_combined_summary(pdf, results: list[dict]):
+    """
+    Single page combining all four models:
+      Top half   — Saugus prediction summary across all models
+      Bottom half — Feature cross-reference: which features appear in multiple models
+    """
+    fig, axes = _paper_fig(2, 1, gridspec_kw={"height_ratios": [1, 1.4]})
+    ax_top, ax_bot = axes
+    _header(fig, "Combined Model Summary: All Four Outcomes",
+            "RBP factor selection results across MCAS, Postsecondary, Dropout, and SAT models")
+
+    # ── Top: Saugus prediction table ─────────────────────────────────────────
+    ax_top.axis("off")
+    summary_rows = []
+    for r in results:
+        s = r.get("saugus")
+        if not s:
+            continue
+        is_pct = s["actual_pct"] < 200
+        unit   = "pp" if is_pct else " pts"
+        gap    = s["gap_pp"]
+        gap_str = f"{gap:+.1f}{unit}"
+        direction = "above" if gap > 0 else ("on target" if abs(gap) < 0.5 else "below")
+        summary_rows.append([
+            r["label"],
+            f"{s['pred_pct']:.1f}{'%' if is_pct else ' pts'}",
+            f"{s['actual_pct']:.1f}{'%' if is_pct else ' pts'}",
+            gap_str,
+            direction,
+            f"{r['loo_score']:+.3f}",
+            str(len(r.get("lean_features", r["features"]))),
+        ])
+
+    col_heads = ["Model", "Predicted", "Actual", "Gap", "Direction", "LOO r", "Features"]
+    if summary_rows:
+        tbl = ax_top.table(cellText=summary_rows, colLabels=col_heads,
+                           bbox=[0.0, 0.05, 1.0, 0.88])
+        tbl.auto_set_font_size(False); tbl.set_fontsize(9.5)
+        char_w = [max(len(str(r[c])) for r in [col_heads] + summary_rows)
+                  for c in range(len(col_heads))]
+        tot = max(sum(char_w), 1)
+        gap_col = col_heads.index("Gap")
+        dir_col = col_heads.index("Direction")
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_width(char_w[col] / tot)
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white", fontsize=9.5)
+            else:
+                gap_val = summary_rows[row-1][gap_col] if row <= len(summary_rows) else ""
+                if "above" in summary_rows[row-1][dir_col]:
+                    bg = "#E8F8E8"
+                elif "below" in summary_rows[row-1][dir_col]:
+                    bg = "#FFE8E8"
+                else:
+                    bg = "#FFF8E1"
+                cell.set_facecolor(bg if col == gap_col else ("#F5F5F5" if row % 2 else "white"))
+            cell.set_edgecolor("#CCCCCC")
+
+    # ── Bottom: feature cross-reference ──────────────────────────────────────
+    ax_bot.axis("off")
+    ax_bot.text(0.5, 0.98, "Feature Cross-Reference — Which Factors Earn Their Place Across Models",
+                ha="center", va="top", fontsize=10, fontweight="bold",
+                color=_BLUE, transform=ax_bot.transAxes)
+    ax_bot.text(0.5, 0.93,
+                "A feature appearing in multiple models is a robust signal, not a model-specific artifact.",
+                ha="center", va="top", fontsize=8.5, color=_GREY, transform=ax_bot.transAxes)
+
+    # Build cross-reference: feature → {model: importance}
+    model_labels = [r["label"] for r in results]
+    feature_set: dict[str, dict] = {}
+    for r in results:
+        s = r.get("saugus")
+        lean = r.get("lean_features", r["features"])
+        imp_series = s["result"].variable_importance if s else None
+        for feat in lean:
+            if feat not in feature_set:
+                feature_set[feat] = {}
+            imp_val = float(imp_series.get(feat, 0)) if imp_series is not None else 0.0
+            feature_set[feat][r["label"]] = imp_val
+
+    # Sort by number of models (descending), then by average |importance|
+    def _sort_key(item):
+        feat, model_imps = item
+        return (-len(model_imps), -np.mean([abs(v) for v in model_imps.values()]))
+
+    sorted_feats = sorted(feature_set.items(), key=_sort_key)
+
+    # Shorten model labels for column headers
+    short_labels = {"MCAS Grades 3–8": "MCAS", "Postsecondary Attendance": "Post-sec",
+                    "Dropout Rate": "Dropout", "SAT Performance": "SAT"}
+    col_h2 = ["Feature", "# Models"] + [short_labels.get(m, m[:8]) for m in model_labels]
+    xref_rows = []
+    for feat, model_imps in sorted_feats:
+        n_models = len(model_imps)
+        row = [feat, str(n_models)]
+        for lbl in model_labels:
+            if lbl in model_imps:
+                row.append(f"{model_imps[lbl]:+.3f}")
+            else:
+                row.append("—")
+        xref_rows.append(row)
+
+    if xref_rows:
+        tbl2 = ax_bot.table(cellText=xref_rows, colLabels=col_h2,
+                            bbox=[0.0, 0.0, 1.0, 0.88])
+        tbl2.auto_set_font_size(False); tbl2.set_fontsize(8.5)
+        char_w2 = [max(len(str(r[c])) for r in [col_h2] + xref_rows)
+                   for c in range(len(col_h2))]
+        tot2 = max(sum(char_w2), 1)
+        n_col = col_h2.index("# Models")
+        for (row, col), cell in tbl2.get_celld().items():
+            cell.set_width(char_w2[col] / tot2)
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            else:
+                n = int(xref_rows[row-1][n_col]) if row <= len(xref_rows) else 0
+                if n >= 3:
+                    bg = "#E8F8E8"   # appears in 3+ models — strong signal
+                elif n == 2:
+                    bg = "#FFF8E1"   # 2 models
+                else:
+                    bg = "white"
+                cell.set_facecolor(bg)
+                if col >= 2 and row <= len(xref_rows):
+                    val = xref_rows[row-1][col]
+                    if val != "—":
+                        try:
+                            v = float(val)
+                            if v > 0:
+                                cell.set_facecolor("#E8F8E8")
+                            elif v < -0.05:
+                                cell.set_facecolor("#FFE8E8")
+                        except ValueError:
+                            pass
+            cell.set_edgecolor("#CCCCCC")
+
+    _footer(fig, "Green rows = feature appears in 3+ models.  "
+            "Cell colour: green = positive importance, red = negative importance, white = not in that model (—).")
+    _save(pdf, fig)
+
+
+def page_importance_selection(pdf, label: str, all_candidates: list[str],
+                              full_importance: pd.Series,
+                              lean_features: list[str]):
+    """
+    Replaces greedy selection + dropout pages with a single Exhibit 5 view
+    over ALL candidate features.
+
+    Left  — horizontal bar chart: variable importance for every candidate.
+             Green = positive importance (kept), red/grey = pruned.
+    Right — table: lean feature set with importance values.
+    """
+    fig, axes = _paper_fig(1, 2)
+    ax_l, ax_r = axes
+    lean_set = set(lean_features)
+    n_pruned = len(all_candidates) - len(lean_features)
+
+    _header(fig, f"Factor Selection via Variable Importance: {label}",
+            f"RBP run once with all {len(all_candidates)} candidates — "
+            f"Exhibit 5 importance identifies the {len(lean_features)} contributing features "
+            f"({n_pruned} pruned: importance ≤ 0)")
+
+    # ── Left: importance bar chart for all candidates ────────────────────────
+    imp_vals = full_importance.reindex(all_candidates).fillna(0)
+    imp_sorted = imp_vals.sort_values()          # ascending so most positive is top
+
+    feats  = imp_sorted.index.tolist()
+    values = imp_sorted.values.tolist()
+    colors = [_GREEN if v > 0 else (_RED if v < -0.01 else _GREY) for v in values]
+
+    y_pos = range(len(feats))
+    ax_l.barh(list(y_pos), values, color=colors, alpha=0.8, height=0.7)
+    ax_l.set_yticks(list(y_pos))
+    ax_l.set_yticklabels(feats, fontsize=7.5)
+    ax_l.axvline(0, color=_BL, lw=1.0)
+    ax_l.set_xlabel("Variable importance  (avg fit with feature − avg fit without)")
+    ax_l.set_title("All Candidates — Kritzman Exhibit 5\n"
+                   "Green = positive (kept)  ·  Grey/red = pruned", fontsize=9)
+    ax_l.grid(axis="x", alpha=0.25)
+
+    # Annotate selected features only
+    for bar, (feat, val) in zip(ax_l.patches, zip(feats, values)):
+        if feat in lean_set:
+            ax_l.text(val + 0.005 if val >= 0 else val - 0.005,
+                      bar.get_y() + bar.get_height()/2,
+                      f"{val:+.3f}", va="center",
+                      fontsize=6.5, color=_GREEN, fontweight="bold",
+                      ha="left" if val >= 0 else "right")
+
+    kept_p  = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Kept ({len(lean_features)})")
+    drop_p  = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Pruned ({n_pruned})")
+    ax_l.legend(handles=[kept_p, drop_p], loc="lower right", fontsize=8)
+
+    # ── Right: lean feature set table ────────────────────────────────────────
+    ax_r.axis("off")
+    ax_r.text(0.5, 0.97,
+              f"Lean feature set — {len(lean_features)} features\n"
+              "(positive importance only, sorted by contribution)",
+              ha="center", va="top", fontsize=9, fontweight="bold",
+              color=_BLUE, transform=ax_r.transAxes)
+
+    lean_rows = [[f[:38], f"{float(full_importance.get(f, 0)):+.4f}"]
+                 for f in lean_features]
+    if lean_rows:
+        tbl = ax_r.table(cellText=lean_rows,
+                         colLabels=["Feature", "Importance"],
+                         bbox=[0.02, 0.05, 0.96, 0.85])
+        tbl.auto_set_font_size(False); tbl.set_fontsize(9)
+        char_w = [max(len(str(r[c])) for r in [["Feature","Importance"]] + lean_rows)
+                  for c in range(2)]
+        tot = max(sum(char_w), 1)
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_width(char_w[col] / tot)
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            else:
+                cell.set_facecolor("#E8F8E8" if row % 2 else "white")
+            cell.set_edgecolor("#CCCCCC")
+
+    _footer(fig,
+            "Variable importance = avg adjusted fit of grid cells containing this feature "
+            "minus avg adjusted fit of cells not containing it.  "
+            "Positive = feature improves prediction reliability.")
     _save(pdf, fig)
 
 
@@ -995,7 +1235,7 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     ax.legend(fontsize=8); ax.grid(alpha=0.2)
 
     saugus_resid = float(resid.get("Saugus", float("nan")))
-    unit = "%" if (act.median() < 200) else " pts"
+    unit = "pp" if (act.median() < 200) else " pts"
     _header(fig, f"Overachievers: {label}",
             f"Districts beating their RBP prediction.  "
             f"Saugus gap: {saugus_resid:+.1f}{unit}  ·  "
@@ -1063,18 +1303,26 @@ def page_what_overachievers_did(pdf, label: str, target: str,
               ha="center", va="top", fontsize=8.5, fontweight="bold",
               color=_BLUE, transform=ax_l.transAxes)
     if rows:
-        tbl = ax_l.table(cellText=rows, colLabels=col_names[:len(rows[0])],
+        used_cols = col_names[:len(rows[0])]
+        tbl = ax_l.table(cellText=rows, colLabels=used_cols,
                           bbox=[0.0, 0.0, 1.0, 0.90], cellLoc="center")
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(7.2)
-        tbl.auto_set_column_width(range(len(col_names)))
-        for (row, col), cell in tbl.get_celld().items():
-            if row == 0:
+
+        # Compute proportional column widths from max character count per column
+        all_text = [used_cols] + rows
+        char_widths = [max(len(str(r[c])) for r in all_text if c < len(r))
+                       for c in range(len(used_cols))]
+        total_chars = max(sum(char_widths), 1)
+        for (row_idx, col_idx), cell in tbl.get_celld().items():
+            if col_idx < len(char_widths):
+                cell.set_width(char_widths[col_idx] / total_chars)
+            if row_idx == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-            elif col == 1 and row > 0:
+            elif col_idx == 1 and row_idx > 0:
                 cell.set_facecolor("#FFF8E1")
             else:
-                cell.set_facecolor("#F7F7F7" if row % 2 else "white")
+                cell.set_facecolor("#F7F7F7" if row_idx % 2 else "white")
             cell.set_edgecolor("#DDDDDD")
 
     # ── Right: residuals table ────────────────────────────────────────────────
@@ -1244,11 +1492,19 @@ def _run_one_model(args: tuple) -> dict:
     Top-level worker function — must be at module level to be picklable
     on macOS (which uses 'spawn' for multiprocessing).
 
-    Each worker loads its own database connection and feature data so
-    workers are fully independent and can run on separate cores.
+    Implements the Kritzman (2024) approach directly:
+      Step 1 — Run RBP once with ALL candidate features, Saugus as the
+               prediction task.  Variable importance (Exhibit 5) measures
+               each feature's marginal contribution to prediction reliability
+               given all other features simultaneously — no greedy iteration.
+      Step 2 — Prune features with non-positive importance: they add noise
+               rather than signal.  Features with positive importance form
+               the lean set.
+      Step 3 — Validate with leave-one-out LOO r across all districts.
+      Step 4 — Saugus analysis with lean feature set.
     """
     model, n_random_cells, random_state = args
-    tag   = model["label"]
+    tag    = model["label"]
     target = model["target"]
 
     def _p(msg):
@@ -1264,43 +1520,57 @@ def _run_one_model(args: tuple) -> dict:
                   and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
                   and df_raw[c].dtype.kind in "fiu"]
 
-    _p(f"Step 1: greedy selection ({len(candidates)} candidates)")
-    selected, history = greedy_forward_select(
-        df_raw, candidates, target,
-        random_state=random_state, n_random_cells=n_random_cells)
+    # ── Step 1: Full RBP with all candidates (Kritzman Exhibit 5) ───────────
+    # Variable importance directly reveals which features contribute to
+    # prediction reliability — no sequential greedy evaluation needed.
+    _p(f"Step 1: Full RBP with all {len(candidates)} candidates")
+    try:
+        full_saugus = analyze_saugus(df_raw, candidates, target, n_random_cells)
+        full_importance = full_saugus["result"].variable_importance
+        _p(f"  Full model fit={full_saugus['result'].fit:.4f}  "
+           f"predicted={full_saugus['pred_pct']:.1f}")
+    except Exception as e:
+        _p(f"  Full model failed: {e}")
+        return {}
 
-    loo_score = _loo_score(df_raw, selected, target, n_random_cells)
-    _p(f"LOO r = {loo_score:.4f}  ({len(selected)} features selected)")
+    # ── Step 2: Prune by variable importance ────────────────────────────────
+    # Keep only features with positive importance — they help the prediction.
+    # Features with ≤ 0 importance are adding noise to the reliability signal.
+    lean_features = sorted(
+        [f for f in candidates if float(full_importance.get(f, -1)) > 0],
+        key=lambda f: abs(float(full_importance.get(f, 0))),
+        reverse=True,
+    )
+    if not lean_features:                       # fallback: highest |importance|
+        lean_features = [full_importance.abs().idxmax()]
+    _p(f"Step 2: Lean set after importance pruning ({len(lean_features)} features): "
+       f"{lean_features}")
 
-    _p("Step 2: dropout test")
-    drop_df = dropout_test(df_raw, selected, target, n_random_cells)
+    # ── Step 3: LOO validation with lean feature set ─────────────────────────
+    _p("Step 3: LOO validation (lean features)")
+    loo_score = _loo_score(df_raw, lean_features, target, n_random_cells)
+    _p(f"  LOO r = {loo_score:.4f}")
 
-    redundant     = [r["feature"] for _, r in drop_df.iterrows()
-                     if not np.isnan(r.get("delta", float("nan")))
-                     and r["delta"] >= 0]
-    lean_features = [f for f in selected if f not in redundant]
-    _p(f"Pruned {len(redundant)} redundant → lean set: {lean_features}")
-
-    _p("Step 3: Saugus RBP analysis")
+    # ── Step 4: Saugus RBP analysis with lean feature set ───────────────────
+    _p("Step 4: Saugus RBP analysis (lean features)")
     try:
         saugus = analyze_saugus(df_raw, lean_features, target, n_random_cells)
-        _p(f"Saugus predicted={saugus['pred_pct']:.1f}%  "
-           f"actual={saugus['actual_pct']:.1f}%  gap={saugus['gap_pp']:+.1f}pp")
+        _p(f"  predicted={saugus['pred_pct']:.1f}  actual={saugus['actual_pct']:.1f}  "
+           f"gap={saugus['gap_pp']:+.1f}pp")
     except Exception as e:
-        _p(f"Saugus analysis failed: {e}")
+        _p(f"  Saugus analysis failed: {e}")
         saugus = None
 
     _p("Done.")
     return {
         **model,
-        "features":      selected,
-        "lean_features": lean_features,
-        "redundant":     redundant,
-        "history":       history,
-        "drop_df":       drop_df,
-        "saugus":        saugus,
-        "loo_score":     loo_score,
-        "base_score":    loo_score,
+        "all_candidates":   candidates,
+        "full_importance":  full_importance,
+        "lean_features":    lean_features,
+        "features":         lean_features,   # kept for PDF backward compat
+        "saugus":           saugus,
+        "loo_score":        loo_score,
+        "base_score":       loo_score,
     }
 
 
@@ -1343,16 +1613,21 @@ def main(fast: bool = False, parallel: bool = False):
         page_title(pdf, results)
 
         for r in results:
-            page_selection_history(pdf, r["label"], r["history"])
-            page_all_candidates(pdf, r["label"], r["history"], r["features"])
-            page_dropout_results(pdf, r["label"], r["drop_df"],
-                                 r["features"], r["base_score"])
+            page_importance_selection(pdf, r["label"],
+                                      r.get("all_candidates", r["features"]),
+                                      r.get("full_importance",
+                                            r["saugus"]["result"].variable_importance
+                                            if r.get("saugus") else pd.Series()),
+                                      r.get("lean_features", r["features"]))
             if r["saugus"]:
                 page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
                 page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
                 page_what_overachievers_did(pdf, r["label"], r["target"],
                                             r["saugus"], df_raw,
                                             r.get("lean_features", r["features"]))
+
+        # Combined summary + cross-reference table
+        page_combined_summary(pdf, results)
 
         # Combined scatter
         saugus_with_data = [r["saugus"] for r in results if r["saugus"]]
@@ -1373,8 +1648,56 @@ def main(fast: bool = False, parallel: bool = False):
     pd.DataFrame(rows).to_csv(str(OUTPUT_CSV), index=False)
 
     _shutil.copy2(str(_tmp_pdf), str(OUTPUT_PDF))
+
+    # ── Save cache so --regen-pdf can rebuild the PDF without re-running ──────
+    import pickle as _pickle
+    _cache = {"results": results, "df_raw": df_raw}
+    with open(str(OUTPUT_CACHE), "wb") as _f:
+        _pickle.dump(_cache, _f)
     print(f"[factor_analysis] Done → {OUTPUT_PDF}")
     print(f"                       → {OUTPUT_CSV}")
+    print(f"                       → {OUTPUT_CACHE}  (cache for --regen-pdf)")
+
+
+def regen_pdf():
+    """Reload cached results and regenerate the PDF — no analysis rerun needed."""
+    import pickle as _pickle
+    import tempfile, shutil as _shutil
+    if not OUTPUT_CACHE.exists():
+        print(f"[regen-pdf] No cache found at {OUTPUT_CACHE}")
+        print("            Run the full analysis first to create a cache.")
+        return
+    print(f"[regen-pdf] Loading cache from {OUTPUT_CACHE}...")
+    with open(str(OUTPUT_CACHE), "rb") as f:
+        cache = _pickle.load(f)
+    results = cache["results"]
+    df_raw  = cache["df_raw"]
+    print(f"[regen-pdf] Regenerating PDF ({len(results)} models)...")
+    _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
+    with PdfPages(str(_tmp_pdf)) as pdf:
+        page_title(pdf, results)
+        for r in results:
+            page_importance_selection(pdf, r["label"],
+                                      r.get("all_candidates", r["features"]),
+                                      r.get("full_importance",
+                                            r["saugus"]["result"].variable_importance
+                                            if r.get("saugus") else pd.Series()),
+                                      r.get("lean_features", r["features"]))
+            if r["saugus"]:
+                page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
+                page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
+                page_what_overachievers_did(pdf, r["label"], r["target"],
+                                            r["saugus"], df_raw,
+                                            r.get("lean_features", r["features"]))
+        page_combined_summary(pdf, results)
+        saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
+        if len(saugus_analyses) >= 3:
+            for r in results:
+                if r.get("saugus"):
+                    r["saugus"]["label"] = r["label"]
+            page_scatter_all(pdf, saugus_analyses[:3])
+    _shutil.copy2(str(_tmp_pdf), str(OUTPUT_PDF))
+    print(f"[regen-pdf] Done → {OUTPUT_PDF}")
 
 
 if __name__ == "__main__":
@@ -1383,5 +1706,10 @@ if __name__ == "__main__":
                     help="Use fewer grid cells (faster, less accurate)")
     ap.add_argument("--parallel", action="store_true",
                     help="Run all models concurrently on separate CPU cores")
+    ap.add_argument("--regen-pdf", action="store_true",
+                    help="Reload cached results and regenerate PDF — no recompute")
     args = ap.parse_args()
-    main(fast=args.fast, parallel=args.parallel)
+    if args.regen_pdf:
+        regen_pdf()
+    else:
+        main(fast=args.fast, parallel=args.parallel)
