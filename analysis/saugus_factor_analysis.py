@@ -646,7 +646,7 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
-        "Two outcomes modeled: MCAS (grades 3–8) and Dropout Rate — areas where Saugus shows deficiency",
+        "Three outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA (mandatory — no SAT self-selection bias)",
         "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
         "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
         f"Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
@@ -1676,10 +1676,30 @@ MODELS = [
                          "mcas10_math",
                          "sat_ebrw", "sat_math", "sat_combined"},
     },
-    # SAT removed: scores above ~1200 in MA are driven by private prep spending
-    # (Kaplan, Princeton Review, private tutors) rather than school quality.
-    # The joint model also collapsed — all 28 features showed negative Exhibit 5
-    # importance due to severe wealth collinearity.
+    {
+        "label":        "MCAS Grade 10 (ELA)",
+        "target":       "mcas10_ela",
+        "target_pct":   True,
+        "desc":         "% grade 10 students meeting/exceeding on MCAS ELA",
+        # Why MCAS10 instead of SAT:
+        #   - MCAS10 is mandatory for ALL students to graduate — no self-selection.
+        #     SAT is voluntary; students not planning on college often skip it.
+        #   - SAT has a private-prep ceiling (~1200) from tutoring spend,
+        #     not school quality. MCAS10 has neither distortion.
+        # Exclusions:
+        #   mcas10_math: circular — same cohort, same test session (r=0.90)
+        #   sat_*: circular — both measure HS academic performance of same cohort
+        # Allowed:
+        #   avg_mcas: elementary pipeline → HS readiness (causal; grades 3-8 is
+        #             a prior cohort measure, not the same students at grade 10)
+        #   dropout_pct, attending_pct: school environment signals
+        "also_exclude": {"mcas10_math",
+                         "sat_ebrw", "sat_math", "sat_combined"},
+    },
+    # SAT removed: scores above ~1200 driven by private prep, not school quality.
+    # Self-selection: students not going to college don't take it.
+    # Joint model collapsed — all features showed negative importance due to
+    # severe wealth collinearity.
 ]
 
 
