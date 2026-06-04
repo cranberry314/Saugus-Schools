@@ -646,7 +646,7 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
-        "Three outcomes modeled independently: MCAS (grades 3–8), Postsecondary Attendance, Dropout Rate",
+        "Two outcomes modeled: MCAS (grades 3–8) and Dropout Rate — areas where Saugus shows deficiency",
         "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
         "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
         f"Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
@@ -1660,18 +1660,8 @@ MODELS = [
         "also_exclude": {"mcas10_ela", "mcas10_math",
                          "sat_ebrw", "sat_math", "sat_combined"},
     },
-    {
-        "label":        "Postsecondary Attendance",
-        "target":       "attending_pct",
-        "target_pct":   False,
-        "desc":         "% graduates attending college within 16 months",
-        # avg_mcas and mcas10_ela are valid pipeline predictors (academic
-        # preparation → college admissions).  mcas10_math excluded: r=0.90
-        # with mcas10_ela — one grade-10 measure suffices.  SAT excluded:
-        # same private-prep ceiling problem that removed the SAT model.
-        "also_exclude": {"mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined"},
-    },
+    # Postsecondary removed: Saugus is +9.8pp above prediction — healthy, not
+    # a problem area.  Analysis focuses on outcomes where Saugus is deficient.
     {
         "label":        "Dropout Rate",
         "target":       "dropout_pct",
