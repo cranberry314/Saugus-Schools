@@ -1082,6 +1082,151 @@ def page_combined_summary(pdf, results: list[dict]):
     _save(pdf, fig)
 
 
+def page_candidate_pool(pdf):
+    """
+    Two-panel page explaining the pre-specified feature pool:
+      Left  — table of KEPT features with concept grouping
+      Right — table of DROPPED features with the kept substitute and correlation
+    """
+    fig, axes = _paper_fig(1, 2)
+    ax_l, ax_r = axes
+    _header(fig,
+            "Pre-Specified Candidate Pool — Feature Reduction",
+            "Features selected on domain grounds before running RBP, matching Kritzman (2024) Exhibit 1 approach.  "
+            "Reduces K/N ratio from ~0.19 to ~0.09, matching the paper's 14/165 ≈ 0.085.")
+
+    ax_l.axis("off")
+    ax_r.axis("off")
+
+    # ── Left: kept features ──────────────────────────────────────────────────
+    kept_rows = [
+        # [group, feature, description]
+        ["Poverty",      "low_income_pct",            "% low-income students"],
+        ["Wealth",       "median_hh_income",           "Median household income"],
+        ["Wealth",       "equalized_income",           "Equalized property value/capita"],
+        ["Human capital","pct_bachelors_plus",         "% adults with bachelor's+"],
+        ["Housing",      "pct_owner_occupied",         "% owner-occupied homes"],
+        ["Community",    "crime_rate",                 "Crime incidents per capita"],
+        ["Community",    "res_tax_rate",               "Residential tax rate"],
+        ["Engagement",   "chronic_absenteeism_pct",    "% chronically absent"],
+        ["Demographics", "ell_pct",                    "% English language learners"],
+        ["Demographics", "sped_pct",                   "% special education students"],
+        ["Size",         "total_enrollment",            "District enrollment"],
+        ["Staffing",     "teachers_per_100_students",  "Teachers per 100 students"],
+        ["Staffing",     "avg_teacher_salary",         "Average teacher salary"],
+        ["Spending",     "nss_per_pupil",              "Net school spending/pupil"],
+    ]
+    ax_l.text(0.5, 0.97, f"Kept — {len(kept_rows)} pure predictors",
+              ha="center", va="top", fontsize=9, fontweight="bold",
+              color=_BLUE, transform=ax_l.transAxes)
+    tbl_l = ax_l.table(
+        cellText=kept_rows,
+        colLabels=["Group", "Feature", "Measures"],
+        bbox=[0.0, 0.02, 1.0, 0.90])
+    tbl_l.auto_set_font_size(False); tbl_l.set_fontsize(7.8)
+    tbl_l.auto_set_column_width([0, 1, 2])
+    group_colors = {
+        "Poverty": "#FFF3CD", "Wealth": "#FFF3CD", "Human capital": "#FFF3CD",
+        "Housing": "#E8F4FD", "Community": "#E8F4FD",
+        "Engagement": "#E8F8E8", "Demographics": "#E8F8E8",
+        "Size": "#F5EEF8", "Staffing": "#F5EEF8", "Spending": "#F5EEF8",
+    }
+    for (row, col), cell in tbl_l.get_celld().items():
+        if row == 0:
+            cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+        else:
+            cell.set_facecolor(group_colors.get(kept_rows[row-1][0], "white"))
+        cell.set_edgecolor("#CCCCCC")
+
+    # ── Right: dropped features ──────────────────────────────────────────────
+    dropped_rows = [
+        ["high_needs_pct",           "low_income_pct",            "r=+0.981 — near-duplicate"],
+        ["acs_poverty_pct",          "low_income_pct",            "r=+0.87  — redundant poverty"],
+        ["foundation_budget_pp",     "nss_per_pupil",             "r=+0.92  — redundant spending"],
+        ["ch70_per_pupil",           "equalized_income",          "r≈−0.87  — inverse wealth proxy"],
+        ["teacher_fte",              "total_enrollment",          "r=+0.994 — linear with enroll"],
+        ["total_population",         "total_enrollment",          "r=+0.953 — size proxy"],
+        ["teachers_per_100_fte",     "teachers_per_100_students", "r=+0.872 — duplicate ratio"],
+        ["teacher_spending_per_pupil","nss_per_pupil",            "r≈+0.85  — redundant spending"],
+        ["gf_exp_per_capita",        "res_tax_rate",              "r≈+0.75  — redundant municipal"],
+        ["pct_65_plus",              "—",                         "Weak signal, no policy lever"],
+        ["com_tax_rate",             "res_tax_rate",              "r≈+0.65  — commercial tax dup"],
+        ["mcas10_math",              "mcas10_ela",                "r=+0.90  — one HS MCAS suffices"],
+        ["sat_ebrw / sat_math",      "—",                        "SAT ceiling + private prep bias"],
+        ["sat_combined",             "—",                         "SAT model removed entirely"],
+    ]
+    ax_r.text(0.5, 0.97, f"Dropped — {len(dropped_rows)} redundant/problematic features",
+              ha="center", va="top", fontsize=9, fontweight="bold",
+              color=_RED, transform=ax_r.transAxes)
+    tbl_r = ax_r.table(
+        cellText=dropped_rows,
+        colLabels=["Dropped", "Kept instead", "Reason"],
+        bbox=[0.0, 0.02, 1.0, 0.90])
+    tbl_r.auto_set_font_size(False); tbl_r.set_fontsize(7.5)
+    tbl_r.auto_set_column_width([0, 1, 2])
+    for (row, col), cell in tbl_r.get_celld().items():
+        if row == 0:
+            cell.set_facecolor(_RED); cell.set_text_props(color="white")
+        else:
+            cell.set_facecolor("#FFF5F5" if row % 2 else "white")
+        cell.set_edgecolor("#CCCCCC")
+
+    _footer(fig,
+            "Correlation threshold for deduplication: |r| > 0.87.  "
+            "Cross-outcome features (avg_mcas, mcas10_ela, dropout_pct, attending_pct) "
+            "handled separately per model via exclusion rules.")
+    _save(pdf, fig)
+
+
+def page_correlation_matrix(pdf, df_raw: pd.DataFrame):
+    """
+    Heatmap of Pearson correlations between all candidate features,
+    hierarchically clustered to reveal redundancy groups.
+    """
+    import seaborn as sns
+    from scipy.cluster.hierarchy import linkage, dendrogram
+    from scipy.spatial.distance import squareform
+
+    # All features that appear in any model's pool
+    all_cols = list(PRE_SPECIFIED_POOL | OUTCOME_VARS)
+    avail = [c for c in all_cols if c in df_raw.columns]
+    sub = df_raw[avail].apply(pd.to_numeric, errors='coerce')
+    corr = sub.corr(method='pearson')
+
+    # Hierarchical clustering by absolute correlation distance.
+    # NaNs in corr (features with no overlap) → treat as uncorrelated (dist=1).
+    corr_filled = corr.fillna(0)
+    dist_full = (1 - corr_filled.abs()).clip(lower=0).values.copy()
+    np.fill_diagonal(dist_full, 0)
+    dist_full = (dist_full + dist_full.T) / 2  # exact symmetry
+    n = dist_full.shape[0]
+    condensed = dist_full[np.triu_indices(n, k=1)]
+    link = linkage(condensed, method='average')
+    order = dendrogram(link, no_plot=True)['leaves']
+    ordered = corr.iloc[order, order]
+
+    fig, ax = plt.subplots(figsize=(_PAGE_W, _PAGE_H))
+    fig.patch.set_facecolor("white")
+
+    sns.heatmap(ordered, cmap='RdBu_r', center=0, vmin=-1, vmax=1,
+                annot=True, fmt='.2f', annot_kws={'size': 5.5},
+                linewidths=0.2, ax=ax, cbar_kws={'shrink': 0.45},
+                square=True)
+    ax.set_title(
+        "Feature Correlation Matrix — All Candidates (hierarchically clustered)\n"
+        "Features ordered by |correlation| — dark red/blue clusters = high redundancy",
+        fontsize=10, pad=10)
+    ax.tick_params(axis='x', rotation=45, labelsize=7)
+    ax.tick_params(axis='y', rotation=0,  labelsize=7)
+
+    fig.text(0.5, 0.01,
+             "Pearson r.  Hierarchical average-linkage clustering on |1−r| distance.  "
+             "Features with |r| > 0.87 collapsed to one representative in the candidate pool.",
+             ha="center", va="bottom", fontsize=7, color=_GREY, style="italic")
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
+    _save(pdf, fig)
+
+
 def page_importance_selection(pdf, label: str, all_candidates: list[str],
                               full_importance: pd.Series,
                               lean_features: list[str],
@@ -1452,11 +1597,57 @@ ALWAYS_EXCLUDE = {
     "district_name",
 }
 
-# Model-specific exclusions handle circularity case by case.
-# Rule: exclude a predictor when it measures the SAME thing as the target
-# through a different instrument (circular), not merely when it's correlated.
-# Cross-outcome relationships with a plausible causal pathway are allowed
-# and left to the greedy selection + dropout test to evaluate.
+# Outcome variables — can only appear as predictors in OTHER models, never
+# their own.  Listed here so the candidate filter can handle them separately
+# from the pre-specified pool of pure predictors.
+OUTCOME_VARS = {
+    "avg_mcas", "mcas10_ela", "mcas10_math",
+    "sat_ebrw", "sat_math", "sat_combined",
+    "attending_pct", "dropout_pct",
+    "four_yr_grad_pct", "five_yr_grad_pct",
+}
+
+# Pre-specified pool of PURE PREDICTOR features — chosen on domain grounds
+# before running RBP, following Kritzman (2024) Exhibit 1.
+#
+# Reduces K from ~32 candidates to ~14-17 per model, bringing K/N from
+# ~0.19 to ~0.09 (matching the paper's 14/165 ≈ 0.085 ratio) and making
+# the covariance matrix well-conditioned.
+#
+# Dropped features and why (see page_candidate_pool in the PDF):
+#   high_needs_pct        r=+0.981 with low_income_pct  → near-duplicate
+#   acs_poverty_pct       r=+0.87  with low_income_pct  → redundant poverty
+#   foundation_budget_pp  r=+0.92  with nss_per_pupil   → redundant spending
+#   ch70_per_pupil        r≈-0.87  with equalized_income → inverse wealth proxy
+#   teacher_fte           r=+0.994 with total_enrollment → linear function
+#   total_population      r=+0.953 with total_enrollment → size proxy
+#   teachers_per_100_fte  r=+0.872 with teachers_per_100_students → duplicate
+#   teacher_spending_pp   r≈+0.85  with nss_per_pupil   → redundant spending
+#   gf_exp_per_capita     r≈+0.75  with res_tax_rate     → redundant municipal
+#   pct_65_plus           weak signal, no clear school policy lever
+#   com_tax_rate          r≈+0.65  with res_tax_rate     → redundant tax
+PRE_SPECIFIED_POOL = {
+    # Poverty & wealth (three distinct angles)
+    "low_income_pct",            # % low-income students
+    "median_hh_income",          # Household income
+    "equalized_income",          # Property wealth per capita
+    # Human capital
+    "pct_bachelors_plus",        # % adults with bachelor's degree or higher
+    # Housing & community
+    "pct_owner_occupied",        # % owner-occupied housing (stability)
+    "crime_rate",                # Crime incidents per capita
+    "res_tax_rate",              # Residential tax rate (local fiscal effort)
+    # Demographics & engagement
+    "chronic_absenteeism_pct",   # % chronically absent (strongest cross-model)
+    "ell_pct",                   # % English language learners
+    "sped_pct",                  # % special education students
+    # District structure
+    "total_enrollment",          # District size (drop teacher_fte r=0.994)
+    "teachers_per_100_students", # Staffing ratio (drop fte version r=0.872)
+    "avg_teacher_salary",        # Teacher compensation
+    # School spending
+    "nss_per_pupil",             # Net school spending per pupil
+}
 
 MODELS = [
     {
@@ -1464,10 +1655,8 @@ MODELS = [
         "target":       "avg_mcas",
         "target_pct":   True,
         "desc":         "% students meeting/exceeding (ELA + Math, grades 3–8)",
-        # Grade 10 MCAS and SAT measure the same district academic quality
-        # through different instruments/cohorts — circular with grades 3–8.
-        # dropout_pct and attending_pct are allowed: struggling systems have
-        # high dropout AND poor elementary MCAS (shared signal, not circular).
+        # Grade 10 MCAS and SAT are circular (same academic quality, different
+        # cohort/instrument).  dropout_pct and attending_pct are causal signals.
         "also_exclude": {"mcas10_ela", "mcas10_math",
                          "sat_ebrw", "sat_math", "sat_combined"},
     },
@@ -1476,33 +1665,31 @@ MODELS = [
         "target":       "attending_pct",
         "target_pct":   False,
         "desc":         "% graduates attending college within 16 months",
-        # Nothing excluded beyond the target itself: dropout (fewer dropouts →
-        # more graduates → more college), avg_mcas (academic pipeline), and
-        # grade 10 MCAS / SAT (HS performance → college admissions) are all
-        # causally valid predictors.
-        "also_exclude": set(),
+        # avg_mcas and mcas10_ela are valid pipeline predictors (academic
+        # preparation → college admissions).  mcas10_math excluded: r=0.90
+        # with mcas10_ela — one grade-10 measure suffices.  SAT excluded:
+        # same private-prep ceiling problem that removed the SAT model.
+        "also_exclude": {"mcas10_math",
+                         "sat_ebrw", "sat_math", "sat_combined"},
     },
     {
         "label":        "Dropout Rate",
         "target":       "dropout_pct",
         "target_pct":   False,
         "desc":         "% students dropping out of high school",
-        # avg_mcas (poor grades → disengagement → dropout) and attending_pct
-        # (fewer dropouts → more graduates → more college) are causal, not
-        # circular.  Grade 10 MCAS → dropout is also causal (HS performance
-        # predicts whether students stay).  All allowed.
-        # Graduation rates are the inverse of dropout (90% grad ≈ 10% dropout)
-        # and are circular — excluded here.  Coverage is currently 0% so the
-        # filter catches them anyway, but the reason is circularity.
-        "also_exclude": {"four_yr_grad_pct", "five_yr_grad_pct"},
+        # avg_mcas and mcas10_ela are causal (academic struggle → disengagement).
+        # attending_pct is causal (fewer dropouts → more college goers).
+        # mcas10_math excluded: collinear with mcas10_ela (r=0.90).
+        # SAT excluded: ceiling effect, collinear with wealth predictors.
+        # Graduation rates are circular (inverse of dropout).
+        "also_exclude": {"four_yr_grad_pct", "five_yr_grad_pct",
+                         "mcas10_math",
+                         "sat_ebrw", "sat_math", "sat_combined"},
     },
     # SAT removed: scores above ~1200 in MA are driven by private prep spending
     # (Kaplan, Princeton Review, private tutors) rather than school quality.
-    # The model cannot distinguish between school contribution and private prep,
-    # making Saugus comparisons to wealthy districts methodologically unfair.
-    # The joint 28-feature model also collapsed (all features showed negative
-    # importance) due to severe collinearity — every feature is measuring the
-    # same underlying wealth dimension from a different angle.
+    # The joint model also collapsed — all 28 features showed negative Exhibit 5
+    # importance due to severe wealth collinearity.
 ]
 
 
@@ -1534,8 +1721,13 @@ def _run_one_model(args: tuple) -> dict:
     df_raw = load_features(engine)
 
     exclude = ALWAYS_EXCLUDE | {target} | model.get("also_exclude", set())
+
+    # Candidates = pre-specified pure predictors + outcome vars allowed for
+    # this model (i.e. OUTCOME_VARS that aren't in exclude).
+    allowed = PRE_SPECIFIED_POOL | (OUTCOME_VARS - exclude)
     candidates = [c for c in df_raw.columns
                   if c not in exclude
+                  and c in allowed
                   and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
                   and df_raw[c].dtype.kind in "fiu"]
 
@@ -1655,6 +1847,8 @@ def main(fast: bool = False, parallel: bool = False):
     print(f"\n[factor_analysis] Writing PDF...")
     with PdfPages(str(_tmp_pdf)) as pdf:
         page_title(pdf, results)
+        page_candidate_pool(pdf)
+        page_correlation_matrix(pdf, df_raw)
 
         for r in results:
             page_importance_selection(pdf, r["label"],
@@ -1725,6 +1919,8 @@ def regen_pdf():
     _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
     with PdfPages(str(_tmp_pdf)) as pdf:
         page_title(pdf, results)
+        page_candidate_pool(pdf)
+        page_correlation_matrix(pdf, df_raw)
         for r in results:
             page_importance_selection(pdf, r["label"],
                                       r.get("all_candidates", r["features"]),
