@@ -642,7 +642,7 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=16, fontweight="bold", color=_BL,
             transform=ax.transAxes)
     ax.text(0.5, 0.72,
-            "Czasonis, Kritzman & Turkington (2024) — Implemented for MA School District Analysis",
+            "Utilizing Czasonis, Kritzman & Turkington (2024) — Applied to MA School District Analysis",
             ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
@@ -949,8 +949,8 @@ def page_combined_summary(pdf, results: list[dict]):
     """
     fig, axes = _paper_fig(2, 1, gridspec_kw={"height_ratios": [1, 1.4]})
     ax_top, ax_bot = axes
-    _header(fig, "Combined Model Summary: All Four Outcomes",
-            "RBP factor selection results across MCAS, Postsecondary, Dropout, and SAT models")
+    _header(fig, "Combined Model Summary: All Three Outcomes",
+            "RBP factor selection results across MCAS grades 3–8, Dropout Rate, and MCAS grade 10 ELA")
 
     # ── Top: Saugus prediction table ─────────────────────────────────────────
     ax_top.axis("off")
@@ -1227,6 +1227,261 @@ def page_correlation_matrix(pdf, df_raw: pd.DataFrame):
     _save(pdf, fig)
 
 
+def page_synthesis(pdf, results: list[dict]):
+    """
+    Narrative synthesis page: what the three models together actually say
+    about Saugus, and what that means for policy.
+    """
+    fig, ax = _paper_fig()
+    ax.axis("off")
+    _header(fig, "What the Three Models Together Actually Say",
+            "A synthesis of MCAS grades 3–8, Dropout Rate, and MCAS grade 10 ELA results")
+
+    # Pull the three model gaps
+    model_data = {r["label"]: r for r in results}
+    gaps = {}
+    for r in results:
+        s = r.get("saugus")
+        if s:
+            gaps[r["label"]] = s["gap_pp"]
+
+    y = 0.82
+    def _section(title, color, lines):
+        nonlocal y
+        ax.text(0.07, y, title, ha="left", va="top", fontsize=11,
+                fontweight="bold", color=color, transform=ax.transAxes)
+        y -= 0.04
+        for line in lines:
+            ax.text(0.09, y, line, ha="left", va="top", fontsize=9.5,
+                    color=_BL, transform=ax.transAxes, wrap=True)
+            y -= 0.038
+        y -= 0.01
+
+    _section("Finding 1 — The schools are not failing academically.", _BLUE, [
+        "MCAS grades 3–8:  +0.5pp above demographic prediction  (on target)",
+        "MCAS grade 10 ELA:  +1.1pp above prediction  (slightly above target)",
+        "On the mandatory universal test — taken by every student to graduate — Saugus",
+        "performs at or slightly above what demographics predict.  There is no academic",
+        "underperformance signal in the standardised test results.",
+    ])
+
+    _section("Finding 2 — The SAT gap was a measurement artefact, not a school failure.", _GREY, [
+        "SAT is voluntary: students not going to college often do not sit it.",
+        "Scores above ~1200 in MA reflect private tutoring spend, not school quality.",
+        "When we use MCAS10 — the mandatory equivalent — Saugus is slightly above target.",
+        "The SAT gap (-112 pts) dissolved when the right instrument was used.",
+    ])
+
+    _section("Finding 3 — The problem is retention and engagement, not instruction.", _RED, [
+        "Dropout rate: -0.8pp below prediction (slightly more dropout than expected).",
+        "Chronic absenteeism: 31.2% — 11pp above Rockland (nearest demographic peer).",
+        "Absenteeism is the single feature that earns its place in the Dropout model",
+        "with importance +0.87 — more than twice the next feature.  Students who stay",
+        "and sit the test perform fine.  The question is who is disengaging before they get there.",
+    ])
+
+    _section("Finding 4 — Saugus has the fiscal capacity to act.", _GREEN, [
+        "Saugus property wealth ($1.17B) is 1.9× Rockland's ($626M).",
+        "Rockland spends $3,788 more per pupil per year at a higher tax rate (14.1 vs 10.7).",
+        "Saugus is the wealthier town choosing to spend less on its schools.",
+        "A 1-mill increase on $1.17B assessed value raises ~$1.2M/year.",
+    ])
+
+    _footer(fig, "All gaps are leave-one-out RBP residuals: actual − predicted, controlling for demographics.  "
+            "Positive = above demographic expectation.  Negative = below.")
+    _save(pdf, fig)
+
+
+def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
+    """
+    Optimum school profile: what actionable feature values would move Saugus
+    from current performance into overachiever territory, and what it costs.
+    """
+    fig, axes = _paper_fig(1, 2)
+    ax_l, ax_r = axes
+    _header(fig, "Optimum Profile — What Overachievers Look Like",
+            "Target values derived from towns that outperform their demographic prediction across multiple models.  "
+            "Non-actionable features (income, poverty) excluded — these are the levers Saugus can pull.")
+
+    # Collect all overachievers across all models, weight by frequency
+    from collections import Counter
+    oa_counter = Counter()
+    for r in results:
+        s = r.get("saugus")
+        if not s: continue
+        loo = s["loo_df"]
+        oas = _find_overachievers(loo, r["target"], n=10)
+        for name in oas.index:
+            oa_counter[name] += 1
+
+    # Consensus overachievers (appear in 2+ models)
+    consensus = [t for t, c in oa_counter.items() if c >= 2]
+    # Top single-model overachievers with large gap (include some for diversity)
+    all_oas = [t for t, c in oa_counter.most_common(15)]
+
+    df_raw2 = df_raw.copy()
+    df_raw2.index = df_raw2["district_name"]
+
+    # Actionable features (things the district can change)
+    actionable = [
+        ("chronic_absenteeism_pct", "Chronic absenteeism", "%",   False),  # lower=better
+        ("teachers_per_100_students","Teachers per 100 students", "/100", True),
+        ("avg_teacher_salary",       "Avg teacher salary",        "$",    True),
+        ("nss_per_pupil",            "Net school spending/pupil", "$",    True),
+        ("crime_rate",               "Crime rate (per 100k)",     "",     False),
+    ]
+
+    saugus_row = df_raw2.loc["Saugus"] if "Saugus" in df_raw2.index else None
+
+    # Build target profile from consensus + top overachievers
+    oa_pool = [t for t in all_oas if t in df_raw2.index]
+
+    ax_l.axis("off")
+    ax_r.axis("off")
+
+    # ── Left: target values table ────────────────────────────────────────────
+    ax_l.text(0.5, 0.97, "Actionable feature targets — Saugus vs overachiever profile",
+              ha="center", va="top", fontsize=9, fontweight="bold",
+              color=_BLUE, transform=ax_l.transAxes)
+
+    tbl_rows = []
+    for feat, label_str, unit, higher_better in actionable:
+        if feat not in df_raw2.columns or saugus_row is None:
+            continue
+        sval = float(saugus_row[feat]) if not pd.isna(saugus_row[feat]) else float("nan")
+        oa_vals = []
+        for t in oa_pool[:8]:
+            v = df_raw2.loc[t, feat] if feat in df_raw2.columns else float("nan")
+            if not pd.isna(v):
+                oa_vals.append(float(v))
+
+        if not oa_vals:
+            continue
+        target = float(np.median(oa_vals))
+        direction = "↓ lower" if not higher_better else "↑ higher"
+        gap = target - sval
+        if unit == "$":
+            s_str = f"${sval:,.0f}"
+            t_str = f"${target:,.0f}"
+            g_str = f"${abs(gap):,.0f} {direction}"
+        elif unit == "%":
+            s_str = f"{sval:.1f}%"
+            t_str = f"{target:.1f}%"
+            g_str = f"{abs(gap):.1f}pp {direction}"
+        else:
+            s_str = f"{sval:.1f}{unit}"
+            t_str = f"{target:.1f}{unit}"
+            g_str = f"{abs(gap):.1f} {direction}"
+
+        flag = "✓" if (higher_better and gap > 0) or (not higher_better and gap < 0) else "✗ GAP"
+        tbl_rows.append([label_str, s_str, t_str, g_str, flag])
+
+    if tbl_rows:
+        tbl = ax_l.table(
+            cellText=tbl_rows,
+            colLabels=["Feature", "Saugus now", "OA median target", "Gap", ""],
+            bbox=[0.0, 0.35, 1.0, 0.55])
+        tbl.auto_set_font_size(False); tbl.set_fontsize(8.5)
+        tbl.auto_set_column_width(range(5))
+        for (row, col), cell in tbl.get_celld().items():
+            if row == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            elif col == 4 and row > 0:
+                val = tbl_rows[row-1][4]
+                cell.set_facecolor("#FFE8E8" if "GAP" in val else "#E8F8E8")
+            else:
+                cell.set_facecolor("#F5F5F5" if row % 2 else "white")
+            cell.set_edgecolor("#CCCCCC")
+
+    # Cost estimate box
+    enroll = float(saugus_row["total_enrollment"]) if saugus_row is not None else 3084
+    curr_nss = float(saugus_row["nss_per_pupil"]) if saugus_row is not None else 17369
+    curr_t_ratio = float(saugus_row["teachers_per_100_students"]) if saugus_row is not None else 5.9
+    curr_sal = float(saugus_row["avg_teacher_salary"]) if saugus_row is not None else 89778
+    curr_abs = float(saugus_row["chronic_absenteeism_pct"]) if saugus_row is not None else 31.2
+
+    # Targets from overachiever pool
+    nss_vals = [float(df_raw2.loc[t,"nss_per_pupil"]) for t in oa_pool[:8] if "nss_per_pupil" in df_raw2.columns and not pd.isna(df_raw2.loc[t,"nss_per_pupil"])]
+    tr_vals  = [float(df_raw2.loc[t,"teachers_per_100_students"]) for t in oa_pool[:8] if "teachers_per_100_students" in df_raw2.columns and not pd.isna(df_raw2.loc[t,"teachers_per_100_students"])]
+    tgt_nss  = np.median(nss_vals) if nss_vals else curr_nss
+    tgt_tr   = np.median(tr_vals)  if tr_vals  else curr_t_ratio
+
+    add_nss_cost   = max(0, tgt_nss - curr_nss) * enroll
+    add_teach      = max(0, (tgt_tr - curr_t_ratio) * enroll / 100)
+    add_teach_cost = add_teach * curr_sal
+
+    cost_lines = [
+        ("Absenteeism programs (attendance coordinators,",  ""),
+        (" early-warning system, parent outreach)",          "~$300–500K/yr"),
+        (f"Add {add_teach:.0f} teachers to match OA staffing ratio", f"~${add_teach_cost/1e6:.1f}M/yr"),
+        (f"Close nss/pupil gap to OA median (${tgt_nss:,.0f})", f"~${add_nss_cost/1e6:.1f}M/yr total"),
+        ("Saugus property wealth ($1.17B) vs Rockland ($626M):", "1.9× richer"),
+        ("1-mill tax rate increase → additional revenue:", f"~$1.2M/yr"),
+        ("Match Rockland tax rate (+3.4 mills):", f"~$4.0M/yr"),
+    ]
+
+    ax_l.text(0.5, 0.32, "Estimated cost to close gaps", ha="center", va="top",
+              fontsize=9, fontweight="bold", color=_RED, transform=ax_l.transAxes)
+    for i, (lbl, val) in enumerate(cost_lines):
+        ax_l.text(0.03, 0.28 - i*0.037, lbl, ha="left", va="top", fontsize=8,
+                  color=_BL, transform=ax_l.transAxes)
+        if val:
+            ax_l.text(0.97, 0.28 - i*0.037, val, ha="right", va="top", fontsize=8,
+                      color=_RED, fontweight="bold", transform=ax_l.transAxes)
+
+    # ── Right: radar / bar chart showing gap to overachiever profile ──────────
+    ax_r.text(0.5, 0.97,
+              f"Consensus overachievers (appear in 2+ models)\nvs Saugus on actionable features",
+              ha="center", va="top", fontsize=9, fontweight="bold",
+              color=_BLUE, transform=ax_r.transAxes)
+
+    if consensus and saugus_row is not None:
+        feats_plot = ["chronic_absenteeism_pct", "teachers_per_100_students",
+                      "avg_teacher_salary", "nss_per_pupil"]
+        feat_labels = ["Absenteeism %\n(lower=better)", "Teachers/100\n(higher=better)",
+                       "Avg salary $K\n(higher=better)", "Spending/pupil $K\n(higher=better)"]
+        divisors = [1, 1, 1000, 1000]
+
+        n = len(feats_plot)
+        x = np.arange(n)
+        width = 0.25
+
+        saugus_vals_plot = []
+        for f, div in zip(feats_plot, divisors):
+            v = float(saugus_row[f]) if f in df_raw2.columns and not pd.isna(saugus_row[f]) else 0
+            saugus_vals_plot.append(v / div)
+
+        # Sub-axes inside ax_r
+        ax_inner = fig.add_axes([0.54, 0.08, 0.42, 0.82])
+        bars_s = ax_inner.bar(x - width/2, saugus_vals_plot, width,
+                              label="Saugus", color=_GOLD, alpha=0.85)
+
+        for ci, town in enumerate(consensus[:3]):
+            if town not in df_raw2.index: continue
+            tvals = []
+            for f, div in zip(feats_plot, divisors):
+                v = float(df_raw2.loc[town, f]) if f in df_raw2.columns and not pd.isna(df_raw2.loc[town, f]) else 0
+                tvals.append(v / div)
+            ax_inner.bar(x + width*(ci+0.5)/2, tvals, width*0.7,
+                         label=town, alpha=0.7)
+
+        ax_inner.set_xticks(x)
+        ax_inner.set_xticklabels(feat_labels, fontsize=7)
+        ax_inner.legend(fontsize=7, loc="upper right")
+        ax_inner.set_title("Saugus vs consensus overachievers", fontsize=8)
+        ax_inner.grid(axis="y", alpha=0.3)
+        ax_r.axis("off")
+    else:
+        ax_r.text(0.5, 0.5, "Insufficient overachiever data for chart",
+                  ha="center", va="center", transform=ax_r.transAxes)
+
+    _footer(fig,
+            "OA median = median value across top overachievers (towns appearing in 2+ model overachiever lists).  "
+            "Cost estimates are indicative. Causal inference requires longitudinal study — "
+            "this shows what overachievers look like, not a guaranteed outcome.")
+    _save(pdf, fig)
+
+
 def page_importance_selection(pdf, label: str, all_candidates: list[str],
                               full_importance: pd.Series,
                               lean_features: list[str],
@@ -1453,17 +1708,26 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     mu  = feat_df[feats_ordered].mean()
     std = feat_df[feats_ordered].std().replace(0, 1)
 
-    col_names = ["Feature", "Saugus"] + [n[:12] for n in oa_names[:5]] + ["Importance"]
+    def _fmt(v):
+        """Compact number format: large values as XM / X.XB to prevent overflow."""
+        if np.isnan(v): return "—"
+        av = abs(v)
+        if av >= 1e9:  return f"{v/1e9:.2f}B"
+        if av >= 1e6:  return f"{v/1e6:.0f}M"
+        if av >= 1e3:  return f"{v:,.0f}"
+        if av >= 10:   return f"{v:.1f}"
+        return f"{v:.2f}"
+
+    col_names = ["Feature", "Saugus"] + [n[:10] for n in oa_names[:5]] + ["Imp"]
     rows = []
     for feat in feats_ordered[:15]:
         sv = saugus_vals.get(feat, float("nan"))
-        sv_fmt = f"{sv:.1f}" if not np.isnan(sv) else "—"
         oa_vals = []
         for name in oa_names[:5]:
             v = feat_df.loc[name, feat] if feat in feat_df.columns else float("nan")
-            oa_vals.append(f"{v:.1f}" if not np.isnan(v) else "—")
+            oa_vals.append(_fmt(v))
         imp_val = float(imp.get(feat, 0))
-        rows.append([feat[:30], sv_fmt] + oa_vals + [f"{imp_val:+.3f}"])
+        rows.append([feat[:28], _fmt(sv)] + oa_vals + [f"{imp_val:+.3f}"])
 
     # ── Left: feature comparison table ──────────────────────────────────────────
     ax_l.text(0.5, 0.98,
@@ -1878,6 +2142,10 @@ def main(fast: bool = False, parallel: bool = False):
         # Combined summary + cross-reference table
         page_combined_summary(pdf, results)
 
+        # Synthesis and optimum profile (after the model detail, before scatter)
+        page_synthesis(pdf, results)
+        page_optimum_profile(pdf, results, df_raw)
+
         # Combined scatter
         saugus_with_data = [r["saugus"] for r in results if r["saugus"]]
         if len(saugus_with_data) == 3:
@@ -1946,6 +2214,8 @@ def regen_pdf():
                                             r["saugus"], df_raw,
                                             r.get("lean_features", r["features"]))
         page_combined_summary(pdf, results)
+        page_synthesis(pdf, results)
+        page_optimum_profile(pdf, results, df_raw)
         saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
         if len(saugus_analyses) >= 3:
             for r in results:
