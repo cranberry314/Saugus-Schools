@@ -387,6 +387,20 @@ def load_features(engine, school_year: int = 2024) -> pd.DataFrame:
     if "sat_ebrw" in df.columns and "sat_math" in df.columns:
         df["sat_combined"] = df["sat_ebrw"] + df["sat_math"]
 
+    # Education budget share — from MA DLS Schedule A.
+    # Fiscal year ≈ school year for most districts; use fy for the join.
+    # Joined on district_name ↔ municipality (exact match covers ~95% of MA
+    # districts where the school district name equals the town name).
+    with engine.connect() as conn:
+        budget_share = q("""
+            SELECT municipality AS district_name,
+                   ROUND(100.0 * education / NULLIF(total_expenditures, 0), 2)
+                       AS ed_budget_share
+            FROM municipal_expenditures
+            WHERE fiscal_year = :yr
+        """, yr=fy)
+    df = df.merge(budget_share, on="district_name", how="left")
+
     return df
 
 
@@ -646,7 +660,7 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
-        "Three outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA (mandatory — no SAT self-selection bias)",
+        "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
         "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
         "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
         "Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
@@ -944,8 +958,8 @@ def page_combined_summary(pdf, results: list[dict]):
     """
     fig, axes = _paper_fig(2, 1, gridspec_kw={"height_ratios": [1, 1.4]})
     ax_top, ax_bot = axes
-    _header(fig, "Combined Model Summary: All Three Outcomes",
-            "RBP factor selection results across MCAS grades 3–8, Dropout Rate, and MCAS grade 10 ELA")
+    _header(fig, "Combined Model Summary: All Four Outcomes",
+            "RBP factor selection results across MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, and Education Budget Share")
 
     # ── Top: Saugus prediction table ─────────────────────────────────────────
     ax_top.axis("off")
@@ -1026,7 +1040,8 @@ def page_combined_summary(pdf, results: list[dict]):
     # Shorten model labels for column headers
     short_labels = {"MCAS Grades 3–8": "MCAS 3–8", "Postsecondary Attendance": "Post-sec",
                     "Dropout Rate": "Dropout", "SAT Performance": "SAT",
-                    "MCAS Grade 10 (ELA)": "MCAS 10"}
+                    "MCAS Grade 10 (ELA)": "MCAS 10",
+                    "Education Budget Share": "Ed Budget"}
     col_h2 = ["Feature", "# Models"] + [short_labels.get(m, m[:8]) for m in model_labels]
     xref_rows = []
     for feat, model_imps in sorted_feats:
@@ -2061,6 +2076,7 @@ OUTCOME_VARS = {
     "sat_ebrw", "sat_math", "sat_combined",
     "attending_pct", "dropout_pct",
     "four_yr_grad_pct", "five_yr_grad_pct",
+    "ed_budget_share",   # education % of total municipal budget (Schedule A)
 }
 
 # Pre-specified pool of PURE PREDICTOR features — chosen on domain grounds
@@ -2151,6 +2167,26 @@ MODELS = [
         #   dropout_pct, attending_pct: school environment signals
         "also_exclude": {"mcas10_math",
                          "sat_ebrw", "sat_math", "sat_combined"},
+    },
+    {
+        "label":        "Education Budget Share",
+        "target":       "ed_budget_share",
+        "target_pct":   True,
+        "desc":         "Education as % of total municipal expenditure (MA DLS Schedule A)",
+        # Question: given a town's demographic and fiscal profile, what share
+        # of its budget should go to education?  The gap between predicted and
+        # actual reveals whether the allocation is a policy choice rather than
+        # a demographic inevitability.
+        # Exclude all school-outcome variables: dropout, MCAS, SAT, graduation
+        # rates are DOWNSTREAM of budget decisions, not upstream.  We want
+        # purely demographic/fiscal predictors so the model answers:
+        # "what characterises towns that prioritise education?"
+        "also_exclude": {
+            "avg_mcas", "mcas10_ela", "mcas10_math",
+            "sat_ebrw", "sat_math", "sat_combined",
+            "attending_pct", "dropout_pct",
+            "four_yr_grad_pct", "five_yr_grad_pct",
+        },
     },
     # SAT removed: scores above ~1200 driven by private prep, not school quality.
     # Self-selection: students not going to college don't take it.
