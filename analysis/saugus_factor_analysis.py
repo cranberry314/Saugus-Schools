@@ -649,36 +649,31 @@ def page_title(pdf, models: list[dict]):
         "Three outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA (mandatory — no SAT self-selection bias)",
         "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
         "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
-        f"Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
-        f"Leave-one-out LOO r validates lean feature set across all MA districts",
+        "Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
+        "Leave-one-out LOO r validates lean feature set across all MA districts",
     ]
     for i, line in enumerate(lines):
-        ax.text(0.1, 0.55 - i * 0.06, line, ha="left", va="center",
+        ax.text(0.1, 0.63 - i * 0.065, line, ha="left", va="center",
                 fontsize=9.5, color=_BL, transform=ax.transAxes)
 
-    # Summary box
+    # Summary box — sits below the bullet lines with a clear gap
     ax.add_patch(mpatches.FancyBboxPatch(
-        (0.08, 0.12), 0.84, 0.22, boxstyle="round,pad=0.01",
+        (0.08, 0.08), 0.84, 0.24, boxstyle="round,pad=0.01",
         facecolor="#EEF2F8", edgecolor=_BLUE, linewidth=1.2,
         transform=ax.transAxes))
-    ax.text(0.5, 0.32, "Selected Feature Counts",
+    ax.text(0.5, 0.30, "Selected Feature Counts",
             ha="center", va="center", fontsize=10, fontweight="bold",
             color=_BLUE, transform=ax.transAxes)
     for j, m in enumerate(models):
         xpos = 0.20 + j * 0.30
         lean = m.get("lean_features", m["features"])
-        n_red = len(m.get("redundant", []))
-        ax.text(xpos, 0.26, m["label"], ha="center", fontsize=9,
+        ax.text(xpos, 0.25, m["label"], ha="center", fontsize=9,
                 color=_BL, fontweight="bold", transform=ax.transAxes)
-        ax.text(xpos, 0.21, f"Greedy: {len(m['features'])} features",
+        ax.text(xpos, 0.20, f"Greedy: {len(m['features'])} features",
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.17, f"Lean (post-dropout): {len(lean)} features",
+        ax.text(xpos, 0.16, f"Lean (post-dropout): {len(lean)} features",
                 ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
-        if n_red:
-            ax.text(xpos, 0.13, f"({n_red} redundant removed)",
-                    ha="center", fontsize=7.5, color=_GREY, style="italic",
-                    transform=ax.transAxes)
-        ax.text(xpos, 0.09, f"LOO r = {m['loo_score']:+.3f}",
+        ax.text(xpos, 0.11, f"LOO r = {m['loo_score']:+.3f}",
                 ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
 
     _footer(fig, "Relevance-Based Prediction · Saugus Schools Project · May 2026")
@@ -1125,7 +1120,11 @@ def page_candidate_pool(pdf):
         colLabels=["Group", "Feature", "Measures"],
         bbox=[0.0, 0.02, 1.0, 0.90])
     tbl_l.auto_set_font_size(False); tbl_l.set_fontsize(7.8)
-    tbl_l.auto_set_column_width([0, 1, 2])
+    # Explicit proportional widths: Group=18%, Feature=33%, Measures=49%
+    col_w_l = [0.18, 0.33, 0.49]
+    for (row, col), cell in tbl_l.get_celld().items():
+        if col < len(col_w_l):
+            cell.set_width(col_w_l[col])
     group_colors = {
         "Poverty": "#FFF3CD", "Wealth": "#FFF3CD", "Human capital": "#FFF3CD",
         "Housing": "#E8F4FD", "Community": "#E8F4FD",
@@ -1162,7 +1161,11 @@ def page_candidate_pool(pdf):
         colLabels=["Dropped", "Kept instead", "Reason"],
         bbox=[0.0, 0.02, 1.0, 0.90])
     tbl_r.auto_set_font_size(False); tbl_r.set_fontsize(7.5)
-    tbl_r.auto_set_column_width([0, 1, 2])
+    # Explicit proportional widths: Dropped=30%, Kept instead=26%, Reason=44%
+    col_w_r = [0.30, 0.26, 0.44]
+    for (row, col), cell in tbl_r.get_celld().items():
+        if col < len(col_w_r):
+            cell.set_width(col_w_r[col])
     for (row, col), cell in tbl_r.get_celld().items():
         if row == 0:
             cell.set_facecolor(_RED); cell.set_text_props(color="white")
@@ -1484,10 +1487,8 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     n_pruned = len(all_candidates) - len(lean_features)
 
     _header(fig, f"Factor Selection via Variable Importance: {label}",
-            f"RBP run once with all {len(all_candidates)} candidates  ·  "
-            f"n_random={1000}  ·  "
-            f"{len(lean_features)} features kept (importance > 0)  ·  "
-            f"{n_pruned} pruned")
+            f"{len(all_candidates)} candidates  ·  n_random=1000  ·  "
+            f"{len(lean_features)} features kept (importance > 0)  ·  {n_pruned} pruned")
 
     # ── Left: importance bar chart for all candidates ────────────────────────
     imp_vals   = full_importance.reindex(all_candidates).fillna(0)
@@ -1569,6 +1570,7 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
             "Variable importance: avg adjusted fit of grid cells containing feature − "
             "avg fit of cells without it (Kritzman 2024 Exhibit 5).  "
             "Univariate LOO r: single-feature leave-one-out correlation.")
+    plt.tight_layout(rect=[0, 0.04, 1, 0.88])
     _save(pdf, fig)
 
 
@@ -1699,12 +1701,15 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         if av >= 10:   return f"{v:.1f}"
         return f"{v:.2f}"
 
-    col_names = ["Feature", "Saugus"] + [n[:10] for n in oa_names[:5]] + ["Imp"]
+    # 3 comparison towns keeps 6 columns total (Feature, Saugus, 3 towns, Imp)
+    # which fits the left panel without overflow at fontsize 7.5
+    n_compare = min(3, len(oa_names))
+    col_names = ["Feature", "Saugus"] + [n[:9] for n in oa_names[:n_compare]] + ["Imp"]
     rows = []
     for feat in feats_ordered[:15]:
         sv = saugus_vals.get(feat, float("nan"))
         oa_vals = []
-        for name in oa_names[:5]:
+        for name in oa_names[:n_compare]:
             v = feat_df.loc[name, feat] if feat in feat_df.columns else float("nan")
             oa_vals.append(_fmt(v))
         imp_val = float(imp.get(feat, 0))
@@ -1721,16 +1726,20 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         tbl = ax_l.table(cellText=rows, colLabels=used_cols,
                           bbox=[0.0, 0.0, 1.0, 0.90], cellLoc="center")
         tbl.auto_set_font_size(False)
-        tbl.set_fontsize(7.2)
+        tbl.set_fontsize(7.5)
 
-        # Compute proportional column widths from max character count per column
-        all_text = [used_cols] + rows
-        char_widths = [max(len(str(r[c])) for r in all_text if c < len(r))
-                       for c in range(len(used_cols))]
-        total_chars = max(sum(char_widths), 1)
+        # Explicit column widths: Feature=0.34, Saugus=0.13,
+        # each comparison town=0.14, Imp=0.11  (sum=1.0 for 3 towns)
+        n_cols = len(used_cols)
+        n_town_cols = n_cols - 3          # subtract Feature, Saugus, Imp
+        town_w = 0.14
+        feat_w = 0.34
+        saugus_w = 0.13
+        imp_w   = max(0.05, 1.0 - feat_w - saugus_w - n_town_cols * town_w)
+        explicit_w = [feat_w, saugus_w] + [town_w] * n_town_cols + [imp_w]
         for (row_idx, col_idx), cell in tbl.get_celld().items():
-            if col_idx < len(char_widths):
-                cell.set_width(char_widths[col_idx] / total_chars)
+            if col_idx < len(explicit_w):
+                cell.set_width(explicit_w[col_idx])
             if row_idx == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
             elif col_idx == 1 and row_idx > 0:
