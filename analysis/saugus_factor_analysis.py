@@ -2185,7 +2185,6 @@ def main(fast: bool = False, parallel: bool = False):
         page_combined_summary(pdf, results)
 
         # Synthesis and optimum profile (after the model detail, before scatter)
-        page_synthesis(pdf, results)
         page_optimum_profile(pdf, results, df_raw)
 
         # Combined scatter
@@ -2256,7 +2255,6 @@ def regen_pdf():
                                             r["saugus"], df_raw,
                                             r.get("lean_features", r["features"]))
         page_combined_summary(pdf, results)
-        page_synthesis(pdf, results)
         page_optimum_profile(pdf, results, df_raw)
         saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
         if len(saugus_analyses) >= 3:
