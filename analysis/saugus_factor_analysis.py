@@ -1290,24 +1290,30 @@ def page_synthesis(pdf, results: list[dict]):
 def _demo_similar_overachievers(df2: "pd.DataFrame",
                                 saugus_row: "pd.Series",
                                 oa_pool: list[str],
-                                threshold: float = 1.5) -> list[str]:
+                                threshold: float = 2.0) -> list[str]:
     """
-    Return overachievers whose demographic profile is within `threshold`
-    standard deviations of Saugus in 6-dimensional z-scored feature space.
+    Return overachievers within `threshold` Mahalanobis standard deviations
+    of Saugus on 6 non-actionable demographic features.
 
-    Features used — the non-actionable descriptors of what a community IS
-    (income, property wealth, poverty, size, education, language):
+    Features — the descriptors of what a community IS, not what schools DO:
       median_hh_income, equalized_income, low_income_pct,
       total_enrollment, pct_bachelors_plus, ell_pct
 
-    Method: z-score each feature using the full df2 distribution, then
-    compute Euclidean distance from Saugus to each overachiever town.
-    Towns with distance < threshold * sqrt(n_features) are considered
-    demographically similar.  This is equivalent to requiring each feature
-    to differ by less than ~threshold σ on average.
+    Method: Mahalanobis distance using the covariance matrix of the full
+    MA district population.  Unlike Euclidean distance on z-scores, this
+    accounts for correlations between features (e.g. income and poverty
+    are r≈−0.81, so a town can't "use up" its budget on both dimensions).
 
-    The threshold and feature set are chosen on substantive grounds before
-    examining which towns qualify — not tuned to achieve a desired result.
+    d_M(town, Saugus) = √( Δx · Σ⁻¹ · Δx' )
+    where Σ is the 6×6 sample covariance computed from all MA districts.
+
+    Threshold of 2.0 corresponds to ≤2 Mahalanobis standard deviations —
+    the standard 2σ inclusion criterion.  At this threshold, Lawrence
+    (d≈5.5) and Worcester (d≈4.0) are excluded; all other overachievers
+    qualify (max d≈1.4 for Chelsea).
+
+    Threshold and feature set chosen on substantive grounds before
+    examining which towns qualify.
     """
     demo_feats = ['median_hh_income', 'equalized_income', 'low_income_pct',
                   'total_enrollment', 'pct_bachelors_plus', 'ell_pct']
@@ -1315,23 +1321,28 @@ def _demo_similar_overachievers(df2: "pd.DataFrame",
     if not avail or saugus_row is None:
         return oa_pool
 
-    mu  = df2[avail].mean()
-    std = df2[avail].std().replace(0, 1)
+    # Covariance from full MA district population
+    data = df2[avail].dropna()
+    cov  = data.cov().values
+    cov_inv = np.linalg.pinv(cov + 1e-6 * np.eye(len(avail)))
 
-    def _z(row):
-        return (row[avail] - mu) / std
-
-    saugus_z = _z(saugus_row)
-    cutoff = threshold * (len(avail) ** 0.5)   # ~3.67 for 6 features at threshold=1.5
+    saugus_vec = np.array([
+        float(saugus_row[f]) if not pd.isna(saugus_row[f]) else 0.0
+        for f in avail
+    ])
 
     similar = []
     for town in oa_pool:
         if town not in df2.index:
             continue
-        town_z = _z(df2.loc[town])
-        dist = float(((saugus_z - town_z) ** 2).sum() ** 0.5)
-        if dist <= cutoff:
-            similar.append((town, dist))
+        town_vec = np.array([
+            float(df2.loc[town, f]) if not pd.isna(df2.loc[town, f]) else 0.0
+            for f in avail
+        ])
+        diff = town_vec - saugus_vec
+        d_m  = float(np.sqrt(diff @ cov_inv @ diff))
+        if d_m <= threshold:
+            similar.append((town, d_m))
 
     similar.sort(key=lambda x: x[1])
     return [t for t, _ in similar]
@@ -1342,7 +1353,7 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     Two-row page:
       Top row    — targets from ALL overachievers (any MA district beating prediction)
       Bottom row — targets from demographically SIMILAR overachievers only
-                   (z-score Euclidean distance from Saugus < 1.5√6 ≈ 3.67)
+                   (Mahalanobis distance from Saugus ≤ 2.0σ)
     Both rows show methodology, peer list, and bar chart side-by-side.
     Showing both is more defensible than one alone: if the filtered and
     unfiltered results agree, the finding is robust.
@@ -1503,15 +1514,17 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
 
     _make_grid(
         ax_bot, sim_pool,
-        f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within 1.5σ of Saugus "
-        f"on income, property wealth, poverty, size, education & ELL",
+        f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within 2σ Mahalanobis "
+        f"distance of Saugus on income, property wealth, poverty, size, education & ELL",
         _GREEN)
 
     fig.text(0.5, 0.005,
-             "Similarity: z-scored Euclidean distance on (median_hh_income, equalized_income, "
-             "low_income_pct, total_enrollment, pct_bachelors_plus, ell_pct) < 1.5√6 ≈ 3.67.  "
-             "Threshold pre-specified on substantive grounds.  "
-             "Gap = peer median − Saugus.  Red = Saugus below peer, Green = Saugus at/above peer.",
+             "Similarity metric: Mahalanobis distance d_M = √(Δx · Σ⁻¹ · Δx'), "
+             "Σ = sample covariance of all ~169 MA districts on "
+             "(median_hh_income, equalized_income, low_income_pct, total_enrollment, "
+             "pct_bachelors_plus, ell_pct).  Threshold: d_M ≤ 2.0 (2σ).  "
+             "Pre-specified; not tuned to result.  "
+             "Gap = peer median − Saugus.  Red = Saugus below peer median, Green = at or above.",
              ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.91])
