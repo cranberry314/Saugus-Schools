@@ -74,7 +74,9 @@ OUTPUT_PDF   = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysi
 OUTPUT_CSV   = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis_results.csv"
 OUTPUT_CACHE = Path(__file__).parent.parent / "Reports" / "saugus_factor_analysis_cache.pkl"
 SAUGUS = "Saugus"
-MIN_COVERAGE   = 0.65   # feature must have data for ≥65 % of districts
+MIN_COVERAGE   = 0.60   # feature must have data for ≥60 % of districts
+                          # (Schedule A covers ~65 % of MA districts; 0.60 admits
+                          #  all fiscal ratio features while still filtering noise)
 MIN_IMPROVEMENT = 0.005  # greedy: add if LOO r improves by ≥ this amount
                           # dropout: remove only if LOO r improves by ≥ this amount when dropped
                           # (symmetric threshold — a feature earns its place on the same
@@ -387,15 +389,20 @@ def load_features(engine, school_year: int = 2024) -> pd.DataFrame:
     if "sat_ebrw" in df.columns and "sat_math" in df.columns:
         df["sat_combined"] = df["sat_ebrw"] + df["sat_math"]
 
-    # Education budget share — from MA DLS Schedule A.
-    # Fiscal year ≈ school year for most districts; use fy for the join.
-    # Joined on district_name ↔ municipality (exact match covers ~95% of MA
-    # districts where the school district name equals the town name).
+    # Budget line-item shares — built directly from MA DLS Schedule A.
+    # Each ratio is: line_item / total_expenditures * 100.
+    # This is the same approach as building EPS from the income statement:
+    # don't predict the ratio from demographics, compute it from components.
+    # ed_budget_share is the target; the others are the competing line items
+    # that mechanically explain why education's share is what it is.
     with engine.connect() as conn:
         budget_share = q("""
             SELECT municipality AS district_name,
-                   ROUND(100.0 * education / NULLIF(total_expenditures, 0), 2)
-                       AS ed_budget_share
+                   ROUND(100.0 * education       / NULLIF(total_expenditures,0), 2) AS ed_budget_share,
+                   ROUND(100.0 * fixed_costs     / NULLIF(total_expenditures,0), 2) AS fixed_costs_pct,
+                   ROUND(100.0 * debt_service    / NULLIF(total_expenditures,0), 2) AS debt_service_pct,
+                   ROUND(100.0 * public_safety   / NULLIF(total_expenditures,0), 2) AS public_safety_pct,
+                   ROUND(100.0 * public_works    / NULLIF(total_expenditures,0), 2) AS public_works_pct
             FROM municipal_expenditures
             WHERE fiscal_year = :yr
         """, yr=fy)
@@ -2076,7 +2083,13 @@ OUTCOME_VARS = {
     "sat_ebrw", "sat_math", "sat_combined",
     "attending_pct", "dropout_pct",
     "four_yr_grad_pct", "five_yr_grad_pct",
-    "ed_budget_share",   # education % of total municipal budget (Schedule A)
+    # Schedule A budget line-item shares — outcomes of fiscal policy.
+    # Available as predictors in models that don't exclude them.
+    "ed_budget_share",      # target for the budget share model
+    "fixed_costs_pct",      # pensions / employee benefits share
+    "debt_service_pct",     # debt service share
+    "public_safety_pct",    # police + fire share
+    "public_works_pct",     # DPW / infrastructure share
 }
 
 # Pre-specified pool of PURE PREDICTOR features — chosen on domain grounds
@@ -2130,7 +2143,9 @@ MODELS = [
         # Grade 10 MCAS and SAT are circular (same academic quality, different
         # cohort/instrument).  dropout_pct and attending_pct are causal signals.
         "also_exclude": {"mcas10_ela", "mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined"},
+                         "sat_ebrw", "sat_math", "sat_combined",
+                         "fixed_costs_pct", "debt_service_pct",
+                         "public_safety_pct", "public_works_pct"},
     },
     # Postsecondary removed: Saugus is +9.8pp above prediction — healthy, not
     # a problem area.  Analysis focuses on outcomes where Saugus is deficient.
@@ -2146,7 +2161,9 @@ MODELS = [
         # Graduation rates are circular (inverse of dropout).
         "also_exclude": {"four_yr_grad_pct", "five_yr_grad_pct",
                          "mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined"},
+                         "sat_ebrw", "sat_math", "sat_combined",
+                         "fixed_costs_pct", "debt_service_pct",
+                         "public_safety_pct", "public_works_pct"},
     },
     {
         "label":        "MCAS Grade 10 (ELA)",
@@ -2166,27 +2183,31 @@ MODELS = [
         #             a prior cohort measure, not the same students at grade 10)
         #   dropout_pct, attending_pct: school environment signals
         "also_exclude": {"mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined"},
+                         "sat_ebrw", "sat_math", "sat_combined",
+                         "fixed_costs_pct", "debt_service_pct",
+                         "public_safety_pct", "public_works_pct"},
     },
     {
         "label":        "Education Budget Share",
         "target":       "ed_budget_share",
         "target_pct":   True,
         "desc":         "Education as % of total municipal expenditure (MA DLS Schedule A)",
-        # Question: given a town's demographic and fiscal profile, what share
-        # of its budget should go to education?  The gap between predicted and
-        # actual reveals whether the allocation is a policy choice rather than
-        # a demographic inevitability.
-        # Exclude all school-outcome variables: dropout, MCAS, SAT, graduation
-        # rates are DOWNSTREAM of budget decisions, not upstream.  We want
-        # purely demographic/fiscal predictors so the model answers:
-        # "what characterises towns that prioritise education?"
+        # Build the factor from financial statement components — same logic as
+        # computing EPS from the income statement rather than predicting it.
+        # Candidates = demographic features (PRE_SPECIFIED_POOL) + competing
+        # budget line items (fiscal ratios from Schedule A).
+        # School outcome variables excluded: dropout, MCAS, SAT are downstream
+        # of budget decisions, not upstream.  Fiscal ratios ARE upstream —
+        # they mechanically determine what share is left for education.
         "also_exclude": {
             "avg_mcas", "mcas10_ela", "mcas10_math",
             "sat_ebrw", "sat_math", "sat_combined",
             "attending_pct", "dropout_pct",
             "four_yr_grad_pct", "five_yr_grad_pct",
         },
+        # fixed_costs_pct, debt_service_pct, public_safety_pct, public_works_pct
+        # are NOT excluded — they are the competing line items that mechanically
+        # explain where the money goes instead.
     },
     # SAT removed: scores above ~1200 driven by private prep, not school quality.
     # Self-selection: students not going to college don't take it.
