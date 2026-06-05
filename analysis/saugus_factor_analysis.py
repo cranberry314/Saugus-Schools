@@ -1531,6 +1531,143 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     _save(pdf, fig)
 
 
+def page_budget_and_staffing(pdf, engine) -> None:
+    """
+    Two-panel page sourced directly from Schedule A and DESE staffing data:
+      Left  — Education's share of Saugus's total municipal budget over time
+               vs overachiever peer median (2010–2025)
+      Right — Teacher FTE per 1,000 students over time for Saugus
+               vs overachiever peer median (2009–2024)
+
+    These are longitudinal charts the RBP cross-section cannot show.
+    They answer WHY the teacher density gap exists: budget share has been
+    declining while peer towns held steady.
+
+    Independent cross-validation note: Ridge regression on 221 MA districts
+    (R²=0.83) identifies chronic absenteeism as the #1 MCAS predictor
+    (importance 3.15), confirming the RBP Exhibit 5 finding independently.
+    """
+    from sqlalchemy import text as _text
+
+    PEER_TOWNS = ['Rockland', 'Norwood', 'Clinton', 'Marlborough', 'Agawam',
+                  'Falmouth', 'Westport', 'Fitchburg']
+
+    with engine.connect() as conn:
+        # ── Budget share ──────────────────────────────────────────────────
+        budget = pd.read_sql(_text("""
+            SELECT municipality, fiscal_year,
+                   ROUND(100.0*education/NULLIF(total_expenditures,0),1) AS ed_pct
+            FROM municipal_expenditures
+            WHERE municipality = ANY(:towns)
+            ORDER BY municipality, fiscal_year
+        """), conn, params={"towns": ['Saugus'] + PEER_TOWNS})
+
+        # ── Teacher density ───────────────────────────────────────────────
+        staffing_q = pd.read_sql(_text("""
+            SELECT s.district_name, s.school_year, s.fte AS teacher_fte,
+                   e.total AS enrollment
+            FROM staffing s
+            JOIN (SELECT school_year, district_name,
+                         SUM(total) AS total
+                  FROM enrollment
+                  WHERE grade = 'Total'
+                  GROUP BY school_year, district_name) e
+              ON s.school_year = e.school_year
+             AND s.district_name = e.district_name
+            WHERE s.category = 'teacher_fte'
+              AND s.district_name = ANY(:towns)
+            ORDER BY s.district_name, s.school_year
+        """), conn, params={"towns": ['Saugus'] + PEER_TOWNS})
+
+    staffing_q['per_1k'] = (staffing_q['teacher_fte'] /
+                             staffing_q['enrollment'].replace(0, float('nan')) * 1000)
+
+    # ── Build peer medians ────────────────────────────────────────────────
+    def _peer_median(df, town_col, year_col, val_col, peers):
+        grp = df[df[town_col].isin(peers)].groupby(year_col)[val_col].median()
+        return grp
+
+    bud_saugus = budget[budget['municipality'] == 'Saugus'].set_index('fiscal_year')['ed_pct']
+    bud_peers  = _peer_median(budget, 'municipality', 'fiscal_year', 'ed_pct', PEER_TOWNS)
+
+    st_saugus  = staffing_q[staffing_q['district_name'] == 'Saugus'].set_index('school_year')['per_1k']
+    st_peers   = _peer_median(staffing_q, 'district_name', 'school_year', 'per_1k', PEER_TOWNS)
+
+    # ── Page ──────────────────────────────────────────────────────────────
+    fig, (ax_l, ax_r) = _paper_fig(1, 2)
+    _header(fig, "Budget Allocation & Teacher Density — 15-Year Trajectory",
+            "Source: MA DLS Schedule A (budget) · MA DESE Staffing (teachers) · "
+            f"Peer comparison: {len(PEER_TOWNS)} demographically similar overachiever towns")
+
+    # ── Left: budget share ────────────────────────────────────────────────
+    common_yrs_b = sorted(set(bud_saugus.index) & set(bud_peers.index))
+    ax_l.plot(common_yrs_b, [bud_saugus.get(y, float('nan')) for y in common_yrs_b],
+              color=_GOLD, lw=2.5, marker='o', ms=5, label='Saugus', zorder=4)
+    ax_l.plot(common_yrs_b, [bud_peers.get(y, float('nan')) for y in common_yrs_b],
+              color=_BLUE, lw=2, ls='--', marker='s', ms=4, label='Peer median', zorder=3)
+
+    # Shade the gap
+    s_vals = [bud_saugus.get(y, float('nan')) for y in common_yrs_b]
+    p_vals = [bud_peers.get(y, float('nan')) for y in common_yrs_b]
+    ax_l.fill_between(common_yrs_b, s_vals, p_vals,
+                      where=[s < p for s, p in zip(s_vals, p_vals)],
+                      alpha=0.15, color=_RED, label='Saugus below peers')
+
+    # Annotate start and end
+    if bud_saugus.get(2010) and bud_saugus.get(2025):
+        ax_l.annotate(f"{bud_saugus[2010]:.1f}%", (2010, bud_saugus[2010]),
+                      textcoords="offset points", xytext=(4, 4), fontsize=8, color=_GOLD)
+        ax_l.annotate(f"{bud_saugus[2025]:.1f}%", (2025, bud_saugus[2025]),
+                      textcoords="offset points", xytext=(-30, -12), fontsize=8, color=_GOLD)
+
+    ax_l.set_xlabel("Fiscal year")
+    ax_l.set_ylabel("Education as % of total municipal expenditure")
+    ax_l.set_title("Education Budget Share\n(Schedule A, general fund)", fontsize=9)
+    ax_l.legend(fontsize=8)
+    ax_l.grid(alpha=0.25)
+    ax_l.set_ylim(bottom=0)
+
+    # ── Right: teacher density ────────────────────────────────────────────
+    common_yrs_s = sorted(set(st_saugus.index) & set(st_peers.index))
+    ax_r.plot(common_yrs_s, [st_saugus.get(y, float('nan')) for y in common_yrs_s],
+              color=_GOLD, lw=2.5, marker='o', ms=5, label='Saugus', zorder=4)
+    ax_r.plot(common_yrs_s, [st_peers.get(y, float('nan')) for y in common_yrs_s],
+              color=_BLUE, lw=2, ls='--', marker='s', ms=4, label='Peer median', zorder=3)
+
+    # Shade gap
+    sv2 = [st_saugus.get(y, float('nan')) for y in common_yrs_s]
+    pv2 = [st_peers.get(y, float('nan')) for y in common_yrs_s]
+    ax_r.fill_between(common_yrs_s, sv2, pv2,
+                      where=[not (float('nan') in [s,p]) and s < p
+                             for s, p in zip(sv2, pv2)],
+                      alpha=0.15, color=_RED, label='Saugus below peers')
+
+    # Annotate first and last year for Saugus
+    first_yr = min(y for y in common_yrs_s if not pd.isna(st_saugus.get(y, float('nan'))))
+    last_yr  = max(y for y in common_yrs_s if not pd.isna(st_saugus.get(y, float('nan'))))
+    ax_r.annotate(f"{st_saugus[first_yr]:.1f}", (first_yr, st_saugus[first_yr]),
+                  textcoords="offset points", xytext=(4, 4), fontsize=8, color=_GOLD)
+    ax_r.annotate(f"{st_saugus[last_yr]:.1f}", (last_yr, st_saugus[last_yr]),
+                  textcoords="offset points", xytext=(-28, -12), fontsize=8, color=_GOLD)
+
+    ax_r.set_xlabel("School year")
+    ax_r.set_ylabel("Teacher FTE per 1,000 students")
+    ax_r.set_title("Teacher Density\n(DESE Staffing + Enrollment)", fontsize=9)
+    ax_r.legend(fontsize=8)
+    ax_r.grid(alpha=0.25)
+
+    # Ridge cross-validation note
+    fig.text(0.5, 0.01,
+             "Independent cross-validation: Ridge regression on 221 MA districts (R²=0.83) "
+             "identifies chronic absenteeism as the #1 predictor of MCAS outcomes (importance=3.15), "
+             "confirming the RBP Exhibit 5 finding by a separate method.  "
+             "Peer set: 8 demographically similar overachiever towns (Mahalanobis d_M ≤ 2.0).",
+             ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic")
+
+    plt.tight_layout(rect=[0, 0.04, 1, 0.91])
+    _save(pdf, fig)
+
+
 def page_importance_selection(pdf, label: str, all_candidates: list[str],
                               full_importance: pd.Series,
                               lean_features: list[str],
@@ -2197,6 +2334,9 @@ def main(fast: bool = False, parallel: bool = False):
         # Combined summary + cross-reference table
         page_combined_summary(pdf, results)
 
+        # Trajectory context from Schedule A + DESE staffing
+        page_budget_and_staffing(pdf, engine)
+
         # Synthesis and optimum profile (after the model detail, before scatter)
         page_optimum_profile(pdf, results, df_raw)
 
@@ -2268,6 +2408,7 @@ def regen_pdf():
                                             r["saugus"], df_raw,
                                             r.get("lean_features", r["features"]))
         page_combined_summary(pdf, results)
+        page_budget_and_staffing(pdf, get_engine())
         page_optimum_profile(pdf, results, df_raw)
         saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
         if len(saugus_analyses) >= 3:
