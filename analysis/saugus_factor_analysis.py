@@ -1029,8 +1029,9 @@ def page_combined_summary(pdf, results: list[dict]):
     sorted_feats = sorted(feature_set.items(), key=_sort_key)
 
     # Shorten model labels for column headers
-    short_labels = {"MCAS Grades 3–8": "MCAS", "Postsecondary Attendance": "Post-sec",
-                    "Dropout Rate": "Dropout", "SAT Performance": "SAT"}
+    short_labels = {"MCAS Grades 3–8": "MCAS 3–8", "Postsecondary Attendance": "Post-sec",
+                    "Dropout Rate": "Dropout", "SAT Performance": "SAT",
+                    "MCAS Grade 10 (ELA)": "MCAS 10"}
     col_h2 = ["Feature", "# Models"] + [short_labels.get(m, m[:8]) for m in model_labels]
     xref_rows = []
     for feat, model_imps in sorted_feats:
@@ -1151,9 +1152,7 @@ def page_candidate_pool(pdf):
         ["gf_exp_per_capita",        "res_tax_rate",              "r≈+0.75  — redundant municipal"],
         ["pct_65_plus",              "—",                         "Weak signal, no policy lever"],
         ["com_tax_rate",             "res_tax_rate",              "r≈+0.65  — commercial tax dup"],
-        ["mcas10_math",              "mcas10_ela",                "r=+0.90  — one HS MCAS suffices"],
-        ["sat_ebrw / sat_math",      "—",                        "SAT ceiling + private prep bias"],
-        ["sat_combined",             "—",                         "SAT model removed entirely"],
+        ["mcas10_math",              "mcas10_ela",                "r=+0.90  — one grade-10 measure suffices"],
     ]
     ax_r.text(0.5, 0.97, f"Dropped — {len(dropped_rows)} redundant/problematic features",
               ha="center", va="top", fontsize=9, fontweight="bold",
@@ -1265,14 +1264,7 @@ def page_synthesis(pdf, results: list[dict]):
         "underperformance signal in the standardised test results.",
     ])
 
-    _section("Finding 2 — The SAT gap was a measurement artefact, not a school failure.", _GREY, [
-        "SAT is voluntary: students not going to college often do not sit it.",
-        "Scores above ~1200 in MA reflect private tutoring spend, not school quality.",
-        "When we use MCAS10 — the mandatory equivalent — Saugus is slightly above target.",
-        "The SAT gap (-112 pts) dissolved when the right instrument was used.",
-    ])
-
-    _section("Finding 3 — The problem is retention and engagement, not instruction.", _RED, [
+    _section("Finding 2 — The problem is retention and engagement, not instruction.", _RED, [
         "Dropout rate: -0.8pp below prediction (slightly more dropout than expected).",
         "Chronic absenteeism: 31.2% — 11pp above Rockland (nearest demographic peer).",
         "Absenteeism is the single feature that earns its place in the Dropout model",
@@ -1280,7 +1272,7 @@ def page_synthesis(pdf, results: list[dict]):
         "and sit the test perform fine.  The question is who is disengaging before they get there.",
     ])
 
-    _section("Finding 4 — Saugus has the fiscal capacity to act.", _GREEN, [
+    _section("Finding 3 — Saugus has the fiscal capacity to act.", _GREEN, [
         "Saugus property wealth ($1.17B) is 1.9× Rockland's ($626M).",
         "Rockland spends $3,788 more per pupil per year at a higher tax rate (14.1 vs 10.7).",
         "Saugus is the wealthier town choosing to spend less on its schools.",
@@ -1294,191 +1286,180 @@ def page_synthesis(pdf, results: list[dict]):
 
 def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     """
-    Optimum school profile: what actionable feature values would move Saugus
-    from current performance into overachiever territory, and what it costs.
+    Optimum school profile: what actionable feature values characterise
+    overachiever towns, with full methodology and peer group disclosure.
+    No cost estimates are fabricated — only figures derivable from data.
     """
-    fig, axes = _paper_fig(1, 2)
-    ax_l, ax_r = axes
-    _header(fig, "Optimum Profile — What Overachievers Look Like",
-            "Target values derived from towns that outperform their demographic prediction across multiple models.  "
-            "Non-actionable features (income, poverty) excluded — these are the levers Saugus can pull.")
-
-    # Collect all overachievers across all models, weight by frequency
     from collections import Counter
+
+    # ── Build peer pool ──────────────────────────────────────────────────────
+    # For each model, identify top-10 overachievers (largest positive residual:
+    # actual outcome minus RBP leave-one-out prediction, controlling for
+    # demographics).  Count how many models each town appears in.
     oa_counter = Counter()
+    model_oa_map = {}
     for r in results:
         s = r.get("saugus")
         if not s: continue
-        loo = s["loo_df"]
-        oas = _find_overachievers(loo, r["target"], n=10)
+        oas = _find_overachievers(s["loo_df"], r["target"], n=10)
+        model_oa_map[r["label"]] = list(oas.index)
         for name in oas.index:
             oa_counter[name] += 1
 
-    # Consensus overachievers (appear in 2+ models)
-    consensus = [t for t, c in oa_counter.items() if c >= 2]
-    # Top single-model overachievers with large gap (include some for diversity)
-    all_oas = [t for t, c in oa_counter.most_common(15)]
+    all_oas    = [t for t, _ in oa_counter.most_common(20)]  # up to 20 unique OA towns
+    consensus  = [t for t, c in oa_counter.most_common() if c >= 2]
 
-    df_raw2 = df_raw.copy()
-    df_raw2.index = df_raw2["district_name"]
+    df2 = df_raw.copy()
+    df2.index = df2["district_name"]
+    saugus = df2.loc["Saugus"] if "Saugus" in df2.index else None
+    oa_pool = [t for t in all_oas if t in df2.index]
 
-    # Actionable features (things the district can change)
+    # Actionable features: things a district can control via policy / budget
     actionable = [
-        ("chronic_absenteeism_pct", "Chronic absenteeism", "%",   False),  # lower=better
-        ("teachers_per_100_students","Teachers per 100 students", "/100", True),
-        ("avg_teacher_salary",       "Avg teacher salary",        "$",    True),
-        ("nss_per_pupil",            "Net school spending/pupil", "$",    True),
-        ("crime_rate",               "Crime rate (per 100k)",     "",     False),
+        ("chronic_absenteeism_pct",  "Chronic absenteeism",       "%",  False),
+        ("teachers_per_100_students","Teachers per 100 students", "",   True),
+        ("avg_teacher_salary",        "Avg teacher salary",        "$",  True),
+        ("nss_per_pupil",             "Net school spending/pupil", "$",  True),
     ]
 
-    saugus_row = df_raw2.loc["Saugus"] if "Saugus" in df_raw2.index else None
-
-    # Build target profile from consensus + top overachievers
-    oa_pool = [t for t in all_oas if t in df_raw2.index]
+    # ── Page layout ──────────────────────────────────────────────────────────
+    fig, (ax_l, ax_r) = _paper_fig(1, 2)
+    _header(fig, "Optimum Profile — What Overachievers Look Like",
+            f"Peer pool: top-10 overachievers per model across 3 models "
+            f"({len(oa_pool)} unique MA districts, {len(consensus)} appear in 2+ models).  "
+            "Non-actionable features (income, poverty, demographics) excluded.")
 
     ax_l.axis("off")
-    ax_r.axis("off")
+    # ax_r is used directly as a bar chart — no nested axes
 
-    # ── Left: target values table ────────────────────────────────────────────
-    ax_l.text(0.5, 0.97, "Actionable feature targets — Saugus vs overachiever profile",
-              ha="center", va="top", fontsize=9, fontweight="bold",
-              color=_BLUE, transform=ax_l.transAxes)
+    # ── LEFT: methodology + peer table + feature target table ────────────────
+    y = 0.95
+
+    # Methodology box
+    meth = [
+        "How targets are calculated:",
+        f"  1. Run RBP leave-one-out on all {len(df2)} MA districts for each outcome.",
+        "  2. Residual = actual − predicted (controlling for demographics).",
+        f"  3. Top 10 districts by residual per model form the overachiever pool.",
+        f"  4. Target = median of the {len(oa_pool)}-town pool on each feature below.",
+        "  5. Figures derive entirely from DESE / DLS / US Census public data.",
+    ]
+    for line in meth:
+        ax_l.text(0.02, y, line, ha="left", va="top",
+                  fontsize=7.8, color=_BL if not line.startswith("How") else _BLUE,
+                  fontweight="bold" if line.startswith("How") else "normal",
+                  transform=ax_l.transAxes)
+        y -= 0.055 if line.startswith("How") else 0.045
+    y -= 0.01
+
+    # Peer group list
+    ax_l.text(0.02, y, f"Peer group ({len(oa_pool)} towns, ranked by cross-model frequency):",
+              ha="left", va="top", fontsize=8, color=_BLUE, fontweight="bold",
+              transform=ax_l.transAxes)
+    y -= 0.045
+    for i, town in enumerate(oa_pool[:12]):
+        cnt = oa_counter[town]
+        marker = "●" if cnt >= 2 else "○"
+        models_in = [lbl.split()[0] for lbl, oas in model_oa_map.items() if town in oas]
+        ax_l.text(0.04, y, f"{marker} {town}  ({cnt}/3 models: {', '.join(models_in)})",
+                  ha="left", va="top", fontsize=7.5,
+                  color=_GREEN if cnt >= 2 else _GREY,
+                  transform=ax_l.transAxes)
+        y -= 0.04
+    if len(oa_pool) > 12:
+        ax_l.text(0.04, y, f"  … and {len(oa_pool)-12} more",
+                  ha="left", va="top", fontsize=7, color=_GREY,
+                  transform=ax_l.transAxes)
+        y -= 0.04
+
+    y -= 0.01
+    # Feature target table
+    ax_l.text(0.02, y, "Actionable feature gap — Saugus vs peer median:",
+              ha="left", va="top", fontsize=8, color=_BLUE, fontweight="bold",
+              transform=ax_l.transAxes)
+    y -= 0.045
 
     tbl_rows = []
-    for feat, label_str, unit, higher_better in actionable:
-        if feat not in df_raw2.columns or saugus_row is None:
-            continue
-        sval = float(saugus_row[feat]) if not pd.isna(saugus_row[feat]) else float("nan")
-        oa_vals = []
-        for t in oa_pool[:8]:
-            v = df_raw2.loc[t, feat] if feat in df_raw2.columns else float("nan")
-            if not pd.isna(v):
-                oa_vals.append(float(v))
-
-        if not oa_vals:
-            continue
-        target = float(np.median(oa_vals))
-        direction = "↓ lower" if not higher_better else "↑ higher"
-        gap = target - sval
+    for feat, lbl, unit, hi_good in actionable:
+        if feat not in df2.columns or saugus is None: continue
+        sv = float(saugus[feat]) if not pd.isna(saugus[feat]) else float("nan")
+        vals = [float(df2.loc[t, feat])
+                for t in oa_pool
+                if feat in df2.columns and not pd.isna(df2.loc[t, feat])]
+        if not vals: continue
+        med = float(np.median(vals))
+        gap = med - sv
         if unit == "$":
-            s_str = f"${sval:,.0f}"
-            t_str = f"${target:,.0f}"
-            g_str = f"${abs(gap):,.0f} {direction}"
+            row = [lbl, f"${sv:,.0f}", f"${med:,.0f}", f"${gap:+,.0f}",
+                   f"n={len(vals)}"]
         elif unit == "%":
-            s_str = f"{sval:.1f}%"
-            t_str = f"{target:.1f}%"
-            g_str = f"{abs(gap):.1f}pp {direction}"
+            row = [lbl, f"{sv:.1f}%", f"{med:.1f}%", f"{gap:+.1f}pp",
+                   f"n={len(vals)}"]
         else:
-            s_str = f"{sval:.1f}{unit}"
-            t_str = f"{target:.1f}{unit}"
-            g_str = f"{abs(gap):.1f} {direction}"
+            row = [lbl, f"{sv:.1f}", f"{med:.1f}", f"{gap:+.1f}",
+                   f"n={len(vals)}"]
+        tbl_rows.append(row)
 
-        flag = "✓" if (higher_better and gap > 0) or (not higher_better and gap < 0) else "✗ GAP"
-        tbl_rows.append([label_str, s_str, t_str, g_str, flag])
-
-    if tbl_rows:
+    if tbl_rows and y > 0.05:
         tbl = ax_l.table(
             cellText=tbl_rows,
-            colLabels=["Feature", "Saugus now", "OA median target", "Gap", ""],
-            bbox=[0.0, 0.35, 1.0, 0.55])
-        tbl.auto_set_font_size(False); tbl.set_fontsize(8.5)
+            colLabels=["Feature", "Saugus", "Peer median", "Gap", "N towns"],
+            bbox=[0.0, max(0.03, y - len(tbl_rows)*0.065 - 0.04), 1.0,
+                  min(len(tbl_rows)*0.065 + 0.04, y)])
+        tbl.auto_set_font_size(False); tbl.set_fontsize(8)
         tbl.auto_set_column_width(range(5))
         for (row, col), cell in tbl.get_celld().items():
             if row == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-            elif col == 4 and row > 0:
-                val = tbl_rows[row-1][4]
-                cell.set_facecolor("#FFE8E8" if "GAP" in val else "#E8F8E8")
+            elif col == 3 and row > 0:
+                gap_val = tbl_rows[row-1][3]
+                is_bad = (gap_val.startswith("+") and not actionable[row-1][3]) or \
+                         (gap_val.startswith("-") and actionable[row-1][3])
+                cell.set_facecolor("#FFE8E8" if is_bad else "#E8F8E8")
             else:
                 cell.set_facecolor("#F5F5F5" if row % 2 else "white")
             cell.set_edgecolor("#CCCCCC")
 
-    # Cost estimate box
-    enroll = float(saugus_row["total_enrollment"]) if saugus_row is not None else 3084
-    curr_nss = float(saugus_row["nss_per_pupil"]) if saugus_row is not None else 17369
-    curr_t_ratio = float(saugus_row["teachers_per_100_students"]) if saugus_row is not None else 5.9
-    curr_sal = float(saugus_row["avg_teacher_salary"]) if saugus_row is not None else 89778
-    curr_abs = float(saugus_row["chronic_absenteeism_pct"]) if saugus_row is not None else 31.2
+    # ── RIGHT: bar chart directly on ax_r ────────────────────────────────────
+    feats_plot  = ["chronic_absenteeism_pct", "teachers_per_100_students",
+                   "nss_per_pupil"]
+    feat_labels = ["Absenteeism %\n(lower = better)",
+                   "Teachers / 100\n(higher = better)",
+                   "Spending/pupil $K\n(higher = better)"]
+    divisors    = [1, 1, 1000]
 
-    # Targets from overachiever pool
-    nss_vals = [float(df_raw2.loc[t,"nss_per_pupil"]) for t in oa_pool[:8] if "nss_per_pupil" in df_raw2.columns and not pd.isna(df_raw2.loc[t,"nss_per_pupil"])]
-    tr_vals  = [float(df_raw2.loc[t,"teachers_per_100_students"]) for t in oa_pool[:8] if "teachers_per_100_students" in df_raw2.columns and not pd.isna(df_raw2.loc[t,"teachers_per_100_students"])]
-    tgt_nss  = np.median(nss_vals) if nss_vals else curr_nss
-    tgt_tr   = np.median(tr_vals)  if tr_vals  else curr_t_ratio
+    towns_to_plot = (["Saugus"] + consensus[:3] +
+                     [t for t in oa_pool if t not in consensus][:2])
+    colors = [_GOLD] + [_GREEN]*3 + [_GREY]*2
+    n_feats = len(feats_plot)
+    x = np.arange(n_feats)
+    bar_w = 0.8 / max(len(towns_to_plot), 1)
 
-    add_nss_cost   = max(0, tgt_nss - curr_nss) * enroll
-    add_teach      = max(0, (tgt_tr - curr_t_ratio) * enroll / 100)
-    add_teach_cost = add_teach * curr_sal
-
-    cost_lines = [
-        ("Absenteeism programs (attendance coordinators,",  ""),
-        (" early-warning system, parent outreach)",          "~$300–500K/yr"),
-        (f"Add {add_teach:.0f} teachers to match OA staffing ratio", f"~${add_teach_cost/1e6:.1f}M/yr"),
-        (f"Close nss/pupil gap to OA median (${tgt_nss:,.0f})", f"~${add_nss_cost/1e6:.1f}M/yr total"),
-        ("Saugus property wealth ($1.17B) vs Rockland ($626M):", "1.9× richer"),
-        ("1-mill tax rate increase → additional revenue:", f"~$1.2M/yr"),
-        ("Match Rockland tax rate (+3.4 mills):", f"~$4.0M/yr"),
-    ]
-
-    ax_l.text(0.5, 0.32, "Estimated cost to close gaps", ha="center", va="top",
-              fontsize=9, fontweight="bold", color=_RED, transform=ax_l.transAxes)
-    for i, (lbl, val) in enumerate(cost_lines):
-        ax_l.text(0.03, 0.28 - i*0.037, lbl, ha="left", va="top", fontsize=8,
-                  color=_BL, transform=ax_l.transAxes)
-        if val:
-            ax_l.text(0.97, 0.28 - i*0.037, val, ha="right", va="top", fontsize=8,
-                      color=_RED, fontweight="bold", transform=ax_l.transAxes)
-
-    # ── Right: radar / bar chart showing gap to overachiever profile ──────────
-    ax_r.text(0.5, 0.97,
-              f"Consensus overachievers (appear in 2+ models)\nvs Saugus on actionable features",
-              ha="center", va="top", fontsize=9, fontweight="bold",
-              color=_BLUE, transform=ax_r.transAxes)
-
-    if consensus and saugus_row is not None:
-        feats_plot = ["chronic_absenteeism_pct", "teachers_per_100_students",
-                      "avg_teacher_salary", "nss_per_pupil"]
-        feat_labels = ["Absenteeism %\n(lower=better)", "Teachers/100\n(higher=better)",
-                       "Avg salary $K\n(higher=better)", "Spending/pupil $K\n(higher=better)"]
-        divisors = [1, 1, 1000, 1000]
-
-        n = len(feats_plot)
-        x = np.arange(n)
-        width = 0.25
-
-        saugus_vals_plot = []
+    for ti, (town, col) in enumerate(zip(towns_to_plot, colors)):
+        if town not in df2.index: continue
+        vals = []
         for f, div in zip(feats_plot, divisors):
-            v = float(saugus_row[f]) if f in df_raw2.columns and not pd.isna(saugus_row[f]) else 0
-            saugus_vals_plot.append(v / div)
+            v = float(df2.loc[town, f]) if f in df2.columns and not pd.isna(df2.loc[town, f]) else 0
+            vals.append(v / div)
+        offset = (ti - len(towns_to_plot)/2 + 0.5) * bar_w
+        bars = ax_r.bar(x + offset, vals, bar_w * 0.9,
+                        label=town, color=col, alpha=0.80)
 
-        # Sub-axes inside ax_r
-        ax_inner = fig.add_axes([0.54, 0.08, 0.42, 0.82])
-        bars_s = ax_inner.bar(x - width/2, saugus_vals_plot, width,
-                              label="Saugus", color=_GOLD, alpha=0.85)
+    ax_r.set_xticks(x)
+    ax_r.set_xticklabels(feat_labels, fontsize=8)
+    ax_r.legend(fontsize=7.5, loc="upper right", ncol=1)
+    ax_r.set_title(f"Saugus (gold) vs overachiever towns\n"
+                   f"● = consensus (2+ models)  ○ = single-model",
+                   fontsize=8.5)
+    ax_r.grid(axis="y", alpha=0.3)
+    ax_r.tick_params(axis="y", labelsize=8)
 
-        for ci, town in enumerate(consensus[:3]):
-            if town not in df_raw2.index: continue
-            tvals = []
-            for f, div in zip(feats_plot, divisors):
-                v = float(df_raw2.loc[town, f]) if f in df_raw2.columns and not pd.isna(df_raw2.loc[town, f]) else 0
-                tvals.append(v / div)
-            ax_inner.bar(x + width*(ci+0.5)/2, tvals, width*0.7,
-                         label=town, alpha=0.7)
-
-        ax_inner.set_xticks(x)
-        ax_inner.set_xticklabels(feat_labels, fontsize=7)
-        ax_inner.legend(fontsize=7, loc="upper right")
-        ax_inner.set_title("Saugus vs consensus overachievers", fontsize=8)
-        ax_inner.grid(axis="y", alpha=0.3)
-        ax_r.axis("off")
-    else:
-        ax_r.text(0.5, 0.5, "Insufficient overachiever data for chart",
-                  ha="center", va="center", transform=ax_r.transAxes)
-
+    plt.tight_layout(rect=[0, 0.04, 1, 0.91])
     _footer(fig,
-            "OA median = median value across top overachievers (towns appearing in 2+ model overachiever lists).  "
-            "Cost estimates are indicative. Causal inference requires longitudinal study — "
-            "this shows what overachievers look like, not a guaranteed outcome.")
+            "Targets are descriptive medians of the overachiever peer pool — "
+            "they show what high-performing comparable towns look like, not guaranteed outcomes.  "
+            "All source data: DESE School Profiles, MA DLS Municipal Finance, US Census ACS.  "
+            "Causal inference requires longitudinal or experimental design.")
     _save(pdf, fig)
 
 
