@@ -1287,18 +1287,69 @@ def page_synthesis(pdf, results: list[dict]):
     _save(pdf, fig)
 
 
+def _demo_similar_overachievers(df2: "pd.DataFrame",
+                                saugus_row: "pd.Series",
+                                oa_pool: list[str],
+                                threshold: float = 1.5) -> list[str]:
+    """
+    Return overachievers whose demographic profile is within `threshold`
+    standard deviations of Saugus in 6-dimensional z-scored feature space.
+
+    Features used — the non-actionable descriptors of what a community IS
+    (income, property wealth, poverty, size, education, language):
+      median_hh_income, equalized_income, low_income_pct,
+      total_enrollment, pct_bachelors_plus, ell_pct
+
+    Method: z-score each feature using the full df2 distribution, then
+    compute Euclidean distance from Saugus to each overachiever town.
+    Towns with distance < threshold * sqrt(n_features) are considered
+    demographically similar.  This is equivalent to requiring each feature
+    to differ by less than ~threshold σ on average.
+
+    The threshold and feature set are chosen on substantive grounds before
+    examining which towns qualify — not tuned to achieve a desired result.
+    """
+    demo_feats = ['median_hh_income', 'equalized_income', 'low_income_pct',
+                  'total_enrollment', 'pct_bachelors_plus', 'ell_pct']
+    avail = [f for f in demo_feats if f in df2.columns]
+    if not avail or saugus_row is None:
+        return oa_pool
+
+    mu  = df2[avail].mean()
+    std = df2[avail].std().replace(0, 1)
+
+    def _z(row):
+        return (row[avail] - mu) / std
+
+    saugus_z = _z(saugus_row)
+    cutoff = threshold * (len(avail) ** 0.5)   # ~3.67 for 6 features at threshold=1.5
+
+    similar = []
+    for town in oa_pool:
+        if town not in df2.index:
+            continue
+        town_z = _z(df2.loc[town])
+        dist = float(((saugus_z - town_z) ** 2).sum() ** 0.5)
+        if dist <= cutoff:
+            similar.append((town, dist))
+
+    similar.sort(key=lambda x: x[1])
+    return [t for t, _ in similar]
+
+
 def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     """
-    Optimum school profile: what actionable feature values characterise
-    overachiever towns, with full methodology and peer group disclosure.
-    No cost estimates are fabricated — only figures derivable from data.
+    Two-row page:
+      Top row    — targets from ALL overachievers (any MA district beating prediction)
+      Bottom row — targets from demographically SIMILAR overachievers only
+                   (z-score Euclidean distance from Saugus < 1.5√6 ≈ 3.67)
+    Both rows show methodology, peer list, and bar chart side-by-side.
+    Showing both is more defensible than one alone: if the filtered and
+    unfiltered results agree, the finding is robust.
     """
     from collections import Counter
 
-    # ── Build peer pool ──────────────────────────────────────────────────────
-    # For each model, identify top-10 overachievers (largest positive residual:
-    # actual outcome minus RBP leave-one-out prediction, controlling for
-    # demographics).  Count how many models each town appears in.
+    # ── Build overachiever pool ───────────────────────────────────────────────
     oa_counter = Counter()
     model_oa_map = {}
     for r in results:
@@ -1309,160 +1360,161 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
         for name in oas.index:
             oa_counter[name] += 1
 
-    all_oas    = [t for t, _ in oa_counter.most_common(20)]  # up to 20 unique OA towns
-    consensus  = [t for t, c in oa_counter.most_common() if c >= 2]
+    all_oas  = [t for t, _ in oa_counter.most_common(20)]
+    df2 = df_raw.copy(); df2.index = df2["district_name"]
+    saugus   = df2.loc["Saugus"] if "Saugus" in df2.index else None
+    oa_pool  = [t for t in all_oas if t in df2.index]
 
-    df2 = df_raw.copy()
-    df2.index = df2["district_name"]
-    saugus = df2.loc["Saugus"] if "Saugus" in df2.index else None
-    oa_pool = [t for t in all_oas if t in df2.index]
+    # Demographically similar overachievers
+    sim_pool = _demo_similar_overachievers(df2, saugus, oa_pool, threshold=1.5)
 
-    # Actionable features: things a district can control via policy / budget
+    # Actionable features shown in both grids
     actionable = [
-        ("chronic_absenteeism_pct",  "Chronic absenteeism",       "%",  False),
-        ("teachers_per_100_students","Teachers per 100 students", "",   True),
-        ("avg_teacher_salary",        "Avg teacher salary",        "$",  True),
-        ("nss_per_pupil",             "Net school spending/pupil", "$",  True),
+        ("chronic_absenteeism_pct",   "Chronic absenteeism (%)",    "%", False),
+        ("teachers_per_100_students", "Teachers / 100 students",    "",  True),
+        ("avg_teacher_salary",        "Avg teacher salary",         "$", True),
+        ("nss_per_pupil",             "Net school spending / pupil","$", True),
     ]
 
-    # ── Page layout ──────────────────────────────────────────────────────────
-    fig, (ax_l, ax_r) = _paper_fig(1, 2)
-    _header(fig, "Optimum Profile — What Overachievers Look Like",
-            f"Peer pool: top-10 overachievers per model across 3 models "
-            f"({len(oa_pool)} unique MA districts, {len(consensus)} appear in 2+ models).  "
-            "Non-actionable features (income, poverty, demographics) excluded.")
+    # ── Helper: build a comparison grid ─────────────────────────────────────
+    def _make_grid(ax, pool, section_title, header_color):
+        """
+        Draw a titled comparison table:
+        Columns: Feature | Saugus | town1 | town2 | ... | Peer Median | Gap
+        """
+        ax.axis("off")
 
-    ax_l.axis("off")
-    # ax_r is used directly as a bar chart — no nested axes
+        # Section title
+        ax.text(0.01, 0.97, section_title, ha="left", va="top",
+                fontsize=10, fontweight="bold", color=header_color,
+                transform=ax.transAxes)
 
-    # ── LEFT: methodology + peer table + feature target table ────────────────
-    y = 0.95
+        # Pick up to 5 representative towns to show in columns
+        show_towns = [t for t in pool if t in df2.index][:5]
+        if not show_towns:
+            ax.text(0.5, 0.5, "No comparable towns found",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=9, color=_GREY)
+            return
 
-    # Methodology box
-    meth = [
-        "How targets are calculated:",
-        f"  1. Run RBP leave-one-out on all {len(df2)} MA districts for each outcome.",
-        "  2. Residual = actual − predicted (controlling for demographics).",
-        f"  3. Top 10 districts by residual per model form the overachiever pool.",
-        f"  4. Target = median of the {len(oa_pool)}-town pool on each feature below.",
-        "  5. Figures derive entirely from DESE / DLS / US Census public data.",
-    ]
-    for line in meth:
-        ax_l.text(0.02, y, line, ha="left", va="top",
-                  fontsize=7.8, color=_BL if not line.startswith("How") else _BLUE,
-                  fontweight="bold" if line.startswith("How") else "normal",
-                  transform=ax_l.transAxes)
-        y -= 0.055 if line.startswith("How") else 0.045
-    y -= 0.01
+        # Build header row and data rows
+        short = lambda name: name[:9]
+        col_headers = (["Feature", "Saugus"] +
+                       [short(t) for t in show_towns] +
+                       ["Peer med", "Gap", "N"])
 
-    # Peer group list
-    ax_l.text(0.02, y, f"Peer group ({len(oa_pool)} towns, ranked by cross-model frequency):",
-              ha="left", va="top", fontsize=8, color=_BLUE, fontweight="bold",
-              transform=ax_l.transAxes)
-    y -= 0.045
-    for i, town in enumerate(oa_pool[:12]):
-        cnt = oa_counter[town]
-        marker = "●" if cnt >= 2 else "○"
-        models_in = [lbl.split()[0] for lbl, oas in model_oa_map.items() if town in oas]
-        ax_l.text(0.04, y, f"{marker} {town}  ({cnt}/3 models: {', '.join(models_in)})",
-                  ha="left", va="top", fontsize=7.5,
-                  color=_GREEN if cnt >= 2 else _GREY,
-                  transform=ax_l.transAxes)
-        y -= 0.04
-    if len(oa_pool) > 12:
-        ax_l.text(0.04, y, f"  … and {len(oa_pool)-12} more",
-                  ha="left", va="top", fontsize=7, color=_GREY,
-                  transform=ax_l.transAxes)
-        y -= 0.04
+        rows = []
+        for feat, lbl, unit, hi_good in actionable:
+            if feat not in df2.columns or saugus is None:
+                continue
+            sv = float(saugus[feat]) if not pd.isna(saugus[feat]) else float("nan")
+            all_vals = [float(df2.loc[t, feat])
+                        for t in pool
+                        if feat in df2.columns and not pd.isna(df2.loc[t, feat])]
+            if not all_vals:
+                continue
+            med = float(np.median(all_vals))
+            gap = med - sv
 
-    y -= 0.01
-    # Feature target table
-    ax_l.text(0.02, y, "Actionable feature gap — Saugus vs peer median:",
-              ha="left", va="top", fontsize=8, color=_BLUE, fontweight="bold",
-              transform=ax_l.transAxes)
-    y -= 0.045
+            def _f(v):
+                if np.isnan(v): return "—"
+                if unit == "$": return f"${v:,.0f}"
+                if unit == "%": return f"{v:.1f}%"
+                return f"{v:.1f}"
 
-    tbl_rows = []
-    for feat, lbl, unit, hi_good in actionable:
-        if feat not in df2.columns or saugus is None: continue
-        sv = float(saugus[feat]) if not pd.isna(saugus[feat]) else float("nan")
-        vals = [float(df2.loc[t, feat])
-                for t in oa_pool
-                if feat in df2.columns and not pd.isna(df2.loc[t, feat])]
-        if not vals: continue
-        med = float(np.median(vals))
-        gap = med - sv
-        if unit == "$":
-            row = [lbl, f"${sv:,.0f}", f"${med:,.0f}", f"${gap:+,.0f}",
-                   f"n={len(vals)}"]
-        elif unit == "%":
-            row = [lbl, f"{sv:.1f}%", f"{med:.1f}%", f"{gap:+.1f}pp",
-                   f"n={len(vals)}"]
-        else:
-            row = [lbl, f"{sv:.1f}", f"{med:.1f}", f"{gap:+.1f}",
-                   f"n={len(vals)}"]
-        tbl_rows.append(row)
+            def _fgap(v):
+                if unit == "$": return f"${v:+,.0f}"
+                if unit == "%": return f"{v:+.1f}pp"
+                return f"{v:+.1f}"
 
-    if tbl_rows and y > 0.05:
-        tbl = ax_l.table(
-            cellText=tbl_rows,
-            colLabels=["Feature", "Saugus", "Peer median", "Gap", "N towns"],
-            bbox=[0.0, max(0.03, y - len(tbl_rows)*0.065 - 0.04), 1.0,
-                  min(len(tbl_rows)*0.065 + 0.04, y)])
-        tbl.auto_set_font_size(False); tbl.set_fontsize(8)
-        tbl.auto_set_column_width(range(5))
-        for (row, col), cell in tbl.get_celld().items():
-            if row == 0:
-                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-            elif col == 3 and row > 0:
-                gap_val = tbl_rows[row-1][3]
-                is_bad = (gap_val.startswith("+") and not actionable[row-1][3]) or \
-                         (gap_val.startswith("-") and actionable[row-1][3])
-                cell.set_facecolor("#FFE8E8" if is_bad else "#E8F8E8")
+            town_vals = []
+            for t in show_towns:
+                v = float(df2.loc[t, feat]) \
+                    if feat in df2.columns and t in df2.index \
+                    and not pd.isna(df2.loc[t, feat]) else float("nan")
+                town_vals.append(_f(v))
+
+            rows.append(
+                [lbl, _f(sv)] + town_vals +
+                [_f(med), _fgap(gap), str(len(all_vals))]
+            )
+
+        if not rows:
+            return
+
+        tbl = ax.table(
+            cellText=rows,
+            colLabels=col_headers,
+            bbox=[0.0, 0.02, 1.0, 0.88],
+            cellLoc="center")
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(7.8)
+
+        # Column widths: Feature wide, others equal
+        n_town_cols = len(show_towns)
+        feat_w   = 0.30
+        saugus_w = 0.11
+        town_w   = (1.0 - feat_w - saugus_w - 0.18) / max(n_town_cols, 1)
+        med_w, gap_w, n_w = 0.10, 0.10, 0.06
+        col_ws = ([feat_w, saugus_w] +
+                  [town_w] * n_town_cols +
+                  [med_w, gap_w, n_w])
+
+        gap_col_idx = 2 + n_town_cols   # index of "Gap" column
+
+        for (ri, ci), cell in tbl.get_celld().items():
+            if ci < len(col_ws):
+                cell.set_width(col_ws[ci])
+            if ri == 0:
+                cell.set_facecolor(header_color)
+                cell.set_text_props(color="white", fontsize=7.5)
+            elif ci == 1 and ri > 0:                    # Saugus column
+                cell.set_facecolor("#FFF8E1")
+            elif ci == gap_col_idx and ri > 0:          # Gap column
+                gap_str = rows[ri-1][gap_col_idx]
+                row_idx = ri - 1
+                hi_good = actionable[row_idx][3] if row_idx < len(actionable) else True
+                bad = (gap_str.startswith("+") and not hi_good) or \
+                      (gap_str.startswith("-") and hi_good)
+                cell.set_facecolor("#FFE8E8" if bad else "#E8F8E8")
             else:
-                cell.set_facecolor("#F5F5F5" if row % 2 else "white")
-            cell.set_edgecolor("#CCCCCC")
+                cell.set_facecolor("#F5F5F5" if ri % 2 else "white")
+            cell.set_edgecolor("#DDDDDD")
 
-    # ── RIGHT: bar chart directly on ax_r ────────────────────────────────────
-    feats_plot  = ["chronic_absenteeism_pct", "teachers_per_100_students",
-                   "nss_per_pupil"]
-    feat_labels = ["Absenteeism %\n(lower = better)",
-                   "Teachers / 100\n(higher = better)",
-                   "Spending/pupil $K\n(higher = better)"]
-    divisors    = [1, 1, 1000]
+        # Town names below the table
+        town_list = ", ".join(t[:12] for t in show_towns)
+        if len(pool) > len(show_towns):
+            town_list += f"  (+ {len(pool)-len(show_towns)} more in median)"
+        ax.text(0.01, 0.01, f"Shown: {town_list}",
+                ha="left", va="bottom", fontsize=6.5, color=_GREY,
+                style="italic", transform=ax.transAxes)
 
-    towns_to_plot = (["Saugus"] + consensus[:3] +
-                     [t for t in oa_pool if t not in consensus][:2])
-    colors = [_GOLD] + [_GREEN]*3 + [_GREY]*2
-    n_feats = len(feats_plot)
-    x = np.arange(n_feats)
-    bar_w = 0.8 / max(len(towns_to_plot), 1)
+    # ── Page: 2 stacked axes ─────────────────────────────────────────────────
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(_PAGE_W, _PAGE_H))
+    fig.patch.set_facecolor("white")
+    _header(fig, "Optimum Profile — What Overachievers Look Like",
+            "Each grid shows actionable feature values for Saugus vs overachiever towns.  "
+            "Showing both peer groups tests whether the finding holds across definitions.")
 
-    for ti, (town, col) in enumerate(zip(towns_to_plot, colors)):
-        if town not in df2.index: continue
-        vals = []
-        for f, div in zip(feats_plot, divisors):
-            v = float(df2.loc[town, f]) if f in df2.columns and not pd.isna(df2.loc[town, f]) else 0
-            vals.append(v / div)
-        offset = (ti - len(towns_to_plot)/2 + 0.5) * bar_w
-        bars = ax_r.bar(x + offset, vals, bar_w * 0.9,
-                        label=town, color=col, alpha=0.80)
+    _make_grid(
+        ax_top, oa_pool,
+        f"Overachievers  —  all {len(oa_pool)} MA districts that beat their demographic prediction",
+        _BLUE)
 
-    ax_r.set_xticks(x)
-    ax_r.set_xticklabels(feat_labels, fontsize=8)
-    ax_r.legend(fontsize=7.5, loc="upper right", ncol=1)
-    ax_r.set_title(f"Saugus (gold) vs overachiever towns\n"
-                   f"● = consensus (2+ models)  ○ = single-model",
-                   fontsize=8.5)
-    ax_r.grid(axis="y", alpha=0.3)
-    ax_r.tick_params(axis="y", labelsize=8)
+    _make_grid(
+        ax_bot, sim_pool,
+        f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within 1.5σ of Saugus "
+        f"on income, property wealth, poverty, size, education & ELL",
+        _GREEN)
 
-    plt.tight_layout(rect=[0, 0.04, 1, 0.91])
-    _footer(fig,
-            "Targets are descriptive medians of the overachiever peer pool — "
-            "they show what high-performing comparable towns look like, not guaranteed outcomes.  "
-            "All source data: DESE School Profiles, MA DLS Municipal Finance, US Census ACS.  "
-            "Causal inference requires longitudinal or experimental design.")
+    fig.text(0.5, 0.005,
+             "Similarity: z-scored Euclidean distance on (median_hh_income, equalized_income, "
+             "low_income_pct, total_enrollment, pct_bachelors_plus, ell_pct) < 1.5√6 ≈ 3.67.  "
+             "Threshold pre-specified on substantive grounds.  "
+             "Gap = peer median − Saugus.  Red = Saugus below peer, Green = Saugus at/above peer.",
+             ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic")
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.91])
     _save(pdf, fig)
 
 
