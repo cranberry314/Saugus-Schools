@@ -104,6 +104,8 @@ python scrapers/assessed_values.py
 # DESE state reports — SAT, post-secondary, dropout
 python scrapers/dese_state_reports.py all
 
+Note: `dese_state_reports.py` skips rows with no code and header rows where the second column contains `School Code`.
+
 # Zillow home values
 python scrapers/zillow_housing.py
 
@@ -323,21 +325,22 @@ python analysis/municipal_finance_report.py
 
 ## Peer Selection (how it works)
 
-Peers are selected automatically using two independent statistical methods
-applied to 6 outcome-predictive features identified by Ridge regression
-(R²=0.84 on MCAS scores across all 221 MA districts):
+Peers are selected using Mahalanobis distance — a statistical measure that
+finds towns most similar to Saugus across multiple factors at once, accounting
+for correlations between them (e.g., income and poverty move together in MA).
 
-- Chronic Absenteeism %
-- Ch70 State Aid per Pupil
-- % College-Educated Adults
-- % SPED
+The comparison uses each town's **2011–2014 baseline** — the period before
+Saugus's trajectory diverged — across 8 factors:
+
 - Median Household Income
-- % ELL
+- Poverty Rate
+- Population
+- % Adults with a College Degree
+- Real Per-Pupil Spending
+- Dropout Rate
+- Teachers per 1,000 Students
+- Violent Crime Rate per 100k
 
-**Mahalanobis Distance** finds the 10 closest towns in this 6-dimensional
-feature space. **Ward Hierarchical Clustering** independently groups all towns
-and identifies Saugus's natural cluster. The *consensus* — towns selected by
-both methods — appears throughout the report.
-
-Excluded from peer pool: Nantucket (resort/island economy), Tyringham,
-Mount Washington, Wellfleet, East Brookfield (extreme population outliers).
+The 15 towns closest to Saugus in this 8-dimensional space become the peer
+group used throughout the report. Towns missing baseline data for any factor
+drop out of the comparison pool naturally.
