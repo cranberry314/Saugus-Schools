@@ -688,11 +688,12 @@ def page_title(pdf, models: list[dict]):
     for j, m in enumerate(models):
         xpos = 0.20 + j * 0.30
         lean = m.get("lean_features", m["features"])
+        n_candidates = len(m.get("all_candidates", m["features"]))
         ax.text(xpos, 0.25, m["label"], ha="center", fontsize=9,
                 color=_BL, fontweight="bold", transform=ax.transAxes)
-        ax.text(xpos, 0.20, f"Greedy: {len(m['features'])} features",
+        ax.text(xpos, 0.20, f"Candidates: {n_candidates} features",
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.16, f"Lean (post-dropout): {len(lean)} features",
+        ax.text(xpos, 0.16, f"Lean (importance > 0): {len(lean)} features",
                 ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
         ax.text(xpos, 0.11, f"LOO r = {m['loo_score']:+.3f}",
                 ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
@@ -1126,11 +1127,11 @@ def page_candidate_pool(pdf):
         ["Housing",      "pct_owner_occupied",         "% owner-occupied homes"],
         ["Community",    "crime_rate",                 "Crime incidents per capita"],
         ["Community",    "res_tax_rate",               "Residential tax rate"],
-        ["Engagement",   "chronic_absenteeism_pct",    "% chronically absent"],
+        ["Engagement",   "chron_absenteeism_pct",      "% chronically absent"],
         ["Demographics", "ell_pct",                    "% English language learners"],
         ["Demographics", "sped_pct",                   "% special education students"],
         ["Size",         "total_enrollment",            "District enrollment"],
-        ["Staffing",     "teachers_per_100_students",  "Teachers per 100 students"],
+        ["Staffing",     "teachers/100_students",       "Teachers per 100 students"],
         ["Staffing",     "avg_teacher_salary",         "Average teacher salary"],
         ["Spending",     "nss_per_pupil",              "Net school spending/pupil"],
     ]
@@ -1141,9 +1142,9 @@ def page_candidate_pool(pdf):
         cellText=kept_rows,
         colLabels=["Group", "Feature", "Measures"],
         bbox=[0.0, 0.02, 1.0, 0.90])
-    tbl_l.auto_set_font_size(False); tbl_l.set_fontsize(7.8)
-    # Explicit proportional widths: Group=18%, Feature=33%, Measures=49%
-    col_w_l = [0.18, 0.33, 0.49]
+    tbl_l.auto_set_font_size(False); tbl_l.set_fontsize(6.5)
+    # Explicit proportional widths: Group=21%, Feature=37%, Measures=42%
+    col_w_l = [0.21, 0.37, 0.42]
     for (row, col), cell in tbl_l.get_celld().items():
         if col < len(col_w_l):
             cell.set_width(col_w_l[col])
@@ -1162,18 +1163,18 @@ def page_candidate_pool(pdf):
 
     # ── Right: dropped features ──────────────────────────────────────────────
     dropped_rows = [
-        ["high_needs_pct",           "low_income_pct",            "r=+0.981 — near-duplicate"],
-        ["acs_poverty_pct",          "low_income_pct",            "r=+0.87  — redundant poverty"],
-        ["foundation_budget_pp",     "nss_per_pupil",             "r=+0.92  — redundant spending"],
-        ["ch70_per_pupil",           "equalized_income",          "r≈−0.87  — inverse wealth proxy"],
-        ["teacher_fte",              "total_enrollment",          "r=+0.994 — linear with enroll"],
-        ["total_population",         "total_enrollment",          "r=+0.953 — size proxy"],
-        ["teachers_per_100_fte",     "teachers_per_100_students", "r=+0.872 — duplicate ratio"],
-        ["teacher_spending_per_pupil","nss_per_pupil",            "r≈+0.85  — redundant spending"],
-        ["gf_exp_per_capita",        "res_tax_rate",              "r≈+0.75  — redundant municipal"],
-        ["pct_65_plus",              "—",                         "Weak signal, no policy lever"],
-        ["com_tax_rate",             "res_tax_rate",              "r≈+0.65  — commercial tax dup"],
-        ["mcas10_math",              "mcas10_ela",                "r=+0.90  — one grade-10 measure suffices"],
+        ["high_needs_pct",           "low_income_pct",      "r=+0.981 — near-duplicate"],
+        ["acs_poverty_pct",          "low_income_pct",      "r=+0.87  — redundant poverty"],
+        ["foundation_budget_pp",     "nss_per_pupil",       "r=+0.92  — redundant spending"],
+        ["ch70_per_pupil",           "equalized_income",    "r≈−0.87  — inverse wealth proxy"],
+        ["teacher_fte",              "total_enrollment",    "r=+0.994 — linear with enroll"],
+        ["total_population",         "total_enrollment",    "r=+0.953 — size proxy"],
+        ["teachers_per_100_fte",     "t_per_100_students",  "r=+0.872 — duplicate ratio"],
+        ["teacher_spending_pp",      "nss_per_pupil",       "r≈+0.85  — redundant spending"],
+        ["gf_exp_per_capita",        "res_tax_rate",        "r≈+0.75  — redundant municipal"],
+        ["pct_65_plus",              "—",                   "Weak signal, no policy lever"],
+        ["com_tax_rate",             "res_tax_rate",        "r≈+0.65  — commercial tax dup"],
+        ["mcas10_math",              "mcas10_ela",          "r=+0.90  — one grade-10 measure"],
     ]
     ax_r.text(0.5, 0.97, f"Dropped — {len(dropped_rows)} redundant/problematic features",
               ha="center", va="top", fontsize=9, fontweight="bold",
@@ -1182,9 +1183,9 @@ def page_candidate_pool(pdf):
         cellText=dropped_rows,
         colLabels=["Dropped", "Kept instead", "Reason"],
         bbox=[0.0, 0.02, 1.0, 0.90])
-    tbl_r.auto_set_font_size(False); tbl_r.set_fontsize(7.5)
-    # Explicit proportional widths: Dropped=30%, Kept instead=26%, Reason=44%
-    col_w_r = [0.30, 0.26, 0.44]
+    tbl_r.auto_set_font_size(False); tbl_r.set_fontsize(6.5)
+    # Explicit proportional widths: Dropped=29%, Kept instead=28%, Reason=43%
+    col_w_r = [0.29, 0.28, 0.43]
     for (row, col), cell in tbl_r.get_celld().items():
         if col < len(col_w_r):
             cell.set_width(col_w_r[col])
@@ -1216,6 +1217,11 @@ def page_correlation_matrix(pdf, df_raw: pd.DataFrame):
     avail = [c for c in all_cols if c in df_raw.columns]
     sub = df_raw[avail].apply(pd.to_numeric, errors='coerce')
     corr = sub.corr(method='pearson')
+    # Drop features with no pairwise overlap with any other feature.
+    # The diagonal is always 1.0, so "off-diagonal non-NaN > 0" means
+    # the feature has at least one correlation with another feature.
+    has_peers = (corr.notna().sum(axis=1) - 1) > 0  # subtract the diagonal 1.0
+    corr = corr.loc[has_peers, has_peers]
 
     # Hierarchical clustering by absolute correlation distance.
     # NaNs in corr (features with no overlap) → treat as uncorrelated (dist=1).
@@ -1820,7 +1826,7 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     fig, ax = _paper_fig()
     loo = analysis["loo_df"].dropna(subset=["actual", "predicted"])
 
-    is_pct = loo["actual"].median() < 2.0
+    is_pct = loo["actual"].max() < 2.0   # fractions (avg_mcas, etc.) have max<1; dropout_pct max~15
     act  = loo["actual"]  * (100 if is_pct else 1)
     pred = loo["predicted"] * (100 if is_pct else 1)
     resid = act - pred
@@ -1974,7 +1980,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
 
     # ── Right: residuals table ────────────────────────────────────────────────
     ax_r.axis("off")
-    is_pct = loo["actual"].dropna().median() < 2.0
+    is_pct = loo["actual"].dropna().max() < 2.0   # fractions have max<1; dropout_pct max~15
     mult   = 100 if is_pct else 1
 
     oa_rows = []
@@ -2032,8 +2038,8 @@ def page_scatter_all(pdf, all_analyses: list[dict]):
 
         act = loo["actual"]
         pred = loo["predicted"]
-        # Scale to % if needed
-        if act.median() < 2.0:
+        # Scale to % if needed (fractions have max<1; dropout_pct has max~15)
+        if act.max() < 2.0:
             act  = act * 100
             pred = pred * 100
 

@@ -352,6 +352,7 @@ def load_dropout(engine, years: list[str] | None = None) -> int:
             if len(row) < 5:
                 continue
             name, code = row[0], row[1]
+            # Skip blank rows and the header row where DESE writes "School Code" in the second column.
             if not code or code == "School Code":
                 continue
             vals = row[2:]

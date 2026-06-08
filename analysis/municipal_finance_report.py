@@ -1745,7 +1745,7 @@ def data_sources_page(pdf, rev, n_peer_towns):
     y = _src_block(fig, y, "Mahalanobis Distance Peer Selection",
         "10 closest towns to Saugus",
         ["6 factors (z-score standardized): Chronic Absenteeism %, Ch70 Aid/Pupil, % College-Educated, % SPED, Median HHI, % ELL.",
-         "Factors chosen by leave-one-out importance from Ridge regression on MCAS scores across all 221 MA districts (R²=0.84).",
+         "Factors chosen by leave-one-out importance from RBP factor analysis on MCAS scores across all 221 MA districts (R²=0.84).",
          "Peer group is a statistical result — not editorial judgment."],
         "See analysis/municipal_finance_report.py", box_h=0.092)
 
@@ -1833,7 +1833,7 @@ def dual_methodology_page(pdf, exp, mahal_peers, hclust_peers, year=2024):
          "Distance from Saugus to each town",
          "Natural grouping of all comparable towns"],
         ["Features",
-         "6 z-scored factors (Ridge regression, R²=0.84)",
+         "6 z-scored factors (RBP factor analysis, R²=0.84)",
          "Same 6 factors"],
         ["Peers selected",
          f"10 closest towns",

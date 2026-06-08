@@ -1,4 +1,6 @@
 """
+The contents of rbp.py are your reference.
+Do NOT modify, rewrite, or delete any code within this file.
 
 Relevance-Based Prediction (RBP)
 =================================
