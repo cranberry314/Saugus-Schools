@@ -1821,8 +1821,24 @@ def _find_overachievers(loo_df: pd.DataFrame, target: str,
     return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
 
 
+def _find_underachievers(loo_df: pd.DataFrame, target: str,
+                         n: int = 6) -> pd.DataFrame:
+    """
+    Return the top-N districts by negative residual (performing worse than predicted).
+    For dropout, 'underachievers' are districts with higher-than-predicted dropout.
+    """
+    df = loo_df.dropna(subset=["residual"]).copy()
+    # Dropout: higher is worse, so rank by raw positive residual
+    if "dropout" in target.lower():
+        df["_rank_resid"] = df["residual"]
+    else:
+        df["_rank_resid"] = -df["residual"]   # most negative gap first
+    df = df[df.index != "Saugus"]
+    return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
+
+
 def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
-    """Scatter: actual vs predicted for all districts — overachievers highlighted."""
+    """Scatter: actual vs predicted — overachievers (green) and underachievers (red) highlighted."""
     fig, ax = _paper_fig()
     loo = analysis["loo_df"].dropna(subset=["actual", "predicted"])
 
@@ -1831,26 +1847,38 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     pred = loo["predicted"] * (100 if is_pct else 1)
     resid = act - pred
 
-    overachievers = _find_overachievers(loo, target, n=8)
+    overachievers  = _find_overachievers(loo, target, n=8)
+    underachievers = _find_underachievers(loo, target, n=5)
     oa_names = set(overachievers.index)
+    ua_names = set(underachievers.index)
 
     # All districts — grey
     mask_oa = loo.index.isin(oa_names)
-    ax.scatter(pred[~mask_oa], act[~mask_oa],
+    mask_ua = loo.index.isin(ua_names)
+    ax.scatter(pred[~mask_oa & ~mask_ua], act[~mask_oa & ~mask_ua],
                color=_GREY, alpha=0.3, s=18, zorder=2)
 
     # Overachievers — green
     ax.scatter(pred[mask_oa], act[mask_oa],
                color=_GREEN, alpha=0.85, s=60, zorder=4,
-               label=f"Top overachievers (n={len(oa_names)})")
-
-    # Label overachievers
+               label=f"Top over-performers (n={len(oa_names)})")
     for idx in overachievers.index:
         if idx in pred.index:
             ax.annotate(str(idx)[:14],
                         xy=(float(pred[idx]), float(act[idx])),
                         xytext=(4, 3), textcoords="offset points",
                         fontsize=6.5, color=_GREEN, alpha=0.85)
+
+    # Underachievers — red
+    ax.scatter(pred[mask_ua], act[mask_ua],
+               color=_RED, alpha=0.80, s=55, zorder=4,
+               label=f"Top under-performers (n={len(ua_names)})")
+    for idx in underachievers.index:
+        if idx in pred.index:
+            ax.annotate(str(idx)[:14],
+                        xy=(float(pred[idx]), float(act[idx])),
+                        xytext=(4, -9), textcoords="offset points",
+                        fontsize=6.5, color=_RED, alpha=0.85)
 
     # Saugus
     if "Saugus" in pred.index:
@@ -1873,10 +1901,9 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
 
     saugus_resid = float(resid.get("Saugus", float("nan")))
     unit = "pp" if (act.median() < 200) else " pts"
-    _header(fig, f"Overachievers: {label}",
-            f"Districts beating their RBP prediction.  "
+    _header(fig, f"Over- and Under-Performers: {label}",
             f"Saugus gap: {saugus_resid:+.1f}{unit}  ·  "
-            f"Gold star = Saugus  ·  Green dots = top overachievers")
+            f"Gold star = Saugus  ·  Green = over-performers  ·  Red = under-performers")
     _footer(fig, "Residual = actual − predicted.  Positive = performing better than demographics suggest.")
     _save(pdf, fig)
 
