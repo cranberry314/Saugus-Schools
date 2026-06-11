@@ -715,3 +715,23 @@ CREATE TABLE IF NOT EXISTS municipal_crashes (
 
 CREATE INDEX IF NOT EXISTS idx_municipal_crashes_town ON municipal_crashes(city_town_name);
 CREATE INDEX IF NOT EXISTS idx_municipal_crashes_year ON municipal_crashes(year);
+
+-- -------------------------------------------------------
+-- Municipal Certified Free Cash
+-- Source: rdReport=Dashboard.Cat_1_Reports.CertifiedFreeCashBudget351
+-- Coverage: all 351 MA municipalities, FY2015–present
+-- -------------------------------------------------------
+CREATE TABLE IF NOT EXISTS municipal_free_cash (
+    id                BIGSERIAL PRIMARY KEY,
+    fiscal_year       INTEGER       NOT NULL,
+    dor_code          INTEGER       NOT NULL,
+    municipality      VARCHAR(100),
+    date_certified    DATE,
+    cert_free_cash    BIGINT,        -- Certified free cash as of 7/1
+    operating_budget  NUMERIC(16,2), -- Prior-year operating budget
+    free_cash_pct     NUMERIC(8,4),  -- Certified free cash as a fraction of the budget
+    loaded_at         TIMESTAMP DEFAULT NOW(),
+    UNIQUE (fiscal_year, dor_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_muni_free_cash_fy_code ON municipal_free_cash (fiscal_year, dor_code);
