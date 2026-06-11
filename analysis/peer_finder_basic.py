@@ -13,7 +13,7 @@ Metrics used (all for the same school_year):
   - MCAS ELA meeting+exceeding % (All students, Grade 10 or most recent available)
   - MCAS Math meeting+exceeding %
 
-Run: python analysis/peers.py [--district 00760000] [--year 2024] [--top 20]
+Run: python analysis/peer_finder_basic.py [--district 00760000] [--year 2024] [--top 20]
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))

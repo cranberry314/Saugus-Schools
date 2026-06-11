@@ -5,10 +5,11 @@ Factor selection and Relevance-Based Prediction (RBP) analysis for Saugus school
 
 Implements Czasonis, Kritzman & Turkington (2024) RBP via analysis/rbp.py.
 
-Three models are built independently:
+Four models are built independently:
   1. MCAS ELA+Math (grades 3–8) — academic outcomes
-  2. Postsecondary attendance — college-going rate
-  3. Dropout rate — high school completion
+  2. Dropout rate — high school completion
+  3. MCAS Grade 10 (ELA) — high school academic readiness
+  4. Education Budget Share — share of municipal budget allocated to schools
 
 For each model:
   Step 1 — Greedy random forward selection:
