@@ -45,6 +45,7 @@ import argparse
 import os
 import sys
 import random
+import textwrap
 import warnings
 from pathlib import Path
 
@@ -638,8 +639,10 @@ def _header(fig, title: str, subtitle: str = ""):
              fontsize=14, fontweight="bold", color=_BL,
              transform=fig.transFigure)
     if subtitle:
-        fig.text(0.5, 0.915, subtitle, ha="center", va="top",
-                 fontsize=9, color=_GREY, transform=fig.transFigure)
+        wrapped = textwrap.fill(subtitle, width=150)
+        fig.text(0.5, 0.915, wrapped, ha="center", va="top",
+                 fontsize=9, color=_GREY, transform=fig.transFigure,
+                 linespacing=1.3)
 
 
 def _footer(fig, text: str):
@@ -650,7 +653,7 @@ def _footer(fig, text: str):
 
 def _save(pdf, fig):
     try:
-        pdf.savefig(fig, bbox_inches="tight")
+        pdf.savefig(fig)
     finally:
         plt.close(fig)
 
@@ -830,6 +833,9 @@ def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
 def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
     fig, axes = _paper_fig(1, 2)
+    # left: room for long y-axis feature names (e.g. teachers_per_100_students)
+    # top: keep "Variable Importance (Exhibit 5)" axes title clear of the header subtitle
+    fig.subplots_adjust(left=0.155, top=0.85)
     is_pct_unit = analysis["actual_pct"] < 200   # SAT scores are 400–1600
     unit = "pp" if is_pct_unit else " pts"
     _header(fig,
@@ -1545,18 +1551,24 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
 
     _make_grid(
         ax_bot, sim_pool,
-        f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within 2σ Mahalanobis "
-        f"distance of Saugus on income, property wealth, poverty, size, education & ELL",
+        textwrap.fill(
+            f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within 2σ "
+            f"Mahalanobis distance of Saugus on income, property wealth, poverty, size, "
+            f"education & ELL",
+            width=100),
         _GREEN)
 
-    fig.text(0.5, 0.005,
-             "Similarity metric: Mahalanobis distance d_M = √(Δx · Σ⁻¹ · Δx'), "
-             "Σ = sample covariance of all ~169 MA districts on "
-             "(median_hh_income, equalized_income, low_income_pct, total_enrollment, "
-             "pct_bachelors_plus, ell_pct).  Threshold: d_M ≤ 2.0 (2σ).  "
-             "Pre-specified; not tuned to result.  "
-             "Gap = peer median − Saugus.  Red = Saugus below peer median, Green = at or above.",
-             ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic")
+    _maha_note = (
+        "Similarity metric: Mahalanobis distance d_M = √(Δx · Σ⁻¹ · Δx'), "
+        "Σ = sample covariance of all ~169 MA districts on "
+        "(median_hh_income, equalized_income, low_income_pct, total_enrollment, "
+        "pct_bachelors_plus, ell_pct).  Threshold: d_M ≤ 2.0 (2σ).  "
+        "Pre-specified; not tuned to result.  "
+        "Gap = peer median − Saugus.  Red = Saugus below peer median, Green = at or above."
+    )
+    fig.text(0.5, 0.005, textwrap.fill(_maha_note, width=170),
+             ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic",
+             linespacing=1.3)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.91])
     _save(pdf, fig)
@@ -1688,12 +1700,15 @@ def page_budget_and_staffing(pdf, engine) -> None:
     ax_r.grid(alpha=0.25)
 
     # Ridge cross-validation note
-    fig.text(0.5, 0.01,
-             "Independent cross-validation: Ridge regression on 221 MA districts (R²=0.83) "
-             "identifies chronic absenteeism as the #1 predictor of MCAS outcomes (importance=3.15), "
-             "confirming the RBP Exhibit 5 finding by a separate method.  "
-             "Peer set: 8 demographically similar overachiever towns (Mahalanobis d_M ≤ 2.0).",
-             ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic")
+    _ridge_note = (
+        "Independent cross-validation: Ridge regression on 221 MA districts (R²=0.83) "
+        "identifies chronic absenteeism as the #1 predictor of MCAS outcomes (importance=3.15), "
+        "confirming the RBP Exhibit 5 finding by a separate method.  "
+        "Peer set: 8 demographically similar overachiever towns (Mahalanobis d_M ≤ 2.0)."
+    )
+    fig.text(0.5, 0.01, textwrap.fill(_ridge_note, width=180),
+             ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic",
+             linespacing=1.3)
 
     plt.tight_layout(rect=[0, 0.04, 1, 0.91])
     _save(pdf, fig)
@@ -1843,6 +1858,7 @@ def _find_underachievers(loo_df: pd.DataFrame, target: str,
 def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     """Scatter: actual vs predicted — overachievers (green) and underachievers (red) highlighted."""
     fig, ax = _paper_fig()
+    fig.subplots_adjust(top=0.85)   # keep ax title clear of the header subtitle
     loo = analysis["loo_df"].dropna(subset=["actual", "predicted"])
 
     is_pct = loo["actual"].max() < 2.0   # fractions (avg_mcas, etc.) have max<1; dropout_pct max~15
@@ -2052,6 +2068,282 @@ def page_what_overachievers_did(pdf, label: str, target: str,
 
     _footer(fig, "Gap = actual − predicted.  Positive = outperforming demographic expectation.  "
             "Feature values shown in raw units; importance scores from RBP Exhibit 5.")
+    _save(pdf, fig)
+
+
+# Plain-language description and display unit for every feature that can
+# appear as a lean RBP feature across the four models.
+FEATURE_INFO: dict[str, tuple[str, str]] = {
+    "low_income_pct":            ("% students from low-income families",          "pct"),
+    "median_hh_income":          ("Median household income",                      "dollar"),
+    "equalized_income":          ("Equalized property value per capita",          "dollar"),
+    "pct_bachelors_plus":        ("Adults with a bachelor's degree+",              "pct"),
+    "pct_owner_occupied":        ("Owner-occupied housing units",                  "pct"),
+    "crime_rate":                ("Crime incidents per 100k residents",            "count"),
+    "res_tax_rate":              ("Residential tax rate (per $1,000)",             "rate"),
+    "chronic_absenteeism_pct":   ("Students chronically absent (10%+)",            "pct"),
+    "ell_pct":                   ("English language learners",                     "pct"),
+    "sped_pct":                  ("Special education students",                    "pct"),
+    "total_enrollment":          ("Total district enrollment",                     "count"),
+    "teachers_per_100_students": ("Teachers per 100 students",                     "rate"),
+    "avg_teacher_salary":        ("Average teacher salary",                        "dollar"),
+    "nss_per_pupil":              ("Net school spending per pupil",                "dollar"),
+    "debt_service_pct":          ("Debt service share of town budget",             "pct"),
+    "fixed_costs_pct":           ("Pension & benefits share of budget",            "pct"),
+    "public_safety_pct":         ("Police & fire share of town budget",            "pct"),
+    "public_works_pct":          ("Public works share of town budget",             "pct"),
+    "avg_mcas":                  ("MCAS 3–8 (% meeting/exceeding)",                "pct100"),
+    "mcas10_ela":                ("MCAS 10 ELA (% meeting/exceeding)",             "pct100"),
+    "dropout_pct":               ("Annual dropout rate",                           "pct"),
+    "attending_pct":             ("HS completers attending college",               "pct"),
+}
+
+
+def _fmt_feature_val(v, kind: str) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    if kind == "pct":    return f"{v:.1f}%"
+    if kind == "pct100": return f"{v * 100:.1f}%"
+    if kind == "dollar":
+        if abs(v) >= 1e9: return f"${v / 1e9:.2f}B"
+        if abs(v) >= 1e6: return f"${v / 1e6:.0f}M"
+        return f"${v:,.0f}"
+    if kind == "count":  return f"{v:,.0f}"
+    return f"{v:.1f}"
+
+
+def _fmt_gap_val(v, kind: str) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    if kind == "pct":    return f"{v:+.1f}pp"
+    if kind == "pct100": return f"{v * 100:+.1f}pp"
+    if kind == "dollar":
+        if abs(v) >= 1e9: return f"{v / 1e9:+.2f}B"
+        if abs(v) >= 1e6: return f"{v / 1e6:+.0f}M"
+        return f"{v:+,.0f}"
+    if kind == "count":  return f"{v:+,.0f}"
+    return f"{v:+.1f}"
+
+
+# Hand-written interpretation of each model's gap and drivers.  These ground
+# the per-model synthesis page in the analysis already done for the report —
+# the numbers in the page are computed live, but the "so what" is fixed text.
+SYNTHESIS_TEXT: dict[str, dict[str, str]] = {
+    "MCAS Grades 3–8": {
+        "bottom_line":
+            "Saugus scores 29.0% on MCAS grades 3–8 (ELA + Math, meeting/exceeding), "
+            "almost exactly its demographic prediction of 28.7% — a +0.3pp gap that is "
+            "essentially on target.  Saugus ranks 103rd of 169 MA districts, around the "
+            "middle of the pack.  This is the “baseline” result: a district with "
+            "Saugus's income, poverty, and enrollment profile is expected to land here, "
+            "and it does.",
+        "takeaway":
+            "Because Saugus is on target here, the importance scores point less to "
+            "“what's wrong” and more to “what would move the needle.” "
+            "Chronic absenteeism (31.2%, nearly double the 15.8% state median) is the "
+            "single largest local driver — and the largest gap versus over-performing "
+            "districts.  Closing even part of that gap is the most plausible route from "
+            "an average result to an above-average one.",
+    },
+    "Dropout Rate": {
+        "bottom_line":
+            "Saugus's dropout rate is 2.9%, a full 0.8pp better than its predicted 3.7% "
+            "(lower is better for this measure) — ranking 34th of 169 districts, in the "
+            "top 20%.  Of the four outcomes, this is Saugus's clearest over-performance "
+            "relative to demographic expectation.",
+        "takeaway":
+            "Chronic absenteeism is overwhelmingly the strongest local driver here — "
+            "more than double any other factor — yet Saugus still keeps fewer students "
+            "from dropping out than a district with this absenteeism rate typically "
+            "would.  That gap between “high absenteeism” and “low "
+            "dropout” suggests Saugus's re-engagement and attendance-recovery "
+            "efforts are working — and that rising absenteeism is a real risk to this "
+            "result if it isn't addressed.",
+    },
+    "MCAS Grade 10 (ELA)": {
+        "bottom_line":
+            "Saugus's grade 10 ELA proficiency is 47.0%, 4.7pp above its predicted "
+            "42.3% — ranking 54th of 169 districts, in the top third.  This is "
+            "Saugus's strongest relative academic result of the four outcomes.",
+        "takeaway":
+            "Chronic absenteeism is again a top driver, and Saugus's rate (31.2%) "
+            "remains far above the towns it's compared with here.  Saugus is "
+            "overcoming a real headwind on this measure — its grades 3–8 academic "
+            "base, teacher compensation, and enrollment scale appear to be the "
+            "offsetting strengths that let it outperform despite high absenteeism.",
+    },
+    "Education Budget Share": {
+        "bottom_line":
+            "Saugus directs 32.3% of its municipal budget to education, 3.9pp below "
+            "its predicted 36.2% — one of the largest shortfalls in the state (199th "
+            "of 219 districts, bottom 10%).  Unlike the academic measures, this gap "
+            "reflects a municipal budgeting choice, not a demographic constraint.",
+        "takeaway":
+            "All four top local drivers are competing budget categories where Saugus "
+            "spends more than the state median: debt service (8.6% vs. 5.0%), "
+            "pensions & benefits (25.3% vs. 17.5%), police & fire (15.2% vs. 11.8%), "
+            "and public works (7.4% vs. 5.3%).  Together these fixed costs crowd out "
+            "the education share.  Of the four outcomes, this is the one where the "
+            "lever sits with Town Meeting and municipal budgeting, not the school "
+            "district.",
+    },
+}
+
+
+def page_synthesis(pdf, label: str, target: str, analysis: dict,
+                    df_raw: pd.DataFrame, lean_features: list[str]) -> None:
+    """
+    Synthesis page: ties the gap, the top local drivers (Exhibit 5), and the
+    overachiever comparison together into a plain-language "what this means".
+    """
+    fig, axes = _paper_fig(1, 2)
+    fig.subplots_adjust(left=0.045, right=0.97, wspace=0.10, top=0.84, bottom=0.05)
+    ax_l, ax_r = axes
+    ax_l.axis("off"); ax_r.axis("off")
+
+    is_pct_unit = analysis["actual_pct"] < 200
+    unit = "pp" if is_pct_unit else " pts"
+    gap = analysis["gap_pp"]
+    better_label = "lower is better" if target == "dropout_pct" else "higher is better"
+
+    # Saugus's rank among MA districts on this outcome's LOO residual,
+    # handling the dropout inversion (lower residual = better for dropout).
+    loo = analysis["loo_df"].dropna(subset=["residual"])
+    resid = loo["residual"]
+    s_resid = float(resid.get("Saugus", float("nan")))
+    if target == "dropout_pct":
+        better = int((resid < s_resid).sum())
+    else:
+        better = int((resid > s_resid).sum())
+    n_total = len(resid)
+    rank = better + 1
+
+    _header(fig, f"What This Means: {label}",
+            f"Predicted {analysis['pred_pct']:.1f}{unit}  ·  "
+            f"Actual {analysis['actual_pct']:.1f}{unit}  ·  "
+            f"Gap {gap:+.1f}{unit} ({better_label})  ·  "
+            f"Saugus ranks {rank} of {n_total} MA districts on this measure")
+
+    txt = SYNTHESIS_TEXT.get(label, {"bottom_line": "", "takeaway": ""})
+
+    # ── Left: the bottom line + top local drivers ───────────────────────────
+    ax_l.text(0.0, 0.985, "The Bottom Line", ha="left", va="top",
+              fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
+    ax_l.text(0.0, 0.91, textwrap.fill(txt["bottom_line"], width=68),
+              ha="left", va="top", fontsize=9.5, color=_BL,
+              transform=ax_l.transAxes, linespacing=1.5)
+
+    ax_l.text(0.0, 0.50, "What Shapes Saugus's Predicted Peer Group", ha="left", va="top",
+              fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
+    ax_l.text(0.0, 0.445,
+              "Top RBP Exhibit 5 drivers of the Saugus prediction, vs. the "
+              "statewide median:",
+              ha="left", va="top", fontsize=8, color=_GREY,
+              transform=ax_l.transAxes)
+
+    df2 = df_raw.copy()
+    df2.index = df2["district_name"]
+    imp = analysis["result"].variable_importance
+    feats_ordered = (
+        imp.reindex([f for f in lean_features if f in df2.columns])
+           .abs().sort_values(ascending=False).index.tolist()[:5]
+    )
+
+    driver_rows = []
+    for feat in feats_ordered:
+        desc, kind = FEATURE_INFO.get(feat, (feat, "rate"))
+        sv  = df2.loc["Saugus", feat] if "Saugus" in df2.index and feat in df2.columns else float("nan")
+        med = df2[feat].median() if feat in df2.columns else float("nan")
+        imp_val = float(imp.get(feat, 0))
+        driver_rows.append([desc, _fmt_feature_val(sv, kind), _fmt_feature_val(med, kind), f"{imp_val:+.2f}"])
+
+    if driver_rows:
+        tbl = ax_l.table(cellText=driver_rows,
+                          colLabels=["Factor", "Saugus", "MA median", "Importance"],
+                          bbox=[0.0, 0.155, 1.0, 0.27], cellLoc="center")
+        tbl.auto_set_font_size(False); tbl.set_fontsize(8)
+        col_w = [0.55, 0.15, 0.15, 0.15]
+        for (r_, c_), cell in tbl.get_celld().items():
+            if c_ < len(col_w):
+                cell.set_width(col_w[c_])
+            if c_ == 0:
+                cell.set_text_props(ha="left")
+            if r_ == 0:
+                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+            else:
+                cell.set_facecolor("#F5F5F5" if r_ % 2 else "white")
+            cell.set_edgecolor("#CCCCCC")
+
+    ax_l.text(0.0, 0.115,
+              textwrap.fill(
+                  "Importance measures how much each factor sharpens the search for "
+                  "Saugus's true comparison districts — not whether higher values are "
+                  "good or bad for the outcome itself.", width=80),
+              ha="left", va="top", fontsize=7.5, color=_GREY, style="italic",
+              transform=ax_l.transAxes, linespacing=1.4)
+
+    # ── Right: what over-performers do differently + takeaway ───────────────
+    ax_r.text(0.0, 0.985, "What Over-Performing Towns Do Differently", ha="left", va="top",
+              fontsize=11, fontweight="bold", color=_GREEN, transform=ax_r.transAxes)
+
+    overachievers = _find_overachievers(loo, target, n=8)
+    feat_df = df_raw[["district_name"] + lean_features].copy()
+    feat_df.index = feat_df["district_name"]
+    oa_names = [n for n in overachievers.index if n in feat_df.index]
+
+    ax_r.text(0.0, 0.91,
+              f"Same factors, for the {len(oa_names)} MA districts that most exceed "
+              f"their own prediction:",
+              ha="left", va="top", fontsize=8, color=_GREY,
+              transform=ax_r.transAxes)
+
+    oa_rows = []
+    for feat in feats_ordered:
+        desc, kind = FEATURE_INFO.get(feat, (feat, "rate"))
+        sv = feat_df.loc["Saugus", feat] if "Saugus" in feat_df.index and feat in feat_df.columns else float("nan")
+        oa_vals = [feat_df.loc[n, feat] for n in oa_names
+                   if feat in feat_df.columns and not pd.isna(feat_df.loc[n, feat])]
+        oa_med = float(np.median(oa_vals)) if oa_vals else float("nan")
+        oa_rows.append([desc, _fmt_feature_val(sv, kind), _fmt_feature_val(oa_med, kind),
+                        _fmt_gap_val(oa_med - sv, kind)])
+
+    if oa_rows:
+        tbl2 = ax_r.table(cellText=oa_rows,
+                           colLabels=["Factor", "Saugus", "Peer median", "Difference"],
+                           bbox=[0.0, 0.66, 1.0, 0.225], cellLoc="center")
+        tbl2.auto_set_font_size(False); tbl2.set_fontsize(8)
+        col_w2 = [0.51, 0.15, 0.18, 0.16]
+        for (r_, c_), cell in tbl2.get_celld().items():
+            if c_ < len(col_w2):
+                cell.set_width(col_w2[c_])
+            if c_ == 0:
+                cell.set_text_props(ha="left")
+            if r_ == 0:
+                cell.set_facecolor(_GREEN); cell.set_text_props(color="white")
+            else:
+                cell.set_facecolor("#F5F5F5" if r_ % 2 else "white")
+            cell.set_edgecolor("#CCCCCC")
+        ax_r.text(0.0, 0.625,
+                  textwrap.fill(
+                      "Difference = over-performer median − Saugus.  Sign direction "
+                      "depends on the factor; see takeaway below.", width=80),
+                  ha="left", va="top", fontsize=7.5, color=_GREY, style="italic",
+                  transform=ax_r.transAxes, linespacing=1.4)
+
+    # Takeaway callout box
+    ax_r.add_patch(mpatches.FancyBboxPatch(
+        (0.0, 0.0), 1.0, 0.555,
+        boxstyle="round,pad=0.01,rounding_size=0.02",
+        transform=ax_r.transAxes,
+        facecolor="#FFF8E1", edgecolor="#B7950B", linewidth=1.0))
+    ax_r.text(0.03, 0.535, "The Takeaway", ha="left", va="top",
+              fontsize=10.5, fontweight="bold", color=_GOLD, transform=ax_r.transAxes)
+    ax_r.text(0.03, 0.46, textwrap.fill(txt["takeaway"], width=66),
+              ha="left", va="top", fontsize=9, color=_BL,
+              transform=ax_r.transAxes, linespacing=1.5)
+
+    _footer(fig, "Synthesis of the preceding three pages: factor selection, Saugus RBP "
+            "analysis, and over-/under-performer comparison.")
     _save(pdf, fig)
 
 
@@ -2423,6 +2715,8 @@ def main(fast: bool = False, parallel: bool = False):
                 page_what_overachievers_did(pdf, r["label"], r["target"],
                                             r["saugus"], df_raw,
                                             r.get("lean_features", r["features"]))
+                page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
+                               r.get("lean_features", r["features"]))
 
         # Combined summary + cross-reference table
         page_combined_summary(pdf, results)
@@ -2500,6 +2794,8 @@ def regen_pdf():
                 page_what_overachievers_did(pdf, r["label"], r["target"],
                                             r["saugus"], df_raw,
                                             r.get("lean_features", r["features"]))
+                page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
+                               r.get("lean_features", r["features"]))
         page_combined_summary(pdf, results)
         page_budget_and_staffing(pdf, get_engine())
         page_optimum_profile(pdf, results, df_raw)
