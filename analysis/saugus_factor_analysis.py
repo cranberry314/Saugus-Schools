@@ -678,22 +678,24 @@ def page_title(pdf, models: list[dict]):
                 fontsize=9.5, color=_BL, transform=ax.transAxes)
 
     # Summary box — sits below the bullet lines with a clear gap
+    box_x0, box_w = 0.02, 0.96
     ax.add_patch(mpatches.FancyBboxPatch(
-        (0.08, 0.08), 0.84, 0.24, boxstyle="round,pad=0.01",
+        (box_x0, 0.08), box_w, 0.24, boxstyle="round,pad=0.01",
         facecolor="#EEF2F8", edgecolor=_BLUE, linewidth=1.2,
         transform=ax.transAxes))
     ax.text(0.5, 0.30, "Selected Feature Counts",
             ha="center", va="center", fontsize=10, fontweight="bold",
             color=_BLUE, transform=ax.transAxes)
+    col_w = box_w / len(models)
     for j, m in enumerate(models):
-        xpos = 0.20 + j * 0.30
+        xpos = box_x0 + (j + 0.5) * col_w
         lean = m.get("lean_features", m["features"])
         n_candidates = len(m.get("all_candidates", m["features"]))
         ax.text(xpos, 0.25, m["label"], ha="center", fontsize=9,
                 color=_BL, fontweight="bold", transform=ax.transAxes)
         ax.text(xpos, 0.20, f"Candidates: {n_candidates} features",
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.16, f"Lean (importance > 0): {len(lean)} features",
+        ax.text(xpos, 0.16, f"Lean (imp > 0): {len(lean)} features",
                 ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
         ax.text(xpos, 0.11, f"LOO r = {m['loo_score']:+.3f}",
                 ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
