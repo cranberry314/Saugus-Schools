@@ -906,8 +906,7 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     n_above = analysis.get("n_above", "?")
     n_total = analysis.get("n_total", "?")
     _footer(fig,
-            f"RBP implementation: Czasonis, Kritzman & Turkington (2024).  "
-            f"Grid: {result.grid_cells_used} cells.  "
+            f"RBP analysis — Grid: {result.grid_cells_used} cells.  "
             f"N = {result.n_obs} MA districts.  "
             f"{n_above} of {n_total} districts outperform Saugus vs. their own prediction.")
     _save(pdf, fig)
@@ -1120,8 +1119,8 @@ def page_candidate_pool(pdf):
     ax_l, ax_r = axes
     _header(fig,
             "Pre-Specified Candidate Pool — Feature Reduction",
-            "Features selected on domain grounds before running RBP, matching Kritzman (2024) Exhibit 1 approach.  "
-            "Reduces K/N ratio from ~0.19 to ~0.09, matching the paper's 14/165 ≈ 0.085.")
+            "Features selected on domain grounds before running RBP.  "
+            "Reduces K/N ratio from ~0.19 to ~0.09 (target ≈ 0.085).")
 
     ax_l.axis("off")
     ax_r.axis("off")
@@ -1752,7 +1751,7 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     ax_l.set_yticklabels(feats, fontsize=7.5)
     ax_l.axvline(0, color=_BL, lw=1.0)
     ax_l.set_xlabel("Variable importance  (avg fit with feature − avg fit without)")
-    ax_l.set_title("All Candidates — Kritzman Exhibit 5\n"
+    ax_l.set_title("All Candidates — Variable Importance\n"
                    "Green = kept (importance > 0)  ·  Grey/red = pruned", fontsize=9)
     ax_l.grid(axis="x", alpha=0.25)
 
@@ -1816,7 +1815,7 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
 
     _footer(fig,
             "Variable importance: avg adjusted fit of grid cells containing feature − "
-            "avg fit of cells without it (Kritzman 2024 Exhibit 5).  "
+            "avg fit of cells without it.  "
             "Univariate LOO r: single-feature leave-one-out correlation.")
     plt.tight_layout(rect=[0, 0.04, 1, 0.88])
     _save(pdf, fig)
