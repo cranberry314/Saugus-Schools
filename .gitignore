@@ -23,6 +23,12 @@ config.py
 .DS_Store
 **/.DS_Store
 
+# Claude Code local settings (personal permissions, not shared)
+.claude/settings.local.json
+
+# Empty/stub sqlite file accidentally created in repo root
+schools.db
+
 # Personal/exploratory files from early research
 Saugus School Information/
 School Summary 2018.docx
