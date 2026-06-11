@@ -146,7 +146,6 @@ Schools/
 ├── config.example.py           # Credential template (safe to commit)
 ├── requirements.txt            # Python dependencies
 ├── data_loader.py              # Annual data update orchestrator ← START HERE
-├── run_all.py                  # Runs all analysis reports at once
 │
 ├── analysis/
 │   ├── municipal_finance_report.py   # Main report generator (PDF)
