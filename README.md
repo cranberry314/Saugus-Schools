@@ -24,7 +24,7 @@ and a plain-language community brief generated from the same underlying data.
    from public APIs and bulk downloads (MA DESE, MA DLS Schedule A/Gateway, US Census
    ACS, BLS LAUS/CPI via FRED, Zillow ZHVI, MA State Police, MassDOT IMPACT, FBI UCR,
    County Health Rankings) into a normalized PostgreSQL warehouse (`db/schema.sql`,
-   38 tables) covering ~350 MA municipalities and districts across 10–15+ years.
+   41 tables) covering ~350 MA municipalities and districts across 10–15+ years.
    `data_loader.py` checks each source for new data annually and prompts before
    reloading anything.
 
@@ -324,7 +324,8 @@ Schools/
 │   ├── enrollment.py           # Enrollment from MA DOE Excel downloads
 │   ├── finance.py              # Per-pupil expenditure from MA DOE Excel downloads
 │   ├── school_finance.py       # School-level per-pupil from bulk CSV
-│   └── municipal_finances.py   # Schedule A alternative implementation
+│   └── dls_loader.py           # MA DLS Gateway master loader (free cash, stabilization,
+│                                #   overlay reserves, Schedule A General Fund revenues/expenditures)
 │
 ├── Files/                      # Downloaded source files (large CSVs — gitignored)
 │   ├── FPCPITOTLZGUSA.csv      # BLS CPI data from FRED (update annually)
@@ -333,7 +334,7 @@ Schools/
 │   └── School_Expenditures_by_Spending_Category_*.csv     # DESE bulk file
 │
 ├── db/
-│   ├── schema.sql                          # Full PostgreSQL schema (38 tables)
+│   ├── schema.sql                          # Full PostgreSQL schema (41 tables)
 │   ├── init_db.py                          # One-time DB creation helper
 │   ├── queries.py                          # Common query helpers
 │   ├── migrate_add_snapshots.py            # Migration: analysis snapshot tables

@@ -177,7 +177,9 @@ CREATE TABLE IF NOT EXISTS staffing (
 
 -- -------------------------------------------------------
 -- MA DLS Schedule A — Municipal Revenues & Expenditures
--- Source: scrapers/municipal_finance.py (DLS Gateway rdPage)
+-- Source: ScheduleA.GeneralFund (DLS Gateway rdPage)
+-- Loaded via: python scrapers/dls_loader.py --load general_fund
+-- Coverage: 351 municipalities x FY2000-2025
 -- -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS municipal_revenues (
     id                  SERIAL PRIMARY KEY,
@@ -717,10 +719,16 @@ CREATE INDEX IF NOT EXISTS idx_municipal_crashes_town ON municipal_crashes(city_
 CREATE INDEX IF NOT EXISTS idx_municipal_crashes_year ON municipal_crashes(year);
 
 -- -------------------------------------------------------
+-- MA DLS Gateway "Dashboard.Cat_1_Reports" family
+-- Loaded via: python scrapers/dls_loader.py --load all
+-- All three share one export mechanism (long-format, all 351
+-- municipalities x fiscal year in one Excel export).
+-- Coverage: FY2002–present (real data generally from ~FY2004 on;
+-- earlier years may be NULL where DLS has no record).
+-- -------------------------------------------------------
+
 -- Municipal Certified Free Cash
 -- Source: rdReport=Dashboard.Cat_1_Reports.CertifiedFreeCashBudget351
--- Coverage: all 351 MA municipalities, FY2015–present
--- -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS municipal_free_cash (
     id                BIGSERIAL PRIMARY KEY,
     fiscal_year       INTEGER       NOT NULL,
@@ -735,3 +743,39 @@ CREATE TABLE IF NOT EXISTS municipal_free_cash (
 );
 
 CREATE INDEX IF NOT EXISTS idx_muni_free_cash_fy_code ON municipal_free_cash (fiscal_year, dor_code);
+
+-- Stabilization Fund Balances
+-- Source: rdReport=Dashboard.Cat_1_Reports.StablPerBudget351
+CREATE TABLE IF NOT EXISTS municipal_stabilization (
+    id                                  BIGSERIAL PRIMARY KEY,
+    fiscal_year                         INTEGER       NOT NULL,
+    dor_code                             INTEGER       NOT NULL,
+    municipality                         VARCHAR(100),
+    stabilization_fund_balance           BIGINT,        -- General stabilization fund balance
+    special_stabilization_fund_balance   BIGINT,        -- Special-purpose stabilization fund(s) balance
+    total_stabilization_fund_balance     BIGINT,        -- Sum of general + special
+    operating_budget                     NUMERIC(16,2),
+    stabilization_pct                    NUMERIC(8,4),  -- General stabilization as a fraction of the budget
+    special_stabilization_pct            NUMERIC(8,4),  -- Special-purpose stabilization as a fraction of the budget
+    total_stabilization_pct              NUMERIC(8,4),  -- Total stabilization as a fraction of the budget
+    loaded_at                            TIMESTAMP DEFAULT NOW(),
+    UNIQUE (fiscal_year, dor_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_muni_stabilization_fy_code ON municipal_stabilization (fiscal_year, dor_code);
+
+-- Overlay Reserves (property tax abatement reserve)
+-- Source: rdReport=Dashboard.Cat_1_Reports.OL1PerLevy351
+CREATE TABLE IF NOT EXISTS municipal_overlay_reserves (
+    id                     BIGSERIAL PRIMARY KEY,
+    fiscal_year            INTEGER       NOT NULL,
+    dor_code               INTEGER       NOT NULL,
+    municipality           VARCHAR(100),
+    overlay_appropriation  BIGINT,        -- Amount raised for the overlay account
+    total_levy             BIGINT,        -- Total tax levy for the year
+    overlay_pct            NUMERIC(8,4),  -- Overlay as a fraction of total levy (e.g. 0.85 = 0.85%)
+    loaded_at              TIMESTAMP DEFAULT NOW(),
+    UNIQUE (fiscal_year, dor_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_muni_overlay_fy_code ON municipal_overlay_reserves (fiscal_year, dor_code);
