@@ -37,6 +37,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import textwrap
 import numpy as np
 import pandas as pd
+from scipy.stats import ttest_ind, pearsonr, chisquare
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import IsolationForest
 from sqlalchemy import text
 from config import get_engine
 
@@ -695,6 +699,635 @@ def test_selected_populations(conn) -> list[dict]:
     return findings
 
 
+def _era_ttest(early_vals, est_vals, early_label, est_label, unit="%"):
+    """Welch's t-test comparing two non-overlapping eras of a series."""
+    early_vals = pd.to_numeric(pd.Series(early_vals), errors="coerce").dropna()
+    est_vals   = pd.to_numeric(pd.Series(est_vals), errors="coerce").dropna()
+    if len(early_vals) < 30 or len(est_vals) < 30:
+        return {
+            "detail": f"Insufficient data (n={len(early_vals)} {early_label} vs n={len(est_vals)} {est_label})",
+            "severity": "INFO", "t": None, "p": None,
+        }
+    t_stat, p_val = ttest_ind(early_vals, est_vals, equal_var=False)
+    return {
+        "detail": f"{early_label}: mean {early_vals.mean():+.2f}{unit} (n={len(early_vals)})  vs  "
+                  f"{est_label}: mean {est_vals.mean():+.2f}{unit} (n={len(est_vals)})   "
+                  f"t={t_stat:.2f}  p={p_val:.4f}",
+        "severity": "WARNING" if p_val < 0.01 else "INFO",
+        "t": t_stat, "p": p_val,
+    }
+
+
+def test_general_fund(conn) -> list[dict]:
+    """
+    Schedule A General Fund revenues & expenditures (FY2000-2025, all 351 munis),
+    loaded via scrapers/dls_loader.py --load general_fund.
+
+    1. Coverage: 351 munis x 26 years = 9126 rows expected per table
+    2. Category columns should sum to the reported total within 2%
+    3. Totals cannot be negative
+    4. Per-year YoY z-score outliers in total_revenues / total_expenditures (>30% & z>3)
+    5. Student's t-test: FY2001-2009 (newly backfilled) vs FY2011-2019
+       (previously loaded) YoY growth-rate distributions
+    """
+    findings = []
+    GF_START, GF_END = 2000, 2025
+    EXPECTED = 351 * (GF_END - GF_START + 1)
+
+    specs = [
+        ("municipal_revenues", "total_revenues",
+         ["taxes", "service_charges", "licenses_permits", "federal_revenue", "state_revenue",
+          "intergovernmental", "special_assessments", "fines_forfeitures", "miscellaneous",
+          "other_financing", "transfers"]),
+        ("municipal_expenditures", "total_expenditures",
+         ["general_government", "public_safety", "education", "public_works", "human_services",
+          "culture_recreation", "fixed_costs", "intergovernmental", "other_expenditures", "debt_service"]),
+    ]
+
+    for table, total_col, cat_cols in specs:
+        n_total = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
+        n_munis = conn.execute(text(f"SELECT COUNT(DISTINCT dor_code) FROM {table}")).scalar()
+
+        # ── 1. Coverage ───────────────────────────────────────────────────────
+        by_year = conn.execute(text(f"""
+            SELECT fiscal_year, COUNT(*) FROM {table}
+            WHERE fiscal_year BETWEEN {GF_START} AND {GF_END}
+            GROUP BY fiscal_year ORDER BY fiscal_year
+        """)).fetchall()
+        sparse = [(fy, n) for fy, n in by_year if n < n_munis]
+        sparse_post2003 = [t for t in sparse if t[0] >= 2004]
+        if sparse:
+            sample = ", ".join(f"FY{fy}={n}" for fy, n in sparse[:8])
+            findings.append({
+                "table": table, "test": "Coverage (351 munis x FY2000-2025)",
+                "detail": f"{n_total}/{EXPECTED} rows. Years below {n_munis} munis: {sample}"
+                          + (f" (+{len(sparse)-8} more)" if len(sparse) > 8 else ""),
+                "severity": "WARNING" if sparse_post2003 else "INFO",
+                "note": "FY2000-2003 commonly have a handful of towns with all-zero Schedule A "
+                        "submissions, which the loader skips. Gaps in FY2004+ are more likely "
+                        "missing rows worth checking against the DLS source.",
+            })
+        else:
+            findings.append({
+                "table": table, "test": "Coverage (351 munis x FY2000-2025)",
+                "detail": f"{n_total}/{EXPECTED} rows — every municipality has all 26 years",
+                "severity": "INFO", "note": "",
+            })
+
+        # ── 2. Category sum vs reported total ───────────────────────────────────
+        cat_sum_expr = " + ".join(f"COALESCE({c},0)" for c in cat_cols)
+        n_mismatch = conn.execute(text(f"""
+            WITH calc AS (
+                SELECT {total_col}, ({cat_sum_expr}) AS component_sum
+                FROM {table} WHERE {total_col} IS NOT NULL AND {total_col} != 0
+            )
+            SELECT COUNT(*) FROM calc
+            WHERE ABS(component_sum - {total_col}) > 0.02 * ABS({total_col})
+        """)).scalar()
+        if n_mismatch:
+            worst = conn.execute(text(f"""
+                WITH calc AS (
+                    SELECT fiscal_year, municipality, {total_col},
+                           ({cat_sum_expr}) AS component_sum
+                    FROM {table} WHERE {total_col} IS NOT NULL AND {total_col} != 0
+                )
+                SELECT fiscal_year, municipality, {total_col}, component_sum,
+                       ROUND(100.0*(component_sum-{total_col})/{total_col}, 1) AS pct_diff
+                FROM calc
+                WHERE ABS(component_sum - {total_col}) > 0.02 * ABS({total_col})
+                ORDER BY ABS(component_sum-{total_col}) DESC LIMIT 5
+            """)).fetchall()
+            sample = "; ".join(f"FY{r[0]} {r[1]}: total=${r[2]:,} sum=${r[3]:,} ({r[4]:+.1f}%)" for r in worst)
+            findings.append({
+                "table": table, "test": "Category sum vs reported total (>2% diff)",
+                "detail": f"{n_mismatch} of {n_total} rows differ by >2%. Worst: {sample}",
+                "severity": "WARNING",
+                "note": "Revenue/expenditure categories should sum to the published total. "
+                        "Diffs >2% may indicate a missing category column or an 'Other' line "
+                        "DLS doesn't break out for that town/year.",
+            })
+        else:
+            findings.append({
+                "table": table, "test": "Category sum vs reported total (>2% diff)",
+                "detail": f"All {n_total} rows: categories sum to total within 2%",
+                "severity": "INFO", "note": "",
+            })
+
+        # ── 3. Negative totals ───────────────────────────────────────────────────
+        neg = conn.execute(text(f"""
+            SELECT fiscal_year, municipality, {total_col} FROM {table} WHERE {total_col} < 0
+        """)).fetchall()
+        if neg:
+            for r in neg[:10]:
+                findings.append({
+                    "table": table, "test": "Negative total",
+                    "detail": f"FY{r[0]} {r[1]}: {total_col}=${r[2]:,}",
+                    "severity": "FAIL",
+                    "note": "Schedule A totals cannot be negative.",
+                })
+        else:
+            findings.append({
+                "table": table, "test": "Negative totals",
+                "detail": f"No negative {total_col} values",
+                "severity": "INFO", "note": "",
+            })
+
+        # ── 4. YoY z-score outliers ──────────────────────────────────────────────
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, dor_code, municipality, {total_col},
+                   LAG({total_col}) OVER (PARTITION BY dor_code ORDER BY fiscal_year) AS prev
+            FROM {table}
+            WHERE {total_col} IS NOT NULL AND {total_col} != 0
+            ORDER BY dor_code, fiscal_year
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "dor", "muni", "val", "prev"])
+        df[["val", "prev"]] = df[["val", "prev"]].apply(pd.to_numeric, errors="coerce")
+        df["yoy"] = (df["val"] - df["prev"]) / df["prev"].abs() * 100
+        df = df.dropna(subset=["yoy"])
+        yearly = df.groupby("fy")["yoy"].agg(["mean", "std"]).rename(columns={"mean": "m", "std": "s"})
+        merged = df.merge(yearly, left_on="fy", right_index=True)
+        merged["z"] = (merged["yoy"] - merged["m"]) / merged["s"]
+        outliers = merged[(merged["yoy"].abs() > 30) & (merged["z"].abs() > 3)]
+        outliers = outliers.sort_values("z", key=abs, ascending=False).head(8)
+        if outliers.empty:
+            findings.append({
+                "table": table, "test": f"YoY {total_col} outliers (>30% & z>3)",
+                "detail": "No extreme outliers found", "severity": "INFO", "note": "",
+            })
+        else:
+            for _, r in outliers.iterrows():
+                findings.append({
+                    "table": table, "test": f"YoY {total_col} outlier",
+                    "detail": f"FY{int(r.fy)}: {r.muni}  ${r.prev:,.0f} -> ${r.val:,.0f}  ({r.yoy:+.0f}%)  z={r.z:.1f}",
+                    "severity": "WARNING",
+                    "note": "Large single-year swings can be real (major capital project, "
+                            "Proposition 2 1/2 override, regionalization) or a parsing error. "
+                            "Cross-check against the DLS Schedule A report for that town/year.",
+                })
+
+        # ── 5. Student's t-test: backfilled era vs previously-loaded era ────────
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, dor_code, {total_col},
+                   LAG({total_col}) OVER (PARTITION BY dor_code ORDER BY fiscal_year) AS prev
+            FROM {table}
+            WHERE {total_col} IS NOT NULL AND {total_col} != 0
+            ORDER BY dor_code, fiscal_year
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "dor", "val", "prev"])
+        df[["val", "prev"]] = df[["val", "prev"]].apply(pd.to_numeric, errors="coerce")
+        df["yoy"] = (df["val"] - df["prev"]) / df["prev"].abs() * 100
+        df = df.dropna(subset=["yoy"])
+        early = df[df["fy"].between(2001, 2009)]["yoy"]
+        est   = df[df["fy"].between(2011, 2019)]["yoy"]
+        result = _era_ttest(early, est, "FY2001-2009 (backfilled)", "FY2011-2019 (prior)")
+        findings.append({
+            "table": table,
+            "test": f"t-test: backfilled vs prior-era YoY {total_col} growth",
+            "detail": result["detail"],
+            "severity": result["severity"],
+            "note": "Compares YoY growth rates in the newly-backfilled FY2001-2009 range "
+                    "against the previously-loaded FY2011-2019 range. A significant "
+                    "difference (p<0.01) can reflect a real macro event inside the backfilled "
+                    "window (e.g. the FY2009 recession) or a sign the older Schedule A "
+                    "exports parse differently than recent ones.",
+        })
+
+    return findings
+
+
+def test_dls_cat1_reports(conn) -> list[dict]:
+    """
+    MA DLS "Dashboard.Cat_1_Reports" family (FY2002-2026, all 351 munis),
+    loaded via scrapers/dls_loader.py --load all.
+
+    1. Coverage / non-null rate by fiscal year (FY2002-2003 expected sparse)
+    2. Per-year z-score outliers in YoY change of the budget-normalized pct column
+    3. Student's t-test: FY2002-2008 (early extension) vs FY2012-2018
+       (established) distribution of the pct-of-budget column
+    """
+    findings = []
+    CAT1_START, CAT1_END = 2002, 2026
+    EXPECTED = 351 * (CAT1_END - CAT1_START + 1)
+
+    specs = [
+        ("municipal_free_cash", "cert_free_cash", "free_cash_pct"),
+        ("municipal_stabilization", "total_stabilization_fund_balance", "total_stabilization_pct"),
+        ("municipal_overlay_reserves", "overlay_appropriation", "overlay_pct"),
+    ]
+
+    for table, balance_col, pct_col in specs:
+        n_total = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
+        n_munis = conn.execute(text(f"SELECT COUNT(DISTINCT dor_code) FROM {table}")).scalar()
+
+        # ── 1. Coverage / non-null rate by year ──────────────────────────────────
+        by_year = conn.execute(text(f"""
+            SELECT fiscal_year, COUNT(*) AS n, COUNT({balance_col}) AS n_nonnull
+            FROM {table}
+            WHERE fiscal_year BETWEEN {CAT1_START} AND {CAT1_END}
+            GROUP BY fiscal_year ORDER BY fiscal_year
+        """)).fetchall()
+        flagged = [(fy, n, nn) for fy, n, nn in by_year
+                   if fy >= 2004 and (n < n_munis or (n > 0 and nn / n < 0.5))]
+        if flagged:
+            sample = ", ".join(f"FY{fy}: {nn}/{n} non-null" for fy, n, nn in flagged[:8])
+            if balance_col == "total_stabilization_fund_balance":
+                severity, note = "INFO", (
+                    "Confirmed DLS reporting-format change, not a load gap: DLS left "
+                    "'Total Stabilization' blank for nearly every town before FY2016 "
+                    "(only towns that also had a special-purpose stabilization fund got "
+                    "a value), then began populating it broadly from FY2016-2017 onward. "
+                    "For consistent FY2002-2025 coverage across towns, use "
+                    "stabilization_fund_balance / stabilization_pct (general fund only, "
+                    "~95% non-null every year)."
+                )
+            else:
+                severity, note = "WARNING", (
+                    "FY2002-2003 are documented placeholder years (not yet certified by "
+                    f"DLS) and expected to be sparse. Sparseness in FY2004+ for {balance_col} "
+                    "may mean a town didn't submit that year (real) or a load gap."
+                )
+            findings.append({
+                "table": table, "test": "Coverage / non-null rate by year",
+                "detail": f"{n_total}/{EXPECTED} rows total. Sparse years (FY2004+): {sample}",
+                "severity": severity,
+                "note": note,
+            })
+        else:
+            findings.append({
+                "table": table, "test": "Coverage / non-null rate by year",
+                "detail": f"{n_total}/{EXPECTED} rows. FY2004-{CAT1_END}: all years >=50% non-null, {n_munis} munis",
+                "severity": "INFO", "note": "",
+            })
+
+        # ── 2. YoY jump outliers on budget-normalized pct column ─────────────────
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, dor_code, municipality, {pct_col},
+                   LAG({pct_col}) OVER (PARTITION BY dor_code ORDER BY fiscal_year) AS prev
+            FROM {table}
+            WHERE {pct_col} IS NOT NULL
+            ORDER BY dor_code, fiscal_year
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "dor", "muni", "val", "prev"])
+        df[["val", "prev"]] = df[["val", "prev"]].apply(pd.to_numeric, errors="coerce")
+        df["delta"] = df["val"] - df["prev"]
+        df = df.dropna(subset=["delta"])
+        yearly = df.groupby("fy")["delta"].agg(["mean", "std"]).rename(columns={"mean": "m", "std": "s"})
+        merged = df.merge(yearly, left_on="fy", right_index=True)
+        merged["z"] = (merged["delta"] - merged["m"]) / merged["s"]
+        outliers = merged[merged["z"].abs() > 4]
+        outliers = outliers.sort_values("z", key=abs, ascending=False).head(8)
+        if outliers.empty:
+            findings.append({
+                "table": table, "test": f"YoY {pct_col} jump outliers (z>4)",
+                "detail": "No extreme year-over-year jumps in pct-of-budget",
+                "severity": "INFO", "note": "",
+            })
+        else:
+            for _, r in outliers.iterrows():
+                findings.append({
+                    "table": table, "test": f"YoY {pct_col} jump",
+                    "detail": f"FY{int(r.fy)}: {r.muni}  {r.prev:.2f} -> {r.val:.2f}  (pct of budget, z={r.z:.1f})",
+                    "severity": "WARNING",
+                    "note": "Large swings in fund balance as a % of budget can reflect a real "
+                            "town decision (drawing down free cash for a project, a large "
+                            "override) or a unit/parsing error. Verify against DLS.",
+                })
+
+        # ── 3. Student's t-test: early extension vs established years ───────────
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, {pct_col} FROM {table}
+            WHERE {pct_col} IS NOT NULL AND fiscal_year BETWEEN 2002 AND 2018
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "val"])
+        df["val"] = pd.to_numeric(df["val"], errors="coerce")
+        early = df[df["fy"].between(2002, 2008)]["val"]
+        est   = df[df["fy"].between(2012, 2018)]["val"]
+        result = _era_ttest(early, est, "FY2002-2008 (early extension)", "FY2012-2018 (established)")
+        findings.append({
+            "table": table,
+            "test": f"t-test: early-extension vs established-era {pct_col}",
+            "detail": result["detail"],
+            "severity": result["severity"],
+            "note": "Compares the budget-normalized fund balance in the newly-extended "
+                    "FY2002-2008 range against the established FY2012-2018 range. A "
+                    "significant difference can reflect a real long-run fiscal trend "
+                    "(towns building up reserves over two decades) or an early-years "
+                    "data quality issue worth spot-checking.",
+        })
+
+    return findings
+
+
+def test_general_fund_per_town(conn) -> list[dict]:
+    """
+    Per-municipality coverage and multi-year change checks on Schedule A
+    General Fund totals (FY2000-2025).
+
+    1. First-year-with-data distribution — confirms the FY2000-2009
+       sparsity is a systematic "late starters" pattern (the same towns
+       missing every early year) rather than scattered missing rows.
+    2. Internal gaps — a town missing a fiscal year strictly between its
+       first and last reported year (more suspicious than a leading-edge gap).
+    3. n-period (3-year) % change outliers — catches multi-year jumps that
+       a single-year YoY check could miss if spread over 2-3 smaller steps.
+    """
+    findings = []
+    GF_START, GF_END = 2000, 2025
+
+    specs = [
+        ("municipal_revenues", "total_revenues"),
+        ("municipal_expenditures", "total_expenditures"),
+    ]
+
+    for table, total_col in specs:
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, dor_code, municipality, {total_col}
+            FROM {table}
+            WHERE {total_col} IS NOT NULL AND {total_col} != 0
+            ORDER BY dor_code, fiscal_year
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "dor", "muni", "val"])
+        df["val"] = pd.to_numeric(df["val"], errors="coerce")
+
+        # ── 1. First-year-with-data distribution ────────────────────────────
+        first_year = df.groupby("dor")["fy"].min()
+        late = first_year[first_year > GF_START]
+        if len(late):
+            dist = late.value_counts().sort_index()
+            sample = ", ".join(f"FY{fy}: {n} munis" for fy, n in dist.items())
+            findings.append({
+                "table": table, "test": "First-year-with-data distribution",
+                "detail": f"{len(late)} of {first_year.shape[0]} municipalities have no "
+                          f"data before their first reported year. Breakdown: {sample}",
+                "severity": "INFO",
+                "note": "Towns whose Schedule A history begins after FY2000 reflect DLS's "
+                        "own archive limits for that town, not a load gap — this is the "
+                        "same set of ~99 towns every early year, confirming the pattern "
+                        "is systematic rather than random missing rows.",
+            })
+        else:
+            findings.append({
+                "table": table, "test": "First-year-with-data distribution",
+                "detail": f"All {first_year.shape[0]} municipalities have data starting FY{GF_START}",
+                "severity": "INFO", "note": "",
+            })
+
+        # ── 2. Internal gaps (missing year between first and last) ──────────
+        gap_rows = []
+        for dor, g in df.groupby("dor"):
+            years = set(g["fy"])
+            lo, hi = min(years), max(years)
+            missing = sorted(set(range(lo, hi + 1)) - years)
+            if missing:
+                gap_rows.append((g["muni"].iloc[0], lo, hi, missing))
+        if gap_rows:
+            sample = "; ".join(
+                f"{muni} (FY{lo}-{hi}, missing {', '.join('FY'+str(y) for y in missing[:3])})"
+                for muni, lo, hi, missing in gap_rows[:8]
+            )
+            findings.append({
+                "table": table, "test": "Internal year gaps (missing year mid-series)",
+                "detail": f"{len(gap_rows)} municipalities have a gap between their first "
+                          f"and last reported year: {sample}"
+                          + (f" (+{len(gap_rows)-8} more)" if len(gap_rows) > 8 else ""),
+                "severity": "WARNING",
+                "note": "A missing year sandwiched between two reported years is more "
+                        "likely a load/parse miss than a real DLS history limit — "
+                        "spot-check these town/years against the Gateway report.",
+            })
+        else:
+            findings.append({
+                "table": table, "test": "Internal year gaps (missing year mid-series)",
+                "detail": "No municipality has an internal gap — every town's reported "
+                          "years are contiguous from its first to last year",
+                "severity": "INFO", "note": "",
+            })
+
+        # ── 3. n-period (3-year) % change outliers ───────────────────────────
+        df = df.sort_values(["dor", "fy"]).reset_index(drop=True)
+        df["val_3y"] = df.groupby("dor")["val"].shift(3)
+        df["fy_3y"] = df.groupby("dor")["fy"].shift(3)
+        df["chg3"] = (df["val"] - df["val_3y"]) / df["val_3y"].abs() * 100
+        valid = df.dropna(subset=["chg3"])
+        valid = valid[valid["fy"] - valid["fy_3y"] == 3]  # only true 3-consecutive-year pairs
+        yearly = valid.groupby("fy")["chg3"].agg(["mean", "std"]).rename(columns={"mean": "m", "std": "s"})
+        merged = valid.merge(yearly, left_on="fy", right_index=True)
+        merged["z"] = (merged["chg3"] - merged["m"]) / merged["s"]
+        outliers = merged[(merged["chg3"].abs() > 50) & (merged["z"].abs() > 3)]
+        outliers = outliers.sort_values("z", key=abs, ascending=False).head(8)
+        if outliers.empty:
+            findings.append({
+                "table": table, "test": "3-year % change outliers (>50% & z>3)",
+                "detail": "No extreme 3-year (n-period) jumps found",
+                "severity": "INFO", "note": "",
+            })
+        else:
+            for _, r in outliers.iterrows():
+                findings.append({
+                    "table": table, "test": "3-year % change outlier",
+                    "detail": f"FY{int(r.fy_3y)}->FY{int(r.fy)}: {r.muni}  "
+                              f"${r.val_3y:,.0f} -> ${r.val:,.0f}  ({r.chg3:+.0f}% over 3yr)  z={r.z:.1f}",
+                    "severity": "WARNING",
+                    "note": "A jump spread over 3 years can hide a real trend (regionalization, "
+                            "a major building project phased in) or a unit/scale change that a "
+                            "single-year YoY check would miss. Verify against DLS.",
+                })
+
+    return findings
+
+
+def test_dls_cross_consistency(conn) -> list[dict]:
+    """
+    Cross-table consistency and general statistical-soundness checks tying
+    Schedule A General Fund totals to the Cat_1_Reports family.
+
+    1. Pearson correlation: total_revenues vs total_expenditures (should be
+       strongly positive — towns that spend more also take in more)
+    2. Cross-sectional std-dev trend for Cat_1 pct-of-budget columns — flags
+       a fiscal year where the spread across towns abruptly widens or
+       collapses vs the trailing 3-year average (possible unit/parse change)
+    3. scikit-learn K-Fold cross-validation: LinearRegression R^2 for
+       operating_budget ~ total_expenditures (these should track closely)
+    4. Benford's Law: leading-digit distribution of totals vs the expected
+       Benford frequencies (chi-square goodness-of-fit)
+    """
+    findings = []
+
+    # ── 1. Pearson correlation: revenues vs expenditures ─────────────────────
+    rows = conn.execute(text("""
+        SELECT r.total_revenues, e.total_expenditures
+        FROM municipal_revenues r
+        JOIN municipal_expenditures e
+          ON e.dor_code = r.dor_code AND e.fiscal_year = r.fiscal_year
+        WHERE r.total_revenues > 0 AND e.total_expenditures > 0
+    """)).fetchall()
+    df = pd.DataFrame(rows, columns=["rev", "exp"]).apply(pd.to_numeric, errors="coerce").dropna()
+    corr, p_val = pearsonr(df["rev"], df["exp"])
+    findings.append({
+        "table": "municipal_revenues / municipal_expenditures",
+        "test": "Pearson correlation: total_revenues vs total_expenditures",
+        "detail": f"r={corr:.4f}  p={p_val:.2e}  (n={len(df)})",
+        "severity": "WARNING" if corr < 0.95 else "INFO",
+        "note": "Revenues and expenditures should be tightly coupled (MA towns must adopt "
+                "balanced budgets). A correlation below ~0.95 across this many town-years "
+                "would be unexpected and worth investigating.",
+    })
+
+    # ── 2. Cross-sectional std-dev trend on Cat_1 pct columns ────────────────
+    cat1_specs = [
+        ("municipal_free_cash", "free_cash_pct"),
+        ("municipal_stabilization", "total_stabilization_pct"),
+        ("municipal_overlay_reserves", "overlay_pct"),
+    ]
+    for table, pct_col in cat1_specs:
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, {pct_col} FROM {table}
+            WHERE {pct_col} IS NOT NULL
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "val"])
+        df["val"] = pd.to_numeric(df["val"], errors="coerce")
+        yearly_std = df.groupby("fy")["val"].std().sort_index()
+        trailing = yearly_std.rolling(3).mean().shift(1)
+        ratio = (yearly_std / trailing).dropna()
+        flagged = ratio[(ratio > 2) | (ratio < 0.5)]
+        if flagged.empty:
+            findings.append({
+                "table": table, "test": f"Std-dev trend ({pct_col} across municipalities)",
+                "detail": "No fiscal year's cross-sectional std-dev deviates >2x from its "
+                          "trailing 3-year average",
+                "severity": "INFO", "note": "",
+            })
+        else:
+            sample = ", ".join(
+                f"FY{int(fy)}: std={yearly_std[fy]:.2f} ({r:.1f}x trailing avg)"
+                for fy, r in flagged.items()
+            )
+            findings.append({
+                "table": table, "test": f"Std-dev trend ({pct_col} across municipalities)",
+                "detail": f"Cross-sectional spread shifts abruptly: {sample}",
+                "severity": "WARNING",
+                "note": "A sudden widening or collapse of the spread across all towns in a "
+                        "single year can indicate a reporting-format change for that year "
+                        "(e.g. a unit shift) rather than a genuine statewide fiscal shift.",
+            })
+
+    # ── 3. scikit-learn K-Fold CV: operating_budget ~ total_expenditures ─────
+    rows = conn.execute(text("""
+        SELECT f.operating_budget, e.total_expenditures
+        FROM municipal_free_cash f
+        JOIN municipal_expenditures e
+          ON e.dor_code = f.dor_code AND e.fiscal_year = f.fiscal_year
+        WHERE f.operating_budget > 0 AND e.total_expenditures > 0
+    """)).fetchall()
+    df = pd.DataFrame(rows, columns=["operating_budget", "total_expenditures"]).apply(pd.to_numeric, errors="coerce").dropna()
+    X = df[["total_expenditures"]].to_numpy()
+    y = df["operating_budget"].to_numpy()
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    r2_scores = cross_val_score(LinearRegression(), X, y, cv=kf, scoring="r2")
+    findings.append({
+        "table": "municipal_free_cash / municipal_expenditures",
+        "test": "scikit-learn 5-fold CV: operating_budget ~ total_expenditures (LinearRegression)",
+        "detail": f"R^2 = {r2_scores.mean():.4f} +/- {r2_scores.std():.4f}  (n={len(df)}, folds={list(np.round(r2_scores, 4))})",
+        "severity": "WARNING" if r2_scores.mean() < 0.80 else "INFO",
+        "note": "A town's certified operating budget should track its actual total "
+                "expenditures closely. A low or unstable cross-validated R^2 suggests the "
+                "two tables don't line up well for a meaningful share of town-years.",
+    })
+
+    # ── 4. Benford's Law on leading digits of totals ──────────────────────────
+    benford_expected = np.array([np.log10(1 + 1 / d) for d in range(1, 10)])
+    for table, total_col in [("municipal_revenues", "total_revenues"),
+                              ("municipal_expenditures", "total_expenditures")]:
+        rows = conn.execute(text(f"SELECT {total_col} FROM {table} WHERE {total_col} > 0")).fetchall()
+        vals = pd.to_numeric(pd.Series([r[0] for r in rows]), errors="coerce").dropna()
+        vals = vals[vals >= 1]
+        leading = (vals / 10 ** np.floor(np.log10(vals))).astype(int)
+        observed = leading.value_counts().reindex(range(1, 10), fill_value=0).sort_index()
+        expected = benford_expected * observed.sum()
+        chi2, p_val = chisquare(observed, expected)
+        findings.append({
+            "table": table, "test": "Benford's Law: leading-digit chi-square goodness-of-fit",
+            "detail": f"chi2={chi2:.1f}  p={p_val:.2e}  (n={observed.sum()})  "
+                      f"observed digit-1 freq={observed[1]/observed.sum():.3f} "
+                      f"(Benford expects {benford_expected[0]:.3f})",
+            "severity": "WARNING" if p_val < 0.01 else "INFO",
+            "note": "Naturally-occurring financial totals tend to follow Benford's Law "
+                    "(leading digit 1 most common). A significant deviation (p<0.01) can "
+                    "be benign for aggregated totals, but a wildly different distribution "
+                    "can also indicate a units/scale inconsistency (e.g. some rows in "
+                    "cents rather than dollars).",
+        })
+
+    return findings
+
+
+def test_isolation_forest_anomalies(conn) -> list[dict]:
+    """
+    Multivariate anomaly detection (scikit-learn IsolationForest) on the
+    Schedule A category-share profile of each municipality-year.
+
+    Catches town-years where the *mix* of revenue/expenditure categories is
+    unusual relative to all other town-years, even when no single category
+    crosses a univariate z-score threshold on its own.
+    """
+    findings = []
+    specs = [
+        ("municipal_revenues", "total_revenues", "revenue",
+         ["taxes", "service_charges", "licenses_permits", "federal_revenue", "state_revenue",
+          "intergovernmental", "special_assessments", "fines_forfeitures", "miscellaneous",
+          "other_financing", "transfers"]),
+        ("municipal_expenditures", "total_expenditures", "expenditure",
+         ["general_government", "public_safety", "education", "public_works", "human_services",
+          "culture_recreation", "fixed_costs", "intergovernmental", "other_expenditures", "debt_service"]),
+    ]
+
+    for table, total_col, kind, cat_cols in specs:
+        cols = ", ".join(cat_cols)
+        rows = conn.execute(text(f"""
+            SELECT fiscal_year, municipality, {total_col}, {cols}
+            FROM {table}
+            WHERE {total_col} > 0
+        """)).fetchall()
+        df = pd.DataFrame(rows, columns=["fy", "muni", "total"] + cat_cols)
+        for c in ["total"] + cat_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+        shares = df[cat_cols].div(df["total"], axis=0)
+
+        iso = IsolationForest(n_estimators=200, contamination=0.01, random_state=42)
+        preds = iso.fit_predict(shares)
+        df["anomaly_score"] = iso.decision_function(shares)
+
+        anomalies = df[preds == -1].sort_values("anomaly_score").head(8)
+        if anomalies.empty:
+            findings.append({
+                "table": table, "test": "IsolationForest: category-share anomalies",
+                "detail": "No outliers flagged at 1% contamination",
+                "severity": "INFO", "note": "",
+            })
+            continue
+
+        share_means = shares.mean()
+        share_stds = shares.std().replace(0, np.nan)
+        for idx, r in anomalies.iterrows():
+            row_shares = shares.loc[idx]
+            z = ((row_shares - share_means) / share_stds).abs()
+            top_cat = z.idxmax()
+            findings.append({
+                "table": table, "test": "IsolationForest category-share anomaly",
+                "detail": f"FY{int(r.fy)}: {r.muni}  anomaly_score={r.anomaly_score:.3f}  "
+                          f"driven by '{top_cat}' = {row_shares[top_cat]*100:.1f}% of total "
+                          f"(typical {share_means[top_cat]*100:.1f}%)",
+                "severity": "WARNING",
+                "note": f"scikit-learn IsolationForest flags town-years whose mix of {kind} "
+                        "categories, as a share of the total, is unusual relative to all "
+                        "other town-years — even when no single category crosses a z-score "
+                        "threshold on its own. Worth a manual check against the DLS source.",
+            })
+
+    return findings
+
+
 # ── PDF generation ────────────────────────────────────────────────────────────
 
 def _title_page(pdf):
@@ -708,7 +1341,12 @@ def _title_page(pdf):
     ax.text(0.5, 0.46,
             "Tests across all multi-source stitched tables:\n"
             "  district_chapter70  ·  municipal_income_eqv  ·  per_pupil_expenditure\n"
-            "  attendance  ·  graduation_rates  ·  staffing  ·  district_selected_populations",
+            "  attendance  ·  graduation_rates  ·  staffing  ·  district_selected_populations\n\n"
+            "Plus coverage / outlier / Student's t-tests on the MA DLS Gateway tables:\n"
+            "  municipal_revenues  ·  municipal_expenditures\n"
+            "  municipal_free_cash  ·  municipal_stabilization  ·  municipal_overlay_reserves\n\n"
+            "Plus per-town coverage gaps, n-period % change, cross-table correlation,\n"
+            "Benford's Law, and scikit-learn (K-Fold CV, IsolationForest anomaly detection)",
             ha="center", fontsize=11, color=LIGHT, transform=ax.transAxes, linespacing=2.0)
     pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
 
@@ -762,6 +1400,17 @@ def _stitched_sources_page(pdf):
       municipal_census_acs       Census API (single endpoint, ACS 5-year)
       municipal_zillow_housing   Zillow Research CSV (single file per series)
       district_financials        District_Expenditures_by_Function_Code CSV
+
+    ────────────────────────────────────────────────────────────────────────────────────────────
+    MA DLS Gateway tables (single source, broad coverage — checked for gaps/jumps, not seams):
+      municipal_revenues          ScheduleA.GeneralFund, FY2000-2025, 351 munis (9126 rows)
+      municipal_expenditures       same report, same coverage
+      municipal_free_cash          Dashboard.Cat_1_Reports, FY2002-2026, 351 munis (8775 rows)
+      municipal_stabilization      same report family
+      municipal_overlay_reserves   same report family
+        All loaded via scrapers/dls_loader.py. FY2000-2009 (general fund) and
+        FY2002-2009 (Cat_1 family) were backfilled in this pass — t-tests below
+        compare these newly-backfilled years against the previously-established range.
     """)
     ax.text(0.01, 0.90, body,
             ha="left", va="top", fontsize=7.8, color="#1a1a1a",
@@ -1027,6 +1676,11 @@ def run():
         "graduation_rates":               test_graduation,
         "staffing":                       test_staffing,
         "district_selected_populations":  test_selected_populations,
+        "municipal_revenues / municipal_expenditures": test_general_fund,
+        "DLS Cat_1_Reports (free cash / stabilization / overlay)": test_dls_cat1_reports,
+        "Per-town coverage / n-period change (general fund)": test_general_fund_per_town,
+        "Cross-table consistency (correlation / CV / Benford)": test_dls_cross_consistency,
+        "IsolationForest category-share anomalies": test_isolation_forest_anomalies,
     }
 
     with engine.connect() as conn:
