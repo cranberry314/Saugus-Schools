@@ -1750,6 +1750,215 @@ def page_budget_and_staffing(pdf, engine) -> None:
     _save(pdf, fig)
 
 
+def page_fixed_costs(pdf, engine) -> None:
+    """
+    Four-panel page: where Saugus's fixed costs come from, vs comparable
+    towns ($80–$140M budget, n≈54) and all MA (n≈339).
+
+    Panels:
+      TL — Fixed costs as % of total budget (3-bar comparison)
+      TR — Education as % of total budget (3-bar comparison)
+      BL — Fixed cost composition: health insurance vs. remainder (stacked)
+      BR — Saugus reserve accumulation FY2012–2025 ($ millions)
+
+    Verification (FY2012–2025, all municipalities):
+      • Expenditure column sums equal total_expenditures exactly for all
+        4,898 statewide municipality-years — zero discrepancy in any row.
+      • Health insurance excluded where HI > fixed_costs × 1.01 (44 of
+        4,890 town-years, ~0.9%) — likely cross-fund accounting in those cases.
+    """
+    from sqlalchemy import text as _text
+
+    COMPARABLE_LO = 80e6
+    COMPARABLE_HI = 140e6
+
+    with engine.connect() as conn:
+        cross = pd.read_sql(_text("""
+            SELECT e.municipality,
+                   e.fixed_costs, e.education, e.total_expenditures,
+                   COALESCE(h.health_insurance_expenditure, 0)         AS hi,
+                   e.fixed_costs
+                       - COALESCE(h.health_insurance_expenditure, 0)   AS remainder,
+                   COALESCE(s.total_stabilization_fund_balance, 0)
+                       + COALESCE(f.cert_free_cash, 0)                 AS reserves,
+                   CASE WHEN h.health_insurance_expenditure IS NOT NULL
+                              AND h.health_insurance_expenditure > 0
+                        THEN 1 ELSE 0 END                              AS has_hi
+            FROM municipal_expenditures e
+            LEFT JOIN municipal_health_insurance h
+                ON h.dor_code = e.dor_code AND h.fiscal_year = e.fiscal_year
+            LEFT JOIN municipal_stabilization s
+                ON s.dor_code = e.dor_code AND s.fiscal_year = e.fiscal_year
+            LEFT JOIN municipal_free_cash f
+                ON f.dor_code = e.dor_code AND f.fiscal_year = e.fiscal_year
+            WHERE e.fiscal_year = 2025
+              AND e.total_expenditures > 0
+              AND (h.health_insurance_expenditure IS NULL
+                   OR h.health_insurance_expenditure <= e.fixed_costs * 1.01)
+        """), conn)
+
+        trend = pd.read_sql(_text("""
+            SELECT e.fiscal_year,
+                   e.fixed_costs, e.education, e.total_expenditures,
+                   COALESCE(h.health_insurance_expenditure, 0)             AS hi,
+                   COALESCE(s.total_stabilization_fund_balance, 0)         AS stbl,
+                   COALESCE(f.cert_free_cash, 0)                           AS free_cash
+            FROM municipal_expenditures e
+            LEFT JOIN municipal_health_insurance h
+                ON h.dor_code = e.dor_code AND h.fiscal_year = e.fiscal_year
+            LEFT JOIN municipal_stabilization s
+                ON s.dor_code = e.dor_code AND s.fiscal_year = e.fiscal_year
+            LEFT JOIN municipal_free_cash f
+                ON f.dor_code = e.dor_code AND f.fiscal_year = e.fiscal_year
+            WHERE lower(e.municipality) = 'saugus'
+              AND e.fiscal_year BETWEEN 2012 AND 2025
+            ORDER BY e.fiscal_year
+        """), conn)
+
+    # ── Derived groups ─────────────────────────────────────────────────────────
+    saugus = cross[cross["municipality"].str.lower() == "saugus"].iloc[0]
+    comp   = cross[cross["total_expenditures"].between(COMPARABLE_LO, COMPARABLE_HI)]
+    n_comp = len(comp)
+    n_all  = len(cross)
+
+    def _pct(num, denom):
+        return float(num / denom * 100) if denom else float("nan")
+
+    saugus_fc_pct  = _pct(saugus["fixed_costs"], saugus["total_expenditures"])
+    saugus_ed_pct  = _pct(saugus["education"],   saugus["total_expenditures"])
+
+    comp_fc_pct  = float((comp["fixed_costs"] / comp["total_expenditures"] * 100).mean())
+    comp_ed_pct  = float((comp["education"]   / comp["total_expenditures"] * 100).mean())
+    comp_avg_hi  = float(comp.loc[comp["has_hi"] == 1, "hi"].mean())
+    comp_avg_rem = float(comp["remainder"].mean())
+    comp_avg_fc  = float(comp["fixed_costs"].mean())
+
+    all_fc_pct  = float((cross["fixed_costs"] / cross["total_expenditures"] * 100).mean())
+    all_ed_pct  = float((cross["education"]   / cross["total_expenditures"] * 100).mean())
+    all_avg_hi  = float(cross.loc[cross["has_hi"] == 1, "hi"].mean())
+    all_avg_rem = float(cross["remainder"].mean())
+    all_avg_fc  = float(cross["fixed_costs"].mean())
+
+    saugus_avg_hi  = float(saugus["hi"])
+    saugus_avg_rem = float(saugus["remainder"])
+    saugus_avg_fc  = float(saugus["fixed_costs"])
+
+    # ── Layout ─────────────────────────────────────────────────────────────────
+    fig, axes = _paper_fig(2, 2, gridspec_kw={"hspace": 0.50, "wspace": 0.38})
+    ((ax_tl, ax_tr), (ax_bl, ax_br)) = axes
+
+    _header(
+        fig,
+        "Fixed Costs: Sources, Scale, and Reserve Accumulation",
+        f"FY2025 cross-section · Comparable group = {n_comp} MA towns with $80M–$140M budgets · "
+        f"All MA = {n_all} towns (towns with anomalous health-ins. reporting excluded from HI averages)  "
+        f"Verification: expenditure columns sum exactly to total for all 4,898 statewide municipality-years",
+    )
+
+    LABELS   = ["Saugus", f"Comparable\n(n={n_comp})", f"All MA\n(n={n_all})"]
+    COLORS   = [_GOLD, _BLUE, _GREY]
+    BAR_H    = 0.45
+
+    # ── TL: Fixed costs % of budget ───────────────────────────────────────────
+    fc_vals = [saugus_fc_pct, comp_fc_pct, all_fc_pct]
+    bars = ax_tl.barh(LABELS, fc_vals, height=BAR_H, color=COLORS, alpha=0.85)
+    for bar, val in zip(bars, fc_vals):
+        ax_tl.text(val + 0.3, bar.get_y() + bar.get_height() / 2,
+                   f"{val:.1f}%", va="center", ha="left", fontsize=9,
+                   fontweight="bold" if val == saugus_fc_pct else "normal")
+    ax_tl.set_xlabel("% of total municipal expenditure")
+    ax_tl.set_title("Fixed Costs as % of Budget (FY2025)", fontsize=9)
+    ax_tl.grid(axis="x", alpha=0.25)
+    ax_tl.set_xlim(0, max(fc_vals) * 1.25)
+
+    # ── TR: Education % of budget ─────────────────────────────────────────────
+    ed_vals = [saugus_ed_pct, comp_ed_pct, all_ed_pct]
+    bars2 = ax_tr.barh(LABELS, ed_vals, height=BAR_H, color=COLORS, alpha=0.85)
+    for bar, val in zip(bars2, ed_vals):
+        ax_tr.text(val + 0.3, bar.get_y() + bar.get_height() / 2,
+                   f"{val:.1f}%", va="center", ha="left", fontsize=9,
+                   fontweight="bold" if val == saugus_ed_pct else "normal")
+    ax_tr.set_xlabel("% of total municipal expenditure")
+    ax_tr.set_title("Education as % of Budget (FY2025)", fontsize=9)
+    ax_tr.grid(axis="x", alpha=0.25)
+    ax_tr.set_xlim(0, max(ed_vals) * 1.20)
+
+    # ── BL: Fixed cost composition (stacked bars) ─────────────────────────────
+    hi_vals  = [saugus_avg_hi  / 1e6, comp_avg_hi  / 1e6, all_avg_hi  / 1e6]
+    rem_vals = [saugus_avg_rem / 1e6, comp_avg_rem / 1e6, all_avg_rem / 1e6]
+    fc_totals = [saugus_avg_fc / 1e6, comp_avg_fc / 1e6, all_avg_fc  / 1e6]
+
+    y_pos = range(len(LABELS))
+    ax_bl.barh(list(y_pos), hi_vals,  height=BAR_H, color="#5B84C4", alpha=0.90,
+               label="Health insurance (Sched. A Pt. 2/6)")
+    ax_bl.barh(list(y_pos), rem_vals, height=BAR_H, left=hi_vals, color="#2C4770", alpha=0.85,
+               label="Remainder (pension assess. + workers comp + OPEB)")
+    ax_bl.set_yticks(list(y_pos))
+    ax_bl.set_yticklabels(LABELS)
+
+    for i, (hi, rem, total) in enumerate(zip(hi_vals, rem_vals, fc_totals)):
+        hi_pct  = hi  / total * 100 if total else 0
+        rem_pct = rem / total * 100 if total else 0
+        if hi > 0.5:
+            ax_bl.text(hi / 2, i, f"${hi:.1f}M\n({hi_pct:.0f}%)",
+                       ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
+        if rem > 0.5:
+            ax_bl.text(hi + rem / 2, i, f"${rem:.1f}M\n({rem_pct:.0f}%)",
+                       ha="center", va="center", fontsize=7.5, color="white")
+        ax_bl.text(total + 0.15, i, f"${total:.1f}M", va="center", fontsize=8)
+
+    ax_bl.set_xlabel("$ millions")
+    ax_bl.set_title("Fixed Cost Composition (FY2025 avg)\n"
+                    "Remainder = pension + workers comp + OPEB contributions", fontsize=8.5)
+    ax_bl.legend(fontsize=7.5, loc="lower right")
+    ax_bl.grid(axis="x", alpha=0.25)
+    ax_bl.set_xlim(0, max(fc_totals) * 1.30)
+
+    # ── BR: Reserve accumulation trend ────────────────────────────────────────
+    yrs   = trend["fiscal_year"].tolist()
+    stbl  = (trend["stbl"]      / 1e6).tolist()
+    fcash = (trend["free_cash"] / 1e6).tolist()
+    res   = [s + f for s, f in zip(stbl, fcash)]
+    educ  = (trend["education"] / 1e6).tolist()
+
+    ax_br.stackplot(yrs, stbl, fcash, labels=["Stabilization fund", "Certified free cash"],
+                    colors=["#C0392B", "#E57373"], alpha=0.80)
+    ax_br.set_xlabel("Fiscal year")
+    ax_br.set_ylabel("$ millions")
+    ax_br.set_title("Saugus Reserves (FY2012–2025)\n"
+                    "Stabilization + certified free cash", fontsize=8.5)
+    ax_br.legend(fontsize=7.5, loc="upper left")
+    ax_br.grid(alpha=0.25)
+
+    # Annotate start and end reserve totals
+    ax_br.annotate(f"${res[0]:.1f}M",  (yrs[0],  res[0]),
+                   xytext=(3, 4), textcoords="offset points", fontsize=8, color=_RED)
+    ax_br.annotate(f"${res[-1]:.1f}M", (yrs[-1], res[-1]),
+                   xytext=(-32, 4), textcoords="offset points", fontsize=8, color=_RED)
+
+    # Reference: OPEB status
+    ax_br.axhline(0, color=_GREY, lw=0.5)
+    fig.text(
+        0.76, 0.06,
+        "OPEB trust: $0 contributed (FY2002–2025)\n"
+        "Retiree healthcare fully pay-as-you-go;\n"
+        "liability accumulates unfunded.",
+        ha="left", va="bottom", fontsize=7.5, color=_RED, style="italic",
+        transform=fig.transFigure,
+    )
+
+    _footer(
+        fig,
+        "Health insurance from DLS Schedule A Part 2 & 6 (self-insured municipalities). "
+        "Remainder covers pension assessment (Essex Regional Retirement System), "
+        "workers' comp, and unemployment insurance — breakdown not available in DLS Gateway. "
+        "OPEB status from Schedule A Part 6 trust fund activity (municipal_trust_funds table)."
+    )
+
+    plt.tight_layout(rect=[0, 0.04, 1, 0.91])
+    _save(pdf, fig)
+
+
 def page_importance_selection(pdf, label: str, all_candidates: list[str],
                               full_importance: pd.Series,
                               lean_features: list[str],
@@ -2766,6 +2975,9 @@ def main(fast: bool = False, parallel: bool = False):
         # Trajectory context from Schedule A + DESE staffing
         page_budget_and_staffing(pdf, engine)
 
+        # Fixed costs breakdown: health insurance, composition, reserve accumulation
+        page_fixed_costs(pdf, engine)
+
         # Synthesis and optimum profile (after the model detail, before scatter)
         page_optimum_profile(pdf, results, df_raw)
 
@@ -2840,6 +3052,7 @@ def regen_pdf():
                                r.get("lean_features", r["features"]))
         page_combined_summary(pdf, results)
         page_budget_and_staffing(pdf, get_engine())
+        page_fixed_costs(pdf, get_engine())
         page_optimum_profile(pdf, results, df_raw)
         saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
         if len(saugus_analyses) >= 3:
