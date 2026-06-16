@@ -1758,8 +1758,8 @@ def page_fixed_costs(pdf, engine) -> None:
     Panels:
       TL — Fixed costs as % of total budget (3-bar comparison)
       TR — Education as % of total budget (3-bar comparison)
-      BL — Fixed cost composition: health insurance vs. remainder (stacked)
-      BR — Saugus reserve accumulation FY2012–2025 ($ millions)
+      BL — Fixed cost 3-component composition: HI / OPEB trust contrib / Remainder
+      BR — Saugus OPEB trust contributions trend FY2012–2025 vs comparable avg
 
     Verification (FY2012–2025, all municipalities):
       • Expenditure column sums equal total_expenditures exactly for all
@@ -1776,21 +1776,22 @@ def page_fixed_costs(pdf, engine) -> None:
         cross = pd.read_sql(_text("""
             SELECT e.municipality,
                    e.fixed_costs, e.education, e.total_expenditures,
-                   COALESCE(h.health_insurance_expenditure, 0)         AS hi,
+                   COALESCE(h.health_insurance_expenditure, 0)              AS hi,
+                   COALESCE(tf.opeb_trust, 0)                               AS opeb_contrib,
+                   COALESCE(tf.workers_compensation, 0)                     AS wkcomp_contrib,
                    e.fixed_costs
-                       - COALESCE(h.health_insurance_expenditure, 0)   AS remainder,
-                   COALESCE(s.total_stabilization_fund_balance, 0)
-                       + COALESCE(f.cert_free_cash, 0)                 AS reserves,
+                       - COALESCE(h.health_insurance_expenditure, 0)
+                       - COALESCE(tf.opeb_trust, 0)
+                       - COALESCE(tf.workers_compensation, 0)               AS remainder,
                    CASE WHEN h.health_insurance_expenditure IS NOT NULL
                               AND h.health_insurance_expenditure > 0
-                        THEN 1 ELSE 0 END                              AS has_hi
+                        THEN 1 ELSE 0 END                                   AS has_hi
             FROM municipal_expenditures e
             LEFT JOIN municipal_health_insurance h
                 ON h.dor_code = e.dor_code AND h.fiscal_year = e.fiscal_year
-            LEFT JOIN municipal_stabilization s
-                ON s.dor_code = e.dor_code AND s.fiscal_year = e.fiscal_year
-            LEFT JOIN municipal_free_cash f
-                ON f.dor_code = e.dor_code AND f.fiscal_year = e.fiscal_year
+            LEFT JOIN municipal_trust_funds tf
+                ON tf.dor_code = e.dor_code AND tf.fiscal_year = e.fiscal_year
+               AND tf.amount_type = 'Revenues'
             WHERE e.fiscal_year = 2025
               AND e.total_expenditures > 0
               AND (h.health_insurance_expenditure IS NULL
@@ -1801,11 +1802,15 @@ def page_fixed_costs(pdf, engine) -> None:
             SELECT e.fiscal_year,
                    e.fixed_costs, e.education, e.total_expenditures,
                    COALESCE(h.health_insurance_expenditure, 0)             AS hi,
+                   COALESCE(tf.opeb_trust, 0)                              AS opeb_contrib,
                    COALESCE(s.total_stabilization_fund_balance, 0)         AS stbl,
                    COALESCE(f.cert_free_cash, 0)                           AS free_cash
             FROM municipal_expenditures e
             LEFT JOIN municipal_health_insurance h
                 ON h.dor_code = e.dor_code AND h.fiscal_year = e.fiscal_year
+            LEFT JOIN municipal_trust_funds tf
+                ON tf.dor_code = e.dor_code AND tf.fiscal_year = e.fiscal_year
+               AND tf.amount_type = 'Revenues'
             LEFT JOIN municipal_stabilization s
                 ON s.dor_code = e.dor_code AND s.fiscal_year = e.fiscal_year
             LEFT JOIN municipal_free_cash f
@@ -1813,6 +1818,21 @@ def page_fixed_costs(pdf, engine) -> None:
             WHERE lower(e.municipality) = 'saugus'
               AND e.fiscal_year BETWEEN 2012 AND 2025
             ORDER BY e.fiscal_year
+        """), conn)
+
+        # Comparable town OPEB contributions over time (for BR panel reference band)
+        comp_opeb_trend = pd.read_sql(_text("""
+            SELECT tf.fiscal_year,
+                   AVG(tf.opeb_trust) / 1e6 AS avg_opeb_m,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tf.opeb_trust) / 1e6 AS med_opeb_m
+            FROM municipal_trust_funds tf
+            JOIN municipal_expenditures me
+                ON me.dor_code = tf.dor_code AND me.fiscal_year = tf.fiscal_year
+            WHERE tf.amount_type = 'Revenues'
+              AND tf.fiscal_year BETWEEN 2012 AND 2025
+              AND me.total_expenditures BETWEEN 80000000 AND 140000000
+            GROUP BY tf.fiscal_year
+            ORDER BY tf.fiscal_year
         """), conn)
 
     # ── Derived groups ─────────────────────────────────────────────────────────
@@ -1829,30 +1849,32 @@ def page_fixed_costs(pdf, engine) -> None:
 
     comp_fc_pct  = float((comp["fixed_costs"] / comp["total_expenditures"] * 100).mean())
     comp_ed_pct  = float((comp["education"]   / comp["total_expenditures"] * 100).mean())
-    comp_avg_hi  = float(comp.loc[comp["has_hi"] == 1, "hi"].mean())
-    comp_avg_rem = float(comp["remainder"].mean())
-    comp_avg_fc  = float(comp["fixed_costs"].mean())
+    comp_avg_hi   = float(comp.loc[comp["has_hi"] == 1, "hi"].mean())
+    comp_avg_opeb = float(comp["opeb_contrib"].mean())
+    comp_avg_rem  = float(comp["remainder"].mean())
+    comp_avg_fc   = float(comp["fixed_costs"].mean())
 
     all_fc_pct  = float((cross["fixed_costs"] / cross["total_expenditures"] * 100).mean())
     all_ed_pct  = float((cross["education"]   / cross["total_expenditures"] * 100).mean())
-    all_avg_hi  = float(cross.loc[cross["has_hi"] == 1, "hi"].mean())
-    all_avg_rem = float(cross["remainder"].mean())
-    all_avg_fc  = float(cross["fixed_costs"].mean())
+    all_avg_hi   = float(cross.loc[cross["has_hi"] == 1, "hi"].mean())
+    all_avg_opeb = float(cross["opeb_contrib"].mean())
+    all_avg_rem  = float(cross["remainder"].mean())
+    all_avg_fc   = float(cross["fixed_costs"].mean())
 
-    saugus_avg_hi  = float(saugus["hi"])
-    saugus_avg_rem = float(saugus["remainder"])
-    saugus_avg_fc  = float(saugus["fixed_costs"])
+    saugus_hi   = float(saugus["hi"])
+    saugus_opeb = float(saugus["opeb_contrib"])
+    saugus_rem  = float(saugus["remainder"])
+    saugus_fc   = float(saugus["fixed_costs"])
 
     # ── Layout ─────────────────────────────────────────────────────────────────
-    fig, axes = _paper_fig(2, 2, gridspec_kw={"hspace": 0.50, "wspace": 0.38})
+    fig, axes = _paper_fig(2, 2, gridspec_kw={"hspace": 0.65, "wspace": 0.38})
     ((ax_tl, ax_tr), (ax_bl, ax_br)) = axes
 
     _header(
         fig,
-        "Fixed Costs: Sources, Scale, and Reserve Accumulation",
-        f"FY2025 cross-section · Comparable group = {n_comp} MA towns with $80M–$140M budgets · "
-        f"All MA = {n_all} towns (towns with anomalous health-ins. reporting excluded from HI averages)  "
-        f"Verification: expenditure columns sum exactly to total for all 4,898 statewide municipality-years",
+        "Fixed Costs: Sources, Scale, and OPEB Prefunding",
+        f"FY2025 · Comparable = {n_comp} MA towns ($80M–$140M) · All MA = {n_all} · "
+        f"Columns sum exactly to total for all 4,898 statewide municipality-years",
     )
 
     LABELS   = ["Saugus", f"Comparable\n(n={n_comp})", f"All MA\n(n={n_all})"]
@@ -1883,79 +1905,105 @@ def page_fixed_costs(pdf, engine) -> None:
     ax_tr.grid(axis="x", alpha=0.25)
     ax_tr.set_xlim(0, max(ed_vals) * 1.20)
 
-    # ── BL: Fixed cost composition (stacked bars) ─────────────────────────────
-    hi_vals  = [saugus_avg_hi  / 1e6, comp_avg_hi  / 1e6, all_avg_hi  / 1e6]
-    rem_vals = [saugus_avg_rem / 1e6, comp_avg_rem / 1e6, all_avg_rem / 1e6]
-    fc_totals = [saugus_avg_fc / 1e6, comp_avg_fc / 1e6, all_avg_fc  / 1e6]
+    # ── BL: Fixed cost composition — 3-component stacked bars ─────────────────
+    # Components: Health Insurance | OPEB trust contributions | Remainder
+    hi_vals   = [saugus_hi   / 1e6, comp_avg_hi   / 1e6, all_avg_hi   / 1e6]
+    opeb_vals = [saugus_opeb / 1e6, comp_avg_opeb / 1e6, all_avg_opeb / 1e6]
+    rem_vals  = [saugus_rem  / 1e6, comp_avg_rem  / 1e6, all_avg_rem  / 1e6]
+    fc_totals = [saugus_fc   / 1e6, comp_avg_fc   / 1e6, all_avg_fc   / 1e6]
 
-    y_pos = range(len(LABELS))
-    ax_bl.barh(list(y_pos), hi_vals,  height=BAR_H, color="#5B84C4", alpha=0.90,
-               label="Health insurance (Sched. A Pt. 2/6)")
-    ax_bl.barh(list(y_pos), rem_vals, height=BAR_H, left=hi_vals, color="#2C4770", alpha=0.85,
-               label="Remainder (pension assess. + workers comp + OPEB)")
-    ax_bl.set_yticks(list(y_pos))
+    C_HI   = "#5B84C4"   # lighter blue
+    C_OPEB = "#B7950B"   # gold
+    C_REM  = "#2C4770"   # dark blue
+
+    y_pos = list(range(len(LABELS)))
+    ax_bl.barh(y_pos, hi_vals,   height=BAR_H, color=C_HI,   alpha=0.90,
+               label="Health insurance")
+    ax_bl.barh(y_pos, opeb_vals, height=BAR_H, left=hi_vals, color=C_OPEB, alpha=0.90,
+               label="OPEB prefunding")
+    left2 = [h + o for h, o in zip(hi_vals, opeb_vals)]
+    ax_bl.barh(y_pos, rem_vals,  height=BAR_H, left=left2,   color=C_REM,  alpha=0.85,
+               label="Remainder (pension + other)")
+    ax_bl.set_yticks(y_pos)
     ax_bl.set_yticklabels(LABELS)
 
-    for i, (hi, rem, total) in enumerate(zip(hi_vals, rem_vals, fc_totals)):
-        hi_pct  = hi  / total * 100 if total else 0
-        rem_pct = rem / total * 100 if total else 0
-        if hi > 0.5:
+    for i, (hi, opeb, rem, total) in enumerate(zip(hi_vals, opeb_vals, rem_vals, fc_totals)):
+        hi_pct   = hi   / total * 100 if total else 0
+        opeb_pct = opeb / total * 100 if total else 0
+        rem_pct  = rem  / total * 100 if total else 0
+        if hi > 0.8:
             ax_bl.text(hi / 2, i, f"${hi:.1f}M\n({hi_pct:.0f}%)",
                        ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
+        # Only label OPEB inside the bar if it occupies ≥4% of bar width; otherwise annotate above
+        if opeb_pct >= 4:
+            lbl = f"${opeb:.1f}M\n({opeb_pct:.0f}%)"
+            ax_bl.text(hi + opeb / 2, i, lbl,
+                       ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+        elif opeb > 0:
+            opeb_str = f"${opeb*1000:.0f}K" if opeb < 1 else f"${opeb:.1f}M"
+            ax_bl.annotate(
+                f"OPEB {opeb_str}\n({opeb_pct:.1f}%)",
+                xy=(hi + opeb / 2, i), xytext=(hi + opeb / 2, i + 0.32),
+                fontsize=6.5, color=C_OPEB, ha="center",
+                arrowprops=dict(arrowstyle="-", color=C_OPEB, lw=0.6),
+            )
+        else:
+            ax_bl.text(hi + opeb + 0.05, i + 0.30, "OPEB $0",
+                       va="bottom", fontsize=6.5, color=C_OPEB, style="italic")
         if rem > 0.5:
-            ax_bl.text(hi + rem / 2, i, f"${rem:.1f}M\n({rem_pct:.0f}%)",
+            ax_bl.text(hi + opeb + rem / 2, i, f"${rem:.1f}M\n({rem_pct:.0f}%)",
                        ha="center", va="center", fontsize=7.5, color="white")
         ax_bl.text(total + 0.15, i, f"${total:.1f}M", va="center", fontsize=8)
 
     ax_bl.set_xlabel("$ millions")
-    ax_bl.set_title("Fixed Cost Composition (FY2025 avg)\n"
-                    "Remainder = pension + workers comp + OPEB contributions", fontsize=8.5)
-    ax_bl.legend(fontsize=7.5, loc="lower right")
+    ax_bl.set_title("Fixed Cost Composition (FY2025)\n"
+                    "HI  |  OPEB trust contributions  |  Remainder", fontsize=8.5)
+    ax_bl.legend(fontsize=7, loc="upper center", ncol=3,
+                 bbox_to_anchor=(0.45, -0.14), framealpha=0.90)
     ax_bl.grid(axis="x", alpha=0.25)
     ax_bl.set_xlim(0, max(fc_totals) * 1.30)
 
-    # ── BR: Reserve accumulation trend ────────────────────────────────────────
-    yrs   = trend["fiscal_year"].tolist()
-    stbl  = (trend["stbl"]      / 1e6).tolist()
-    fcash = (trend["free_cash"] / 1e6).tolist()
-    res   = [s + f for s, f in zip(stbl, fcash)]
-    educ  = (trend["education"] / 1e6).tolist()
+    # ── BR: OPEB trust contribution trend — Saugus vs comparable peers ────────
+    yrs_t      = trend["fiscal_year"].tolist()
+    saugus_opeb_t = (trend["opeb_contrib"] / 1e3).tolist()   # thousands
 
-    ax_br.stackplot(yrs, stbl, fcash, labels=["Stabilization fund", "Certified free cash"],
-                    colors=["#C0392B", "#E57373"], alpha=0.80)
+    comp_yrs  = comp_opeb_trend["fiscal_year"].tolist()
+    comp_avg_t = (comp_opeb_trend["avg_opeb_m"] * 1e3).tolist()  # back to thousands
+    comp_med_t = (comp_opeb_trend["med_opeb_m"] * 1e3).tolist()
+
+    ax_br.bar(yrs_t, saugus_opeb_t, color=_GOLD, alpha=0.85, label="Saugus OPEB contribution")
+    ax_br.plot(comp_yrs, comp_avg_t, color=_BLUE, lw=1.5, ls="--", label=f"Comparable avg (n={n_comp})")
+    ax_br.plot(comp_yrs, comp_med_t, color=_GREY, lw=1.2, ls=":", label="Comparable median")
+
     ax_br.set_xlabel("Fiscal year")
-    ax_br.set_ylabel("$ millions")
-    ax_br.set_title("Saugus Reserves (FY2012–2025)\n"
-                    "Stabilization + certified free cash", fontsize=8.5)
+    ax_br.set_ylabel("$ thousands")
+    ax_br.set_title("OPEB Trust Fund Contributions FY2012–2025\n"
+                    "Saugus vs. comparable towns ($80M–$140M budget)", fontsize=8.5)
     ax_br.legend(fontsize=7.5, loc="upper left")
     ax_br.grid(alpha=0.25)
+    ax_br.set_ylim(bottom=0)
+    ax_br.yaxis.set_major_formatter(
+        plt.FuncFormatter(lambda x, _: f"${x:,.0f}K")
+    )
 
-    # Annotate start and end reserve totals
-    ax_br.annotate(f"${res[0]:.1f}M",  (yrs[0],  res[0]),
-                   xytext=(3, 4), textcoords="offset points", fontsize=8, color=_RED)
-    ax_br.annotate(f"${res[-1]:.1f}M", (yrs[-1], res[-1]),
-                   xytext=(-32, 4), textcoords="offset points", fontsize=8, color=_RED)
-
-    # Reference: OPEB status
-    ax_br.axhline(0, color=_GREY, lw=0.5)
-    fig.text(
-        0.76, 0.06,
-        "OPEB trust: $0 contributed (FY2002–2025)\n"
-        "Retiree healthcare fully pay-as-you-go;\n"
-        "liability accumulates unfunded.",
-        ha="left", va="bottom", fontsize=7.5, color=_RED, style="italic",
-        transform=fig.transFigure,
+    # Annotate Saugus FY2025 bar
+    last_val = saugus_opeb_t[-1]
+    ax_br.annotate(
+        f"${last_val:,.0f}K\n(FY2025)",
+        (yrs_t[-1], last_val),
+        xytext=(-4, 6), textcoords="offset points",
+        fontsize=7.5, color=_GOLD, fontweight="bold", ha="right",
     )
 
     _footer(
         fig,
         "Health insurance from DLS Schedule A Part 2 & 6 (self-insured municipalities). "
-        "Remainder covers pension assessment (Essex Regional Retirement System), "
-        "workers' comp, and unemployment insurance — breakdown not available in DLS Gateway. "
-        "OPEB status from Schedule A Part 6 trust fund activity (municipal_trust_funds table)."
+        "OPEB & workers comp contributions from Schedule A Part 6 trust fund revenues (municipal_trust_funds, Revenues). "
+        "Remainder = pension assessment (Essex Regional Retirement System) + workers comp insurance + unemployment + other. "
+        "Saugus began OPEB prefunding in FY2016; FY2025 contribution = $352K vs. comparable-town avg ~$1.1M."
     )
 
-    plt.tight_layout(rect=[0, 0.04, 1, 0.91])
+    plt.tight_layout(rect=[0, 0.04, 1, 0.86])
     _save(pdf, fig)
 
 
