@@ -1291,13 +1291,34 @@ def page_synthesis(pdf, results: list[dict]):
     _header(fig, "What the Three Models Together Actually Say",
             "A synthesis of MCAS grades 3–8, Dropout Rate, and MCAS grade 10 ELA results")
 
-    # Pull the three model gaps
+    # Pull the model gaps (dynamic — always matches the regenerated run)
     model_data = {r["label"]: r for r in results}
     gaps = {}
     for r in results:
         s = r.get("saugus")
         if s:
             gaps[r["label"]] = s["gap_pp"]
+
+    def _gap(label: str) -> str:
+        """Signed gap in pp for a model label, e.g. '+6.7pp'. 'n/a' if missing."""
+        g = gaps.get(label)
+        return f"{g:+.1f}pp" if g is not None else "n/a"
+
+    def _feature_importance(label: str, feature: str):
+        """(importance, multiple-vs-next-highest) for a feature in a model,
+        pulled from that model's Exhibit-5 importance.  (None, None) if absent."""
+        fi = model_data.get(label, {}).get("full_importance")
+        if fi is None or feature not in fi.index:
+            return None, None
+        val = float(fi[feature])
+        ranked = fi.sort_values(ascending=False)
+        nxt = ranked.iloc[1] if len(ranked) > 1 else None
+        mult = (val / float(nxt)) if (nxt and float(nxt) != 0) else None
+        return val, mult
+
+    _abs_imp, _abs_mult = _feature_importance("Dropout Rate", "chronic_absenteeism_pct")
+    _abs_imp_s  = f"+{_abs_imp:.2f}" if _abs_imp is not None else "n/a"
+    _abs_mult_s = f"~{_abs_mult:.1f}×" if _abs_mult is not None else "the largest"
 
     y = 0.82
     def _section(title, color, lines):
@@ -1312,18 +1333,18 @@ def page_synthesis(pdf, results: list[dict]):
         y -= 0.01
 
     _section("Finding 1 — The schools are not failing academically.", _BLUE, [
-        "MCAS grades 3–8:  +6.7pp above demographic prediction  (clear overperformance)",
-        "MCAS grade 10 ELA:  +4.7pp above prediction  (well above target)",
+        f"MCAS grades 3–8:  {_gap('MCAS Grades 3–8')} above demographic prediction  (clear overperformance)",
+        f"MCAS grade 10 ELA:  {_gap('MCAS Grade 10 (ELA)')} above prediction  (well above target)",
         "On the mandatory universal test — taken by every student to graduate — Saugus",
         "performs well above what demographics predict.  There is no academic",
         "underperformance signal in the standardised test results.",
     ])
 
     _section("Finding 2 — The problem is retention and engagement, not instruction.", _RED, [
-        "Dropout rate: -0.7pp vs prediction — close to expectation (slightly fewer than predicted).",
+        f"Dropout rate: {_gap('Dropout Rate')} vs prediction — close to expectation (slightly fewer than predicted).",
         "Chronic absenteeism: 31.2% — 11pp above Rockland (nearest demographic peer).",
-        "Absenteeism is the strongest single feature in the Dropout model (importance +0.89,",
-        "~1.7× the next).  Students who stay and sit the test perform fine.  The question is",
+        f"Absenteeism is the strongest single feature in the Dropout model (importance {_abs_imp_s},",
+        f"{_abs_mult_s} the next).  Students who stay and sit the test perform fine.  The question is",
         "who is disengaging before they get there.",
     ])
 
