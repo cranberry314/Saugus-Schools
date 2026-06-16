@@ -11,24 +11,33 @@ Four models are built independently:
   3. MCAS Grade 10 (ELA) — high school academic readiness
   4. Education Budget Share — share of municipal budget allocated to schools
 
-For each model:
-  Step 1 — Greedy random forward selection:
-    Start with empty feature set.  Randomly draw a candidate feature from the
-    pool, run leave-one-out (LOO) RBP, keep the feature if average LOO
-    Pearson correlation improves, otherwise discard.  Continue until the pool
-    is exhausted.  This controls overfitting: a feature earns its place by
-    demonstrably improving out-of-sample prediction across all MA districts.
+For each model (see _run_one_model):
+  Step 1 — Task-anchored importance selection:
+    Run RBP once with ALL candidate features and Saugus as the prediction
+    task.  Per-feature variable importance (Exhibit 5 / footnote 12) measures
+    each feature's marginal contribution to the reliability of the *Saugus*
+    prediction, given all other features simultaneously.
 
-  Step 2 — Dropout test:
-    With the winning feature set, remove each feature one at a time and
-    re-run LOO.  If removing a feature improves or ties, it is flagged as
-    redundant.
+  Step 2 — Importance pruning:
+    Keep features with strictly positive importance (signal); drop features
+    with importance <= 0 (benign or harmful noise).  This yields the "lean set."
+    Note: because importance is per-task, the lean set is tuned to sharpen the
+    Saugus prediction specifically, not to be globally optimal across districts.
 
-  Step 3 — Saugus RBP:
-    Run the full RBP with Saugus as the prediction task and the winning
-    feature set.  Outputs: predicted value, residual, most/least relevant
-    comparison towns, and per-feature variable importance (Exhibit 5 of the
-    Kritzman paper).
+  Step 3 — Leave-one-out (LOO) validation:
+    Re-run RBP leave-one-out across all MA districts with the lean set and
+    report the Pearson r between predictions and actuals — tests whether the
+    Saugus-tuned set generalizes.
+
+  Step 4 — Saugus RBP:
+    Final RBP with Saugus as the prediction task (Saugus is excluded from its
+    own training set — no outcome leakage).  Outputs: predicted value, residual,
+    most/least relevant comparison towns, and per-feature variable importance
+    (Exhibit 5 of the Kritzman paper).
+
+  NOTE: greedy_forward_select / dropout_test (and the page_selection_history,
+  page_dropout_results, page_all_candidates renderers) are an earlier selection
+  approach retained for reference; they are NOT on the live path above.
 
 Output:  Reports/saugus_factor_analysis.pdf  (white-background paper format)
          Reports/saugus_factor_analysis_results.csv  (machine-readable summary)
@@ -454,6 +463,8 @@ def _loo_score(df: pd.DataFrame, features: list[str],
     return float(np.corrcoef(valid["actual"], valid["predicted"])[0, 1])
 
 
+# UNUSED — earlier selection approach, retained for reference.
+# Not on the live path; _run_one_model uses importance-based pruning instead.
 def greedy_forward_select(df: pd.DataFrame,
                            candidate_features: list[str],
                            target: str,
@@ -512,6 +523,8 @@ def greedy_forward_select(df: pd.DataFrame,
 # 3.  Dropout test
 # ─────────────────────────────────────────────────────────────────────────────
 
+# UNUSED — earlier selection approach, retained for reference.
+# Not on the live path; _run_one_model uses importance-based pruning instead.
 def dropout_test(df: pd.DataFrame,
                  selected_features: list[str],
                  target: str,
@@ -708,6 +721,7 @@ def page_title(pdf, models: list[dict]):
     _save(pdf, fig)
 
 
+# UNUSED — renders greedy_forward_select output; not called by the PDF build.
 def page_selection_history(pdf, label: str, history: list[dict]):
     """Show the greedy selection progress: score vs step, color-coded KEEP/skip."""
     fig, axes = _paper_fig(1, 2)
@@ -764,6 +778,7 @@ def page_selection_history(pdf, label: str, history: list[dict]):
     _save(pdf, fig)
 
 
+# UNUSED — renders dropout_test output; not called by the PDF build.
 def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
                          selected_features: list[str], base_score: float):
     fig, axes = _paper_fig(1, 1)
@@ -912,6 +927,7 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     _save(pdf, fig)
 
 
+# UNUSED — renders greedy selection history; not called by the PDF build.
 def page_all_candidates(pdf, label: str, history: list[dict],
                         selected_features: list[str]):
     """
@@ -2658,9 +2674,12 @@ def _run_one_model(args: tuple) -> dict:
 
 
 def main(fast: bool = False, parallel: bool = False):
-    # n_random controls grid density for importance estimation.
-    # Paper used 100 with K=14 (~7 appearances/feature in random cells).
-    # With K≈32 candidates, 1000 gives ~500 appearances/feature — reliable.
+    # n_random_cells = number of random grid CELLS sampled per prediction task,
+    # i.e. random (subset, threshold, censoring-mode) triples (see rbp._build_grid).
+    # The grid total is 1 + K + n_random_cells cells.  The paper used 100 (→ 115
+    # cells at K=14); we deliberately sample more here because our candidate pool
+    # is larger (K≈32), giving enough per-feature appearances for a stable
+    # Exhibit-5 importance estimate.
     n_random_cells = 30 if fast else 1000
     random_state   = 42
 

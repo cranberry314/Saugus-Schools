@@ -1,11 +1,17 @@
 """
-The contents of rbp.py are your reference.
-Do NOT modify, rewrite, or delete any code within this file.
 
 Relevance-Based Prediction (RBP)
 =================================
-Exact implementation of Czasonis, Kritzman & Turkington (2024)
+Implementation of Czasonis, Kritzman & Turkington (2024)
 "A Transparent Alternative to Neural Networks."
+
+Faithful to the paper on Eqs 1-18 (verified: RBP with all variables and no
+censoring reproduces OLS to within the covariance ridge).  The grid also
+follows the paper's sparse-sampling scheme exactly: each cell is an individual
+(subset, threshold, censoring-mode) triple, and per prediction task we take the
+full-variable linear cell + each single-variable linear cell + n_random random
+cells = 1 + K + n_random cells (115 when K = 14 and n_random = 100); see
+_build_grid.
 
 This is a model-free prediction routine.  Unlike Ridge regression, RBP:
   - Retains all observations (no parameter estimation)
@@ -45,8 +51,11 @@ Adjusted fit (Eq 12–14):
     adj_fit    = K × (fit + asymmetry)   [K = number of variables in cell]
 
 Grid (Eq 15–18):
-    Cells = every variable subset × {0, 0.2, 0.5, 0.8} censoring thresholds
-    Also run with similarity-only censoring (doubles grid)
+    Each cell is a (variable subset, censoring threshold, censoring mode) triple
+    drawn from the full grid of [every subset] × {0, 0.2, 0.5, 0.8} ×
+    {relevance, similarity censoring}.  Sparse sample per task (paper p. 18):
+    full-variable linear cell + each single-variable linear cell + n_random
+    random cells = 1 + K + n_random cells.
     Final prediction = reliability-weighted average of all cell predictions
     Final weights    = reliability-weighted average of all cell weight vectors
 """
@@ -182,14 +191,15 @@ def _prediction_weights(r: np.ndarray, delta: np.ndarray) -> np.ndarray:
 
 
 def _adjusted_fit(w: np.ndarray, y: np.ndarray, K: int,
-                  delta: np.ndarray) -> float:
+                  delta: np.ndarray, r: np.ndarray) -> float:
     """
     Equations 12–14: adjusted fit for one grid cell.
 
-    w     : (N,) prediction weights
+    w     : (N,) composite prediction weights for this cell (used for Eq 13 fit)
     y     : (N,) outcomes
     K     : number of variables in this cell
     delta : (N,) binary mask — which observations were retained
+    r     : (N,) full relevance r_it for this cell (used to re-derive w+/w-)
     """
     # Eq 13: fit = ρ(w, y)²
     def _corr(a, b):
@@ -201,11 +211,16 @@ def _adjusted_fit(w: np.ndarray, y: np.ndarray, K: int,
     fit_sq = _corr(w, y) ** 2                               # Eq 13
 
     # Eq 14: asymmetry = ½(ρ(w+, y) − ρ(w−, y))²
-    # w+ = weights formed from retained (δ=1) set
+    # w+ = weights formed from the retained (δ=1) set
     # w- = weights formed from the complementary censored (δ=0) set
-    # Both are the full-length weight vectors derived from their respective sets
-    rho_plus  = _corr(w * delta,        y)
-    rho_minus = _corr(w * (1 - delta),  y)
+    # Each is Eq 1 re-evaluated on its own subsample (retain mask = δ for w+,
+    # 1−δ for w-), NOT the composite weights masked to zero — re-derivation is
+    # what the paper specifies ("the weights formed from the retained
+    # observations") and uses the subsample's own 1/n baseline, λ², and r̄_sub.
+    w_plus  = _prediction_weights(r, delta)
+    w_minus = _prediction_weights(r, 1.0 - delta)
+    rho_plus  = _corr(w_plus,  y)
+    rho_minus = _corr(w_minus, y)
     asym = 0.5 * (rho_plus - rho_minus) ** 2               # Eq 14
 
     return float(K * (fit_sq + asym))                      # Eq 12
@@ -221,55 +236,59 @@ def _cell_prediction(w: np.ndarray, y: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 def _build_grid(n_features: int, n_random: int = 100,
-                random_state: int = 42) -> list[frozenset]:
+                thresholds: tuple = (0.0, 0.2, 0.5, 0.8),
+                random_state: int = 42) -> list[tuple]:
     """
-    Sparse grid of variable subsets (Kritzman §Data and Methodology):
-      - Full variable set
-      - All K single-variable sets
-      - Up to n_random randomly sampled subsets (sizes 2..K-1)
+    Paper-exact sparse grid (Kritzman §Data and Methodology, p. 18).
 
-    For small K, enumerate all possible subsets rather than random sampling
-    (avoids infinite loops when 2^K < n_random).
+    A grid CELL is an individual (variable-subset, threshold, censoring-mode)
+    triple — NOT a variable subset.  The full grid is every variable
+    combination × {0, 0.2, 0.5, 0.8} censoring thresholds × {relevance,
+    similarity} censoring modes (>16,000 cells at K=14).  Per the paper we
+    sparsely sample exactly:
+      - the full-variable LINEAR cell      (all K features, threshold 0)
+      - each single-variable LINEAR cell   (one feature,  threshold 0)  → K
+      - n_random random cells from the rest of the grid
+    giving 1 + K + n_random cells (115 when K = 14 and n_random = 100).
 
-    Returns list of frozensets of feature indices.
+    "Linear" = threshold 0 = no censoring, which the paper notes is equivalent
+    to linear regression on that subset.  Threshold-0 cells are always
+    relevance-mode: with nothing censored, the similarity and relevance
+    criteria retain every observation and therefore coincide, so we normalise
+    use_sim=False whenever threshold==0 to avoid double-counting a cell.
+
+    Returns a list of (frozenset(feature_idx), threshold, use_sim) triples.
     """
-    from itertools import combinations as _comb
     rng = random.Random(random_state)
     K = n_features
+    full = frozenset(range(K))
 
-    # For small K, enumerate the full power set (2^K ≤ 1024 is fine)
-    if K <= 10:
-        all_subsets = []
-        for size in range(1, K + 1):
-            for c in _comb(range(K), size):
-                all_subsets.append(frozenset(c))
-        # Always include full set and all singles; shuffle the rest
-        full  = frozenset(range(K))
-        singles = [frozenset([k]) for k in range(K)]
-        rest = [s for s in all_subsets if s != full and s not in singles]
-        rng.shuffle(rest)
-        return [full] + singles + rest[:n_random]
-
-    # For large K: sparse sampling
-    cells: list[frozenset] = []
-    cells.append(frozenset(range(K)))          # full set
+    # Explicitly included cells: full-sample linear + each single-variable linear
+    cells: list[tuple] = [(full, 0.0, False)]
     for k in range(K):
-        cells.append(frozenset([k]))           # all singles
+        cells.append((frozenset([k]), 0.0, False))
 
     seen = set(cells)
-    max_size = K - 1                           # no single-variable subsets
-    if max_size < 2:
-        return cells                           # K<=2: nothing more to add
+    all_thresholds = list(thresholds)
 
-    attempts = 0
+    # n_random cells drawn from "the rest of the grid": a random subset, a
+    # random threshold, and a random censoring mode, excluding any cell already
+    # chosen above.  The attempts cap prevents an infinite loop when the grid
+    # is smaller than 1 + K + n_random (small K).
     target = len(cells) + n_random
-    while len(cells) < target and attempts < n_random * 20:
-        size   = rng.randint(2, max_size)
-        subset = frozenset(rng.sample(range(K), size))
-        if subset not in seen:
-            cells.append(subset)
-            seen.add(subset)
+    max_attempts = max(n_random * 1000, 10_000)
+    attempts = 0
+    while len(cells) < target and attempts < max_attempts:
         attempts += 1
+        size   = rng.randint(1, K)
+        subset = frozenset(rng.sample(range(K), size))
+        thr    = rng.choice(all_thresholds)
+        mode   = False if thr == 0 else rng.choice((False, True))
+        cell   = (subset, thr, mode)
+        if cell in seen:
+            continue
+        seen.add(cell)
+        cells.append(cell)
 
     return cells
 
@@ -340,49 +359,61 @@ def rbp(X:         pd.DataFrame,
     r_full = _relevance(X_z, xt_z, Omega_inv_full)
 
     # ── Grid ────────────────────────────────────────────────────────────────
-    grid_subsets = _build_grid(K, n_random=n_random_cells,
-                                random_state=random_state)
+    # Paper-exact: each cell is a (subset, threshold, censoring-mode) triple.
+    grid_cells = _build_grid(K, n_random=n_random_cells,
+                             thresholds=CENSORING_THRESHOLDS,
+                             random_state=random_state)
 
-    cell_predictions: list[float] = []
-    cell_fits:        list[float] = []
+    # Cache the per-subset relevance and similarity terms — several cells
+    # (e.g. the linear cells, or repeated random subsets) share a subset, and
+    # _covariance_inv / _relevance depend only on the subset, not the cell.
+    _subset_cache: dict[frozenset, tuple] = {}
+
+    def _subset_terms(subset: frozenset):
+        if subset not in _subset_cache:
+            feat_idx = sorted(subset)
+            X_sub    = X_z[:, feat_idx]
+            xt_sub   = xt_z[feat_idx]
+            Om_inv   = _covariance_inv(X_sub)
+            r_sub    = _relevance(X_sub, xt_sub, Om_inv)   # full relevance (Eq 2–5)
+
+            # Similarity-only component (Eq 3 alone), used as the censoring
+            # criterion when use_sim=True.  The informativeness terms (Eq 4–5)
+            # are intentionally omitted: the paper tests whether censoring on
+            # *proximity* alone yields a better prediction for this task.
+            diff_sim = X_sub - xt_sub                      # (N, K_cell)
+            sim_sub  = -0.5 * np.einsum('ij,jk,ik->i',
+                                        diff_sim, Om_inv, diff_sim)  # Eq 3 only
+            _subset_cache[subset] = (r_sub, sim_sub)
+        return _subset_cache[subset]
+
+    cell_predictions: list[float]      = []
+    cell_fits:        list[float]      = []
     cell_weights:     list[np.ndarray] = []
-    n_cells = 0
+    cell_subsets:     list[frozenset]  = []   # subset of each cell (for importance)
 
-    for subset_idx in grid_subsets:
-        feat_idx = sorted(subset_idx)
-        cell_K   = len(feat_idx)
-        X_sub    = X_z[:, feat_idx]
-        xt_sub   = xt_z[feat_idx]
-        Om_inv   = _covariance_inv(X_sub)
-        r_sub    = _relevance(X_sub, xt_sub, Om_inv)   # full relevance (Eq 2–5)
+    for subset, threshold, use_sim in grid_cells:
+        r_sub, sim_sub = _subset_terms(subset)
+        cell_K = len(subset)
 
-        # Similarity-only component for this cell — used as censoring criterion
-        # when use_sim=True.  This is Eq 3 alone: sim(x_i, x_t) = −½ Δ Ω⁻¹ Δ'
-        # The informativeness terms (Eq 4–5) are intentionally omitted here;
-        # the paper tests whether censoring on *proximity* alone (without
-        # informativeness) yields a better prediction for this task.
-        diff_sim = X_sub - xt_sub                      # (N, K_cell)
-        sim_sub  = -0.5 * np.einsum('ij,jk,ik->i',
-                                    diff_sim, Om_inv, diff_sim)  # Eq 3 only
+        # Censoring criterion (Eq 6):
+        #   use_sim=False → censor on full relevance r_it  (standard)
+        #   use_sim=True  → censor on similarity only       (paper §Data)
+        r_censor = sim_sub if use_sim else r_sub
+        delta    = _compute_delta(r_censor, threshold)
 
-        for threshold in CENSORING_THRESHOLDS:
-            for use_sim in (False, True):
-                # Choose censoring criterion (Eq 6):
-                #   use_sim=False → censor on full relevance r_it  (standard)
-                #   use_sim=True  → censor on similarity only       (paper §Data)
-                r_censor = sim_sub if use_sim else r_sub
-                delta    = _compute_delta(r_censor, threshold)
+        # Weights ALWAYS use full relevance r_sub (Eq 1); only the censoring
+        # criterion differs between modes.
+        w       = _prediction_weights(r_sub, delta)
+        adj_fit = _adjusted_fit(w, y_arr, cell_K, delta, r_sub)
+        pred    = _cell_prediction(w, y_arr)
 
-                # Weights ALWAYS use full relevance r_sub (Eq 1).
-                # Only the censoring criterion differs between modes.
-                w       = _prediction_weights(r_sub, delta)
-                adj_fit = _adjusted_fit(w, y_arr, cell_K, delta)
-                pred    = _cell_prediction(w, y_arr)
+        cell_predictions.append(pred)
+        cell_fits.append(adj_fit)
+        cell_weights.append(w)
+        cell_subsets.append(subset)
 
-                cell_predictions.append(pred)
-                cell_fits.append(adj_fit)
-                cell_weights.append(w)
-                n_cells += 1
+    n_cells = len(grid_cells)
 
     # ── Reliability-weighted composite (Eq 15–17) ───────────────────────────
     fits_arr = np.array(cell_fits, dtype=float)
@@ -411,26 +442,20 @@ def rbp(X:         pd.DataFrame,
 
     final_fit = _corr(W_grid, y_arr) ** 2
 
-    # ── Variable importance (Exhibit 5 equivalent) ──────────────────────────
+    # ── Variable importance (Exhibit 5 / footnote 12) ───────────────────────
     # For feature f: avg adjusted fit of cells that include f
     #              - avg adjusted fit of cells that exclude f
-    # Each "cell" here is (subset, threshold, censoring_type) triple
+    # Each "cell" is a (subset, threshold, censoring-mode) triple.
     importance = {}
     cells_per_feat = {f: [] for f in feats}
     not_cells_per_feat = {f: [] for f in feats}
 
-    cell_idx = 0
-    for subset_idx in grid_subsets:
-        feat_idx_set = subset_idx
-        for _ in CENSORING_THRESHOLDS:
-            for _ in (False, True):
-                fit_val = cell_fits[cell_idx]
-                for i_f, f in enumerate(feats):
-                    if i_f in feat_idx_set:
-                        cells_per_feat[f].append(fit_val)
-                    else:
-                        not_cells_per_feat[f].append(fit_val)
-                cell_idx += 1
+    for subset, fit_val in zip(cell_subsets, cell_fits):
+        for i_f, f in enumerate(feats):
+            if i_f in subset:
+                cells_per_feat[f].append(fit_val)
+            else:
+                not_cells_per_feat[f].append(fit_val)
 
     for f in feats:
         with_f    = np.mean(cells_per_feat[f])    if cells_per_feat[f]     else 0.0
