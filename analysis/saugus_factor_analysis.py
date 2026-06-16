@@ -685,10 +685,10 @@ def page_title(pdf, models: list[dict]):
 
     lines = [
         "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
-        "RBP run once with ALL candidates — Exhibit 5 importance selects the lean feature set",
-        "Features with positive importance kept; ≤0 importance pruned (adds noise, not signal)",
+        "RBP run once with ALL candidates — Exhibit 5 importance scores each feature's effect",
+        "Per Kritzman fn. 12: positive = helps, ≈0 = benign (diversified away), <0 = harmful",
         "Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
-        "Leave-one-out LOO r validates lean feature set across all MA districts",
+        "Leave-one-out LOO r validates the retained feature set across all MA districts",
     ]
     for i, line in enumerate(lines):
         ax.text(0.1, 0.63 - i * 0.065, line, ha="left", va="center",
@@ -700,7 +700,7 @@ def page_title(pdf, models: list[dict]):
         (box_x0, 0.08), box_w, 0.24, boxstyle="round,pad=0.01",
         facecolor="#EEF2F8", edgecolor=_BLUE, linewidth=1.2,
         transform=ax.transAxes))
-    ax.text(0.5, 0.30, "Selected Feature Counts",
+    ax.text(0.5, 0.30, "Retained Feature Counts",
             ha="center", va="center", fontsize=10, fontweight="bold",
             color=_BLUE, transform=ax.transAxes)
     col_w = box_w / len(models)
@@ -712,7 +712,7 @@ def page_title(pdf, models: list[dict]):
                 color=_BL, fontweight="bold", transform=ax.transAxes)
         ax.text(xpos, 0.20, f"Candidates: {n_candidates} features",
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.16, f"Lean (imp > 0): {len(lean)} features",
+        ax.text(xpos, 0.16, f"Retained (imp > 0): {len(lean)} of {n_candidates}",
                 ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
         ax.text(xpos, 0.11, f"LOO r = {m['loo_score']:+.3f}",
                 ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
@@ -1312,19 +1312,19 @@ def page_synthesis(pdf, results: list[dict]):
         y -= 0.01
 
     _section("Finding 1 — The schools are not failing academically.", _BLUE, [
-        "MCAS grades 3–8:  +0.5pp above demographic prediction  (on target)",
-        "MCAS grade 10 ELA:  +1.1pp above prediction  (slightly above target)",
+        "MCAS grades 3–8:  +6.7pp above demographic prediction  (clear overperformance)",
+        "MCAS grade 10 ELA:  +4.7pp above prediction  (well above target)",
         "On the mandatory universal test — taken by every student to graduate — Saugus",
-        "performs at or slightly above what demographics predict.  There is no academic",
+        "performs well above what demographics predict.  There is no academic",
         "underperformance signal in the standardised test results.",
     ])
 
     _section("Finding 2 — The problem is retention and engagement, not instruction.", _RED, [
-        "Dropout rate: -0.8pp below prediction (slightly more dropout than expected).",
+        "Dropout rate: -0.7pp vs prediction — close to expectation (slightly fewer than predicted).",
         "Chronic absenteeism: 31.2% — 11pp above Rockland (nearest demographic peer).",
-        "Absenteeism is the single feature that earns its place in the Dropout model",
-        "with importance +0.87 — more than twice the next feature.  Students who stay",
-        "and sit the test perform fine.  The question is who is disengaging before they get there.",
+        "Absenteeism is the strongest single feature in the Dropout model (importance +0.89,",
+        "~1.7× the next).  Students who stay and sit the test perform fine.  The question is",
+        "who is disengaging before they get there.",
     ])
 
     _section("Finding 3 — Saugus has the fiscal capacity to act.", _GREEN, [
@@ -1737,7 +1737,8 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     Exhibit 5 view over ALL candidate features, plus a univariate-LOO comparison.
 
     Left  — horizontal bar chart: variable importance for every candidate.
-             Green = positive importance (kept), red/grey = pruned.
+             Per Kritzman fn. 12: green = positive (helps, retained),
+             grey ≈ 0 (benign noise, diversified away), red < 0 (harmful).
     Right — scatter: Exhibit 5 importance (y) vs univariate LOO r (x).
              Quadrants reveal whether the two metrics agree.
              Agreement = feature is independently AND combinatorially useful.
@@ -1749,9 +1750,10 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     lean_set = set(lean_features)
     n_pruned = len(all_candidates) - len(lean_features)
 
-    _header(fig, f"Factor Selection via Variable Importance: {label}",
+    _header(fig, f"Variable Importance (Exhibit 5): {label}",
             f"{len(all_candidates)} candidates  ·  n_random=1000  ·  "
-            f"{len(lean_features)} features kept (importance > 0)  ·  {n_pruned} pruned")
+            f"{len(lean_features)} retained (imp > 0)  ·  {n_pruned} with imp ≤ 0 "
+            f"(benign or harmful)")
 
     # ── Left: importance bar chart for all candidates ────────────────────────
     imp_vals   = full_importance.reindex(all_candidates).fillna(0)
@@ -1768,7 +1770,8 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     ax_l.axvline(0, color=_BL, lw=1.0)
     ax_l.set_xlabel("Variable importance  (avg fit with feature − avg fit without)")
     ax_l.set_title("All Candidates — Variable Importance\n"
-                   "Green = kept (importance > 0)  ·  Grey/red = pruned", fontsize=9)
+                   "Green = helps (>0)  ·  Grey ≈ 0 benign  ·  Red < 0 harmful",
+                   fontsize=9)
     ax_l.grid(axis="x", alpha=0.25)
 
     for bar, (feat, val) in zip(ax_l.patches, zip(feats, values)):
@@ -1779,8 +1782,8 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
                       fontsize=6.5, color=_GREEN, fontweight="bold",
                       ha="left" if val >= 0 else "right")
 
-    kept_p = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Kept ({len(lean_features)})")
-    drop_p = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Pruned ({n_pruned})")
+    kept_p = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Retained, imp>0 ({len(lean_features)})")
+    drop_p = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Dropped, imp≤0 ({n_pruned})")
     ax_l.legend(handles=[kept_p, drop_p], loc="lower right", fontsize=8)
 
     # ── Right: scatter — Exhibit 5 importance vs univariate LOO r ───────────
