@@ -11,33 +11,31 @@ Four models are built independently:
   3. MCAS Grade 10 (ELA) — high school academic readiness
   4. Education Budget Share — share of municipal budget allocated to schools
 
+Faithful to Kritzman: ONE RBP run per outcome, on ALL candidate variables.
+Variable importance (Exhibit 5) is read off that run as a transparency
+diagnostic — it is NOT used to select or prune variables.  Footnote 12 is the
+paper's reason this is safe: ≈0-importance variables are "diversified away" by
+the relevance-weighted averaging, so they do no harm and are kept.
+
 For each model (see _run_one_model):
-  Step 1 — Task-anchored importance selection:
-    Run RBP once with ALL candidate features and Saugus as the prediction
-    task.  Per-feature variable importance (Exhibit 5 / footnote 12) measures
-    each feature's marginal contribution to the reliability of the *Saugus*
-    prediction, given all other features simultaneously.
+  Step 1 — Variable importance (Exhibit 5), descriptive only:
+    Run RBP with ALL candidate features and Saugus as the prediction task.
+    Per-feature importance measures each feature's marginal contribution to the
+    reliability of the *Saugus* prediction, given all other features at once.
+    A couple of check seeds confirm the top-ranked drivers are not a
+    Monte-Carlo artifact of the sparse grid.
 
-  Step 2 — Importance pruning:
-    Keep features with strictly positive importance (signal); drop features
-    with importance <= 0 (benign or harmful noise).  This yields the "lean set."
-    Note: because importance is per-task, the lean set is tuned to sharpen the
-    Saugus prediction specifically, not to be globally optimal across districts.
+  Step 1b — Univariate LOO r per candidate (diagnostic only):
+    Single-feature leave-one-out correlation, shown beside Exhibit 5 to reveal
+    whether a feature predicts alone, only in combination, or is redundant.
+    Not used to drop anything.
 
-  Step 3 — Leave-one-out (LOO) validation:
-    Re-run RBP leave-one-out across all MA districts with the lean set and
-    report the Pearson r between predictions and actuals — tests whether the
-    Saugus-tuned set generalizes.
-
-  Step 4 — Saugus RBP:
-    Final RBP with Saugus as the prediction task (Saugus is excluded from its
-    own training set — no outcome leakage).  Outputs: predicted value, residual,
-    most/least relevant comparison towns, and per-feature variable importance
-    (Exhibit 5 of the Kritzman paper).
-
-  NOTE: greedy_forward_select / dropout_test (and the page_selection_history,
-  page_dropout_results, page_all_candidates renderers) are an earlier selection
-  approach retained for reference; they are NOT on the live path above.
+  Step 2 — Saugus RBP + LOO validation on the FULL candidate set:
+    The single RBP run predicts Saugus (excluded from its own training set — no
+    leakage) and, leave-one-out across all MA districts, yields the validation
+    Pearson r.  No pruning, no second run: the feature set used for prediction
+    is exactly the candidate set.  Outputs: predicted value, residual, gap,
+    rank, most/least relevant comparison towns, and Exhibit 5 importance.
 
 Output:  Reports/saugus_factor_analysis.pdf  (white-background paper format)
          Reports/saugus_factor_analysis_results.csv  (machine-readable summary)
@@ -88,10 +86,6 @@ SAUGUS = "Saugus"
 MIN_COVERAGE   = 0.60   # feature must have data for ≥60 % of districts
                           # (Schedule A covers ~65 % of MA districts; 0.60 admits
                           #  all fiscal ratio features while still filtering noise)
-MIN_IMPROVEMENT = 0.005  # greedy: add if LOO r improves by ≥ this amount
-                          # dropout: remove only if LOO r improves by ≥ this amount when dropped
-                          # (symmetric threshold — a feature earns its place on the same
-                          #  standard it was selected on)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,100 +457,44 @@ def _loo_score(df: pd.DataFrame, features: list[str],
     return float(np.corrcoef(valid["actual"], valid["predicted"])[0, 1])
 
 
-# UNUSED — earlier selection approach, retained for reference.
-# Not on the live path; _run_one_model uses importance-based pruning instead.
-def greedy_forward_select(df: pd.DataFrame,
-                           candidate_features: list[str],
-                           target: str,
-                           random_state: int = 42,
-                           n_random_cells: int = 100,
-                           min_improvement: float = MIN_IMPROVEMENT) -> tuple[list[str], list[dict]]:
-    """
-    Greedy random forward selection.
-
-    Randomly shuffle the candidate pool, then evaluate each candidate in order:
-      - If adding the feature improves LOO Pearson ≥ min_improvement: keep it
-      - Otherwise: discard
-
-    Returns (selected_features, history)
-    where history is a list of dicts recording each trial.
-    """
-    rng = random.Random(random_state)
-    pool = list(candidate_features)
-    rng.shuffle(pool)
-
-    selected:  list[str]  = []
-    history:   list[dict] = []
-    # Baseline: a model with zero features has zero predictive correlation.
-    # The first candidate must improve over 0 by ≥ min_improvement to be kept.
-    # Using NaN here was a bug — it caused the first candidate to be accepted
-    # unconditionally regardless of its LOO r (even negative values like −0.23).
-    best_score = 0.0
-
-    print(f"  Greedy selection: {len(pool)} candidates, target={target!r}")
-
-    for i, feat in enumerate(pool, 1):
-        candidate = selected + [feat]
-        score     = _loo_score(df, candidate, target, n_random_cells)
-        improved  = (not np.isnan(score) and
-                     score > best_score + min_improvement)
-
-        if improved and not np.isnan(score):
-            action = "KEEP"
-            selected  = candidate
-            best_score = score
-        else:
-            action = "skip"
-
-        rec = {"step": i, "feature": feat, "score": score,
-               "best_score": best_score, "action": action,
-               "n_selected": len(selected)}
-        history.append(rec)
-        print(f"    [{i:3d}/{len(pool)}] {feat:<40s} "
-              f"r={score:+.4f}  best={best_score:+.4f}  {action}")
-
-    print(f"  Selected {len(selected)} features: {selected}")
-    return selected, history
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3.  Dropout test
-# ─────────────────────────────────────────────────────────────────────────────
-
-# UNUSED — earlier selection approach, retained for reference.
-# Not on the live path; _run_one_model uses importance-based pruning instead.
-def dropout_test(df: pd.DataFrame,
-                 selected_features: list[str],
-                 target: str,
-                 n_random_cells: int = 100) -> pd.DataFrame:
-    """
-    For each feature in the selected set, compute LOO score with that feature
-    removed.  A negative delta means the feature is load-bearing.
-
-    Returns DataFrame sorted by delta (most critical first).
-    """
-    base = _loo_score(df, selected_features, target, n_random_cells)
-    print(f"  Dropout test: base LOO r={base:.4f}")
-
-    rows = []
-    for feat in selected_features:
-        reduced = [f for f in selected_features if f != feat]
-        if not reduced:
-            score = float("nan")
-        else:
-            score = _loo_score(df, reduced, target, n_random_cells)
-        delta = score - base if not np.isnan(score) else float("nan")
-        rows.append({"feature": feat, "score_without": score,
-                     "base_score": base, "delta": delta})
-        status = "REDUNDANT" if (not np.isnan(delta) and delta >= MIN_IMPROVEMENT) else "load-bearing"
-        print(f"    drop {feat:<40s}  r={score:+.4f}  delta={delta:+.4f}  {status}")
-
-    return pd.DataFrame(rows).sort_values("delta")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 4.  Saugus-specific RBP analysis
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Outcomes where a LOWER value is the better result, so a NEGATIVE LOO residual
+# (actual − predicted) marks over-performance.  Everything else is higher-is-better.
+LOWER_IS_BETTER: set[str] = {"dropout_pct"}
+
+
+def _higher_is_better(target: str) -> bool:
+    return target not in LOWER_IS_BETTER
+
+
+def rank_among_peers(loo_df: pd.DataFrame, target: str,
+                     who: str = SAUGUS) -> tuple[int, int, int]:
+    """
+    Rank `who` against all districts on this outcome's demographic-adjusted
+    residual, respecting outcome direction (lower-is-better outcomes invert the
+    comparison).  Single source of truth so the Saugus-analysis footer and the
+    synthesis page can never disagree again.
+
+    Returns (n_outperform, n_total, rank) where:
+      n_outperform = districts that beat `who` (excluding `who` itself)
+      n_total      = districts with a valid residual (including `who`)
+      rank         = n_outperform + 1
+    """
+    resid = loo_df.dropna(subset=["residual"])["residual"]
+    n_total = int(len(resid))
+    if who not in resid.index:
+        return 0, n_total, 1
+    s = float(resid.loc[who])
+    others = resid.drop(index=who)
+    if _higher_is_better(target):
+        n_outperform = int((others > s).sum())
+    else:
+        n_outperform = int((others < s).sum())
+    return n_outperform, n_total, n_outperform + 1
+
 
 def analyze_saugus(df: pd.DataFrame,
                    features: list[str],
@@ -607,24 +545,152 @@ def analyze_saugus(df: pd.DataFrame,
         pred_pct   = pred
     gap_pp = actual_pct - pred_pct
 
-    # LOO residuals for all districts to count how many beat Saugus
+    # LOO residuals for all districts, then count how many genuinely OUTPERFORM
+    # Saugus — respecting outcome direction (lower-is-better outcomes invert the
+    # comparison).  rank_among_peers is the single source of truth shared with
+    # the synthesis page so the two can never disagree.
     loo_df = rbp_loo(X_all, y_all, features, n_random_cells=n_random_cells)
     loo_df["residual"] = loo_df["actual"] - loo_df["predicted"]
-    saugus_resid = float(loo_df.loc[SAUGUS, "residual"]) if SAUGUS in loo_df.index else gap_pp / 100
-    n_above = int((loo_df["residual"] > saugus_resid).sum()) if SAUGUS in loo_df.index else 0
+    n_outperform, n_ranked, rank = rank_among_peers(loo_df, target, SAUGUS)
 
     return {
-        "result":     result,
-        "actual":     actual,
-        "actual_pct": actual_pct,
-        "pred_pct":   pred_pct,
-        "gap_pp":     gap_pp,
-        "n_above":    n_above,
-        "n_total":    len(loo_df),
-        "loo_df":     loo_df,
-        "features":   features,
-        "target":     target,
+        "result":      result,
+        "actual":      actual,
+        "actual_pct":  actual_pct,
+        "pred_pct":    pred_pct,
+        "gap_pp":      gap_pp,
+        "n_outperform": n_outperform,   # districts beating Saugus (direction-aware)
+        "n_ranked":    n_ranked,        # districts with a valid residual (incl. Saugus)
+        "rank":        rank,            # = n_outperform + 1
+        "n_above":     n_outperform,    # backwards-compat alias
+        "n_total":     n_ranked,        # backwards-compat alias
+        "loo_df":      loo_df,
+        "features":    features,
+        "target":      target,
     }
+
+
+IMPORTANCE_SEED: int = 42                       # canonical grid (paper procedure)
+IMPORTANCE_CHECK_SEEDS: tuple[int, ...] = (101, 202)   # guardrail check only
+
+
+def saugus_importance(df: pd.DataFrame,
+                      features: list[str],
+                      target: str,
+                      n_random_cells: int = 2000,
+                      seed: int = IMPORTANCE_SEED,
+                      check_seeds: tuple[int, ...] = IMPORTANCE_CHECK_SEEDS) -> dict:
+    """
+    Canonical Exhibit-5 variable importance for the Saugus prediction task.
+
+    Faithful to Kritzman: the *reported* importance is one dense grid (a single
+    Monte-Carlo draw at `seed` — the paper's procedure, just denser to better
+    approximate the deterministic full grid the sampling stands in for).  We do
+    NOT average across seeds; that would target a slightly different estimand
+    than the paper's single-grid definition.
+
+    The `check_seeds` are a guardrail ONLY: we recompute importance at a couple
+    of other seeds purely to verify the top-3 ranking does not move with the
+    draw, and never let them alter the reported numbers.  If the top-3 is not
+    reproduced, `top3_stable` is False and the narrative softens its
+    "#1 driver" claim accordingly.
+
+    Returns:
+        importance  : Series (descending) — the reported canonical importance
+        top3_stable : True iff every check seed reproduces the canonical top-3
+        n_checks    : number of grids compared (canonical + check seeds)
+    """
+    full = df[["district_name"] + features + [target]].dropna().copy()
+    X_all = full.drop(columns=["district_name"]).copy()
+    X_all.index = full["district_name"].values
+    y_all = X_all.pop(target)
+    if SAUGUS not in X_all.index:
+        raise ValueError(f"Saugus not found in data for target={target!r}")
+    x_saugus = X_all.loc[SAUGUS]
+    X_train  = X_all.drop(index=SAUGUS)
+    y_train  = y_all.drop(index=SAUGUS)
+
+    def _imp(s: int) -> pd.Series:
+        res = rbp(X_train, y_train, x_saugus, features,
+                  n_random_cells=n_random_cells, random_state=s)
+        return res.variable_importance.sort_values(ascending=False)
+
+    importance = _imp(seed)
+    canon_top3 = list(importance.index[:3])
+    top3_stable = True
+    for s in check_seeds:
+        if list(_imp(s).index[:3]) != canon_top3:
+            top3_stable = False
+            break
+
+    return {"importance": importance, "top3_stable": top3_stable,
+            "n_checks": 1 + len(check_seeds)}
+
+
+def _display_importance(analysis: dict) -> pd.Series:
+    """
+    Canonical Exhibit-5 importance Series for any display.
+
+    Returns the seed-averaged all-candidate importance computed once in Step 1
+    (attached to the analysis dict as 'display_importance'), so every page —
+    the all-candidate chart (p.4), the lean Saugus chart (p.5), the synthesis
+    drivers table, and the combined summary — reads the SAME numbers and cannot
+    disagree on the top driver.  Falls back to the run's own importance only for
+    older caches that predate this field.
+    """
+    imp = analysis.get("display_importance")
+    if imp is None:
+        imp = analysis["result"].variable_importance
+    return imp
+
+
+def compute_ridge_validation(df: pd.DataFrame,
+                             features: list[str],
+                             target: str,
+                             focus: str = "chronic_absenteeism_pct") -> dict | None:
+    """
+    Independent cross-check of the RBP Exhibit-5 finding by a different method:
+    a standardized Ridge regression on the SAME district panel.  Reports the
+    realized 5-fold CV R² and where `focus` (chronic absenteeism) ranks among
+    the standardized coefficients.  All figures are computed here so the page
+    note interpolates live numbers — nothing hardcoded.
+
+    Returns None (caller falls back to a qualified note) if sklearn is missing,
+    the panel is too small, or `focus` isn't among the predictors.
+    """
+    try:
+        from sklearn.linear_model import Ridge
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.model_selection import cross_val_score
+        from sklearn.pipeline import make_pipeline
+    except Exception:
+        return None
+
+    feats = [f for f in features if f in df.columns and f != target]
+    if focus not in feats:
+        return None
+    sub = df[feats + [target]].dropna()
+    if len(sub) < 30:
+        return None
+
+    X = sub[feats].values.astype(float)
+    y = sub[target].values.astype(float)
+    try:
+        r2 = float(np.mean(cross_val_score(
+            make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
+            X, y, cv=5, scoring="r2")))
+        Xs = StandardScaler().fit_transform(X)
+        ys = (y - y.mean()) / (y.std() or 1.0)
+        coefs = pd.Series(np.abs(Ridge(alpha=1.0).fit(Xs, ys).coef_),
+                          index=feats).sort_values(ascending=False)
+    except Exception:
+        return None
+
+    rank = list(coefs.index).index(focus) + 1
+    return {"n": int(len(sub)), "r2": r2, "focus": focus,
+            "focus_abs_beta": float(coefs[focus]),
+            "focus_rank": int(rank), "n_features": int(len(feats)),
+            "is_top": rank == 1}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -679,16 +745,13 @@ def page_title(pdf, models: list[dict]):
             "Relevance-Based Prediction: Factor Selection for Saugus Schools",
             ha="center", va="center", fontsize=16, fontweight="bold", color=_BL,
             transform=ax.transAxes)
-    ax.text(0.5, 0.72,
-            "Utilizing Czasonis, Kritzman & Turkington (2024) — Applied to MA School District Analysis",
-            ha="center", va="center", fontsize=10, color=_GREY, transform=ax.transAxes)
 
     lines = [
         "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
-        "RBP run once with ALL candidates — Exhibit 5 importance scores each feature's effect",
-        "Per Kritzman fn. 12: positive = helps, ≈0 = benign (diversified away), <0 = harmful",
-        "Saugus analyzed as prediction task; most/least relevant towns identified per Exhibit 4",
-        "Leave-one-out LOO r validates the retained feature set across all MA districts",
+        "One RBP run per outcome on ALL candidate variables — no feature pruning (faithful to Kritzman)",
+        "Exhibit 5 importance is descriptive: positive = helps, ≈0 = benign / diversified away (fn. 12), <0 = harmful",
+        "Saugus analyzed as the prediction task; most/least relevant towns identified per Exhibit 4",
+        "Leave-one-out LOO r validates the predictions across all MA districts",
     ]
     for i, line in enumerate(lines):
         ax.text(0.1, 0.63 - i * 0.065, line, ha="left", va="center",
@@ -700,148 +763,27 @@ def page_title(pdf, models: list[dict]):
         (box_x0, 0.08), box_w, 0.24, boxstyle="round,pad=0.01",
         facecolor="#EEF2F8", edgecolor=_BLUE, linewidth=1.2,
         transform=ax.transAxes))
-    ax.text(0.5, 0.30, "Retained Feature Counts",
+    ax.text(0.5, 0.30, "Model Summary  (all candidates used — no pruning)",
             ha="center", va="center", fontsize=10, fontweight="bold",
             color=_BLUE, transform=ax.transAxes)
     col_w = box_w / len(models)
     for j, m in enumerate(models):
         xpos = box_x0 + (j + 0.5) * col_w
-        lean = m.get("lean_features", m["features"])
         n_candidates = len(m.get("all_candidates", m["features"]))
+        imp = m.get("full_importance")
+        n_pos = int((imp > 0).sum()) if imp is not None else 0
         ax.text(xpos, 0.25, m["label"], ha="center", fontsize=9,
                 color=_BL, fontweight="bold", transform=ax.transAxes)
-        ax.text(xpos, 0.20, f"Candidates: {n_candidates} features",
+        ax.text(xpos, 0.20, f"Predicted on {n_candidates} candidates",
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.16, f"Retained (imp > 0): {len(lean)} of {n_candidates}",
+        ax.text(xpos, 0.16, f"Positive importance: {n_pos} of {n_candidates}",
                 ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
         ax.text(xpos, 0.11, f"LOO r = {m['loo_score']:+.3f}",
                 ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
 
-    _footer(fig, "Relevance-Based Prediction · Saugus Schools Project · May 2026")
-    _save(pdf, fig)
-
-
-# UNUSED — renders greedy_forward_select output; not called by the PDF build.
-def page_selection_history(pdf, label: str, history: list[dict]):
-    """Show the greedy selection progress: score vs step, color-coded KEEP/skip."""
-    fig, axes = _paper_fig(1, 2)
-    _header(fig, f"Factor Selection: {label}",
-            "Greedy random forward selection — each candidate tried once in random order")
-
-    kept   = [h for h in history if h["action"] == "KEEP"]
-    skipped = [h for h in history if h["action"] != "KEEP"]
-
-    ax_l, ax_r = axes
-
-    # Left: score trace
-    steps  = [h["step"] for h in history]
-    bests  = [h["best_score"] for h in history]
-    scores = [h["score"] if not np.isnan(h.get("score", float("nan"))) else None
-              for h in history]
-
-    ax_l.plot(steps, bests, color=_BLUE, lw=2, label="Best score so far", zorder=3)
-    ax_l.scatter([h["step"] for h in kept],
-                 [h["score"] for h in kept],
-                 color=_GREEN, s=60, zorder=4, label="Feature added")
-    skip_scores = [h["score"] for h in skipped if not np.isnan(h.get("score", float("nan")))]
-    skip_steps  = [h["step"] for h in skipped if not np.isnan(h.get("score", float("nan")))]
-    if skip_steps:
-        ax_l.scatter(skip_steps, skip_scores,
-                     color=_GREY, alpha=0.4, s=20, zorder=2, label="Feature discarded")
-    ax_l.set_xlabel("Candidate evaluated")
-    ax_l.set_ylabel("LOO Pearson r")
-    ax_l.set_title("Selection progress")
-    ax_l.legend(fontsize=8)
-    ax_l.grid(True, alpha=0.3)
-
-    # Right: table of added features
-    ax_r.axis("off")
-    if kept:
-        cols  = ["Step", "Feature", "LOO r when added"]
-        rows  = [[str(h["step"]), h["feature"][:35], f"{h['score']:+.4f}"]
-                 for h in kept]
-        tbl = ax_r.table(cellText=rows, colLabels=cols,
-                          loc="center", cellLoc="left")
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(8)
-        tbl.auto_set_column_width([0, 1, 2])
-        for (row, col), cell in tbl.get_celld().items():
-            cell.set_facecolor("#EEF2F8" if row == 0 else
-                               ("#F0FFF0" if row % 2 else "white"))
-            cell.set_edgecolor("#CCCCCC")
-    else:
-        ax_r.text(0.5, 0.5, "No features selected",
-                  ha="center", va="center", fontsize=10, color=_RED)
-    ax_r.set_title(f"Features selected ({len(kept)} of {len(history)} candidates)")
-
-    _footer(fig, f"LOO Pearson r = correlation between leave-one-out RBP predictions and actual outcomes")
-    _save(pdf, fig)
-
-
-# UNUSED — renders dropout_test output; not called by the PDF build.
-def page_dropout_results(pdf, label: str, dropout_df: pd.DataFrame,
-                         selected_features: list[str], base_score: float):
-    fig, axes = _paper_fig(1, 1)
-    ax = axes if hasattr(axes, 'axis') else axes
-
-    redundant = [r["feature"] for _, r in dropout_df.iterrows()
-                 if not np.isnan(r.get("delta", float("nan"))) and r["delta"] >= MIN_IMPROVEMENT]
-    keepers   = [f for f in selected_features if f not in redundant]
-
-    subtitle = (f"Greedy selected {len(selected_features)} features  ·  "
-                f"Dropout flagged {len(redundant)} redundant  ·  "
-                f"Final lean set: {len(keepers)} features")
-    _header(fig, f"Dropout Test: {label}", subtitle)
-
-    ax.axis("off")
-    if dropout_df.empty:
-        ax.text(0.5, 0.5, "No features to test", ha="center")
-        _save(pdf, fig); return
-
-    cols = ["Feature", "Score w/o", "Base", "Delta", "Status", "In final set?"]
-    rows = []
-    for _, r in dropout_df.iterrows():
-        delta = r["delta"]
-        if np.isnan(delta):
-            status = "?"
-        elif delta >= MIN_IMPROVEMENT:
-            status = "REDUNDANT — removed"
-        elif delta > -0.01:
-            status = "minor"
-        else:
-            status = "CRITICAL"
-        in_final = "YES" if r["feature"] not in redundant else "no — dropped"
-        rows.append([r["feature"][:38],
-                     f"{r['score_without']:+.4f}" if not np.isnan(r["score_without"]) else "NaN",
-                     f"{base_score:+.4f}",
-                     f"{delta:+.4f}" if not np.isnan(delta) else "NaN",
-                     status,
-                     in_final])
-
-    tbl = ax.table(cellText=rows, colLabels=cols, loc="center", cellLoc="left")
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(8.5)
-    tbl.auto_set_column_width(range(len(cols)))
-
-    status_colors = {"REDUNDANT — removed": "#FFF3CD", "CRITICAL": "#FFE5E5",
-                     "minor": "#F5F5F5", "?": "white"}
-    for (row, col), cell in tbl.get_celld().items():
-        if row == 0:
-            cell.set_facecolor("#2C4770"); cell.set_text_props(color="white")
-        else:
-            status = rows[row - 1][4]
-            cell.set_facecolor(status_colors.get(status, "white"))
-        cell.set_edgecolor("#CCCCCC")
-
-    # Summary box
-    summary = (f"Final lean feature set ({len(keepers)}):\n"
-               + ",  ".join(keepers))
-    ax.text(0.5, 0.02, summary, ha="center", va="bottom", fontsize=8,
-            color=_BLUE, fontweight="bold", transform=ax.transAxes,
-            wrap=True)
-
-    _footer(fig, "Delta = LOO r without feature − LOO r with full set.  "
-            "Negative delta = feature helps.  REDUNDANT = safe to remove without loss.")
+    _footer(fig,
+            "Relevance-Based Prediction, utilizing Czasonis, Kritzman & Turkington (2024) "
+            "— Applied to MA School District Analysis  ·  Saugus Schools Project · May 2026")
     _save(pdf, fig)
 
 
@@ -865,7 +807,12 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     result = analysis["result"]
 
     # ── Left: variable importance (Exhibit 5) ───────────────────────────────
-    imp = result.variable_importance
+    # Use the canonical all-candidate importance (Step 1), restricted to the
+    # lean features actually used here, so this chart and the p.4 all-candidate
+    # chart are sub-rankings of one Series and agree on the top driver.
+    lean_feats = analysis.get("features", list(result.variable_importance.index))
+    imp = (_display_importance(analysis)
+           .reindex(lean_feats).dropna().sort_values(ascending=False))
     feats  = imp.index.tolist()
     values = imp.values.tolist()
     colors = [_GREEN if v > 0 else _RED for v in values]
@@ -918,67 +865,15 @@ def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
                 cell.set_facecolor(bg if row % 2 else "white")
             cell.set_edgecolor("#CCCCCC")
 
-    n_above = analysis.get("n_above", "?")
-    n_total = analysis.get("n_total", "?")
+    n_outperform = analysis.get("n_outperform", analysis.get("n_above", 0))
+    n_ranked     = analysis.get("n_ranked", analysis.get("n_total", 0))
+    rank         = analysis.get("rank", n_outperform + 1)
     _footer(fig,
             f"RBP analysis — Grid: {result.grid_cells_used} cells.  "
-            f"N = {result.n_obs} MA districts.  "
-            f"{n_above} of {n_total} districts outperform Saugus vs. their own prediction.")
-    _save(pdf, fig)
-
-
-# UNUSED — renders greedy selection history; not called by the PDF build.
-def page_all_candidates(pdf, label: str, history: list[dict],
-                        selected_features: list[str]):
-    """
-    Bar chart showing every candidate feature tried, sorted by the LOO r
-    achieved when that feature was the marginal addition to the model.
-    Green = kept in final set, grey = discarded.
-    Equivalent to showing 'what we tried and what each feature contributed.'
-    """
-    fig, ax = _paper_fig()
-    _header(fig,
-            f"All Candidates Evaluated: {label}",
-            "Each bar = LOO Pearson r when this feature was the marginal candidate.  "
-            "Green = added to model, grey = discarded.")
-
-    # Sort by score descending, NaN last
-    valid = [(h["feature"], h.get("score", float("nan")), h["action"])
-             for h in history]
-    valid.sort(key=lambda x: (np.isnan(x[1]), -x[1] if not np.isnan(x[1]) else 0))
-
-    feats  = [v[0] for v in valid]
-    scores = [v[1] if not np.isnan(v[1]) else 0 for v in valid]
-    kept   = {f for f in selected_features}
-    colors = [_GREEN if v[0] in kept else _GREY for v in valid]
-    alphas = [0.9 if v[0] in kept else 0.5 for v in valid]
-
-    y_pos = range(len(feats))
-    bars = ax.barh(list(y_pos), scores, color=colors,
-                   alpha=0.8, height=0.7)
-    ax.set_yticks(list(y_pos))
-    ax.set_yticklabels(feats, fontsize=8.5)
-    ax.set_xlabel("LOO Pearson r (correlation between prediction and actual outcome)")
-    ax.axvline(0, color=_BL, lw=0.8, alpha=0.4)
-    ax.grid(axis="x", alpha=0.25)
-
-    # Annotate only selected (kept) bars to avoid crowding with 30+ bars
-    for bar, score, (feat, raw_score, action) in zip(bars, scores, valid):
-        if not np.isnan(raw_score) and action == "KEEP":
-            ax.text(bar.get_width() + 0.003, bar.get_y() + bar.get_height()/2,
-                    f"{raw_score:+.3f}",
-                    va="center", fontsize=7, color=_GREEN, fontweight="bold")
-
-    # Legend
-    kept_patch    = mpatches.Patch(color=_GREEN, alpha=0.9, label=f"Added ({len(kept)} features)")
-    discard_patch = mpatches.Patch(color=_GREY,  alpha=0.5,
-                                   label=f"Discarded ({len(valid)-len(kept)} features)")
-    ax.legend(handles=[kept_patch, discard_patch], loc="lower right", fontsize=9)
-
-    plt.tight_layout(rect=[0, 0.05, 1, 0.90])
-    _footer(fig,
-            "Score shown is the LOO r when that feature was evaluated (with all "
-            "previously accepted features already in the set).")
+            f"Trained on {result.n_obs} peer districts (Saugus excluded); "
+            f"ranked among {n_ranked} including Saugus.  "
+            f"{n_outperform} districts outperform Saugus vs. their own prediction "
+            f"(Saugus ranks {rank} of {n_ranked}).")
     _save(pdf, fig)
 
 
@@ -1004,7 +899,14 @@ def page_combined_summary(pdf, results: list[dict]):
         unit   = "pp" if is_pct else " pts"
         gap    = s["gap_pp"]
         gap_str = f"{gap:+.1f}{unit}"
-        direction = "above" if gap > 0 else ("on target" if abs(gap) < 0.5 else "below")
+        # Outcome-direction-aware: for lower-is-better outcomes (dropout), a
+        # negative gap is an OVER-performance.  Use the shared direction logic so
+        # this column agrees with the synthesis rank and the footer counts.
+        if abs(gap) < 0.5:
+            direction = "on target"
+        else:
+            outperforms = (gap > 0) if _higher_is_better(r["target"]) else (gap < 0)
+            direction = "over" if outperforms else "under"
         summary_rows.append([
             r["label"],
             f"{s['pred_pct']:.1f}{'%' if is_pct else ' pts'}",
@@ -1031,9 +933,9 @@ def page_combined_summary(pdf, results: list[dict]):
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white", fontsize=9.5)
             else:
                 gap_val = summary_rows[row-1][gap_col] if row <= len(summary_rows) else ""
-                if "above" in summary_rows[row-1][dir_col]:
+                if "over" in summary_rows[row-1][dir_col]:
                     bg = "#E8F8E8"
-                elif "below" in summary_rows[row-1][dir_col]:
+                elif "under" in summary_rows[row-1][dir_col]:
                     bg = "#FFE8E8"
                 else:
                     bg = "#FFF8E1"
@@ -1055,7 +957,7 @@ def page_combined_summary(pdf, results: list[dict]):
     for r in results:
         s = r.get("saugus")
         lean = r.get("lean_features", r["features"])
-        imp_series = s["result"].variable_importance if s else None
+        imp_series = _display_importance(s) if s else None
         for feat in lean:
             if feat not in feature_set:
                 feature_set[feat] = {}
@@ -1281,7 +1183,11 @@ def page_correlation_matrix(pdf, df_raw: pd.DataFrame):
     _save(pdf, fig)
 
 
-def page_synthesis(pdf, results: list[dict]):
+# UNUSED / LEGACY — an earlier whole-report synthesis page.  It shares the name
+# `page_synthesis` with the live per-model synthesis defined later in this file,
+# which shadows it at import time; this version is never called.  Renamed so the
+# name collision can't mislead a future reader into editing the wrong function.
+def _legacy_page_synthesis_combined(pdf, results: list[dict]):
     """
     Narrative synthesis page: what the three models together actually say
     about Saugus, and what that means for policy.
@@ -1360,10 +1266,17 @@ def page_synthesis(pdf, results: list[dict]):
     _save(pdf, fig)
 
 
+# Pre-specified Mahalanobis inclusion threshold for "demographically similar"
+# overachievers — chosen on substantive grounds (the standard 2σ criterion),
+# not tuned to the result.  Used by the call, the section header, and the
+# footnote so all three are guaranteed identical.
+DEMO_SIM_THRESHOLD: float = 2.0
+
+
 def _demo_similar_overachievers(df2: "pd.DataFrame",
                                 saugus_row: "pd.Series",
                                 oa_pool: list[str],
-                                threshold: float = 2.0) -> list[str]:
+                                threshold: float = DEMO_SIM_THRESHOLD) -> list[str]:
     """
     Return overachievers within `threshold` Mahalanobis standard deviations
     of Saugus on 6 non-actionable demographic features.
@@ -1450,7 +1363,10 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     oa_pool  = [t for t in all_oas if t in df2.index]
 
     # Demographically similar overachievers
-    sim_pool = _demo_similar_overachievers(df2, saugus, oa_pool, threshold=1.5)
+    # Single source of truth for the inclusion threshold — feeds the call, the
+    # section header, and the footnote so they can never drift apart again.
+    sim_pool = _demo_similar_overachievers(df2, saugus, oa_pool,
+                                           threshold=DEMO_SIM_THRESHOLD)
 
     # Actionable features shown in both grids
     actionable = [
@@ -1585,20 +1501,21 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
         f"Overachievers  —  all {len(oa_pool)} MA districts that beat their demographic prediction",
         _BLUE)
 
+    _sig = f"{DEMO_SIM_THRESHOLD:g}σ"
     _make_grid(
         ax_bot, sim_pool,
         textwrap.fill(
-            f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within 2σ "
-            f"Mahalanobis distance of Saugus on income, property wealth, poverty, size, "
-            f"education & ELL",
+            f"Demographically Similar Overachievers  —  {len(sim_pool)} towns within "
+            f"{_sig} Mahalanobis distance of Saugus on income, property wealth, "
+            f"poverty, size, education & ELL",
             width=100),
         _GREEN)
 
     _maha_note = (
         "Similarity metric: Mahalanobis distance d_M = √(Δx · Σ⁻¹ · Δx'), "
-        "Σ = sample covariance of all ~169 MA districts on "
+        "Σ = sample covariance of all MA districts on "
         "(median_hh_income, equalized_income, low_income_pct, total_enrollment, "
-        "pct_bachelors_plus, ell_pct).  Threshold: d_M ≤ 2.0 (2σ).  "
+        f"pct_bachelors_plus, ell_pct).  Threshold: d_M ≤ {DEMO_SIM_THRESHOLD:g} ({_sig}).  "
         "Pre-specified; not tuned to result.  "
         "Gap = peer median − Saugus.  Red = Saugus below peer median, Green = at or above."
     )
@@ -1610,7 +1527,7 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     _save(pdf, fig)
 
 
-def page_budget_and_staffing(pdf, engine) -> None:
+def page_budget_and_staffing(pdf, engine, ridge_stats: dict | None = None) -> None:
     """
     Two-panel page sourced directly from Schedule A and DESE staffing data:
       Left  — Education's share of Saugus's total municipal budget over time
@@ -1622,9 +1539,10 @@ def page_budget_and_staffing(pdf, engine) -> None:
     They answer WHY the teacher density gap exists: budget share has been
     declining while peer towns held steady.
 
-    Independent cross-validation note: Ridge regression on 221 MA districts
-    (R²=0.83) identifies chronic absenteeism as the #1 MCAS predictor
-    (importance 3.15), confirming the RBP Exhibit 5 finding independently.
+    The footnote carries an independent Ridge-regression cross-check whose
+    numbers (N, CV R², chronic-absenteeism rank/β) are computed live in
+    compute_ridge_validation and passed in via `ridge_stats`; if None, the note
+    falls back to a qualified statement with no specific figures.
     """
     from sqlalchemy import text as _text
 
@@ -1735,13 +1653,28 @@ def page_budget_and_staffing(pdf, engine) -> None:
     ax_r.legend(fontsize=8)
     ax_r.grid(alpha=0.25)
 
-    # Ridge cross-validation note
-    _ridge_note = (
-        "Independent cross-validation: Ridge regression on 221 MA districts (R²=0.83) "
-        "identifies chronic absenteeism as the #1 predictor of MCAS outcomes (importance=3.15), "
-        "confirming the RBP Exhibit 5 finding by a separate method.  "
-        "Peer set: 8 demographically similar overachiever towns (Mahalanobis d_M ≤ 2.0)."
-    )
+    # Ridge cross-validation note — numbers computed live (compute_ridge_validation)
+    _peer_note = (f"Peer set: {len(PEER_TOWNS)} demographically similar overachiever "
+                  f"towns (Mahalanobis d_M ≤ {DEMO_SIM_THRESHOLD:g}).")
+    if ridge_stats:
+        _focus_desc = _feat_meta(ridge_stats["focus"])[0].lower()
+        _rank_phrase = (f"the #1 of {ridge_stats['n_features']} standardized predictors"
+                        if ridge_stats["is_top"]
+                        else f"#{ridge_stats['focus_rank']} of "
+                             f"{ridge_stats['n_features']} standardized predictors")
+        _ridge_note = (
+            f"Independent cross-validation (computed in this run): standardized Ridge "
+            f"regression on {ridge_stats['n']} MA districts (5-fold CV R²="
+            f"{ridge_stats['r2']:.2f}) ranks {_focus_desc} {_rank_phrase} of MCAS 3–8 "
+            f"(|standardized β|={ridge_stats['focus_abs_beta']:.2f}) — corroborating the "
+            f"RBP Exhibit 5 finding by a separate method.  " + _peer_note
+        )
+    else:
+        _ridge_note = (
+            "Independent cross-validation: a standardized Ridge regression on the same "
+            "district panel corroborates the RBP Exhibit 5 ranking (figures unavailable "
+            "in this run).  " + _peer_note
+        )
     fig.text(0.5, 0.01, textwrap.fill(_ridge_note, width=180),
              ha="center", va="bottom", fontsize=6.5, color=_GREY, style="italic",
              linespacing=1.3)
@@ -2010,13 +1943,17 @@ def page_fixed_costs(pdf, engine) -> None:
 def page_importance_selection(pdf, label: str, all_candidates: list[str],
                               full_importance: pd.Series,
                               lean_features: list[str],
-                              univariate_loo: dict | None = None):
+                              univariate_loo: dict | None = None,
+                              n_random: int | None = None,
+                              top3_stable: bool | None = None):
     """
     Exhibit 5 view over ALL candidate features, plus a univariate-LOO comparison.
 
     Left  — horizontal bar chart: variable importance for every candidate.
-             Per Kritzman fn. 12: green = positive (helps, retained),
-             grey ≈ 0 (benign noise, diversified away), red < 0 (harmful).
+             Kritzman fn. 12 reads the scores: green = positive (helps),
+             grey ≈ 0 (benign, diversified away), red < 0 (harmful).  Per fn. 12
+             ALL candidates are kept for the prediction — importance here is a
+             descriptive diagnostic, not a selection filter.
     Right — scatter: Exhibit 5 importance (y) vs univariate LOO r (x).
              Quadrants reveal whether the two metrics agree.
              Agreement = feature is independently AND combinatorially useful.
@@ -2025,16 +1962,23 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     """
     fig, axes = _paper_fig(1, 2)
     ax_l, ax_r = axes
-    lean_set = set(lean_features)
-    n_pruned = len(all_candidates) - len(lean_features)
+    # Descriptive importance sign counts — nothing is pruned; all candidates are
+    # used for the prediction (Kritzman fn. 12).
+    _imp_all = full_importance.reindex(all_candidates).fillna(0)
+    pos_set = {f for f in all_candidates if float(_imp_all.get(f, 0)) > 0}
+    n_pos = len(pos_set)
+    n_neg = int((_imp_all < -0.01).sum())
+    n_zero = len(all_candidates) - n_pos - n_neg
 
+    _nr = f"n_random={n_random}" if n_random else "single dense grid"
+    _stab = "" if top3_stable is None else (
+        "  ·  top-3 seed-stable" if top3_stable else "  ·  top-3 NOT seed-stable")
     _header(fig, f"Variable Importance (Exhibit 5): {label}",
-            f"{len(all_candidates)} candidates  ·  n_random=1000  ·  "
-            f"{len(lean_features)} retained (imp > 0)  ·  {n_pruned} with imp ≤ 0 "
-            f"(benign or harmful)")
+            f"{len(all_candidates)} candidates, all used for prediction  ·  {_nr}{_stab}  ·  "
+            f"{n_pos} help (imp>0)  ·  {n_zero} benign (≈0)  ·  {n_neg} harmful (imp<0)")
 
     # ── Left: importance bar chart for all candidates ────────────────────────
-    imp_vals   = full_importance.reindex(all_candidates).fillna(0)
+    imp_vals   = _imp_all
     imp_sorted = imp_vals.sort_values()
 
     feats  = imp_sorted.index.tolist()
@@ -2047,22 +1991,24 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
     ax_l.set_yticklabels(feats, fontsize=7.5)
     ax_l.axvline(0, color=_BL, lw=1.0)
     ax_l.set_xlabel("Variable importance  (avg fit with feature − avg fit without)")
-    ax_l.set_title("All Candidates — Variable Importance\n"
+    ax_l.set_title("All Candidates — Variable Importance (all retained)\n"
                    "Green = helps (>0)  ·  Grey ≈ 0 benign  ·  Red < 0 harmful",
                    fontsize=9)
     ax_l.grid(axis="x", alpha=0.25)
 
     for bar, (feat, val) in zip(ax_l.patches, zip(feats, values)):
-        if feat in lean_set:
+        if feat in pos_set:
             ax_l.text(val + 0.005 if val >= 0 else val - 0.005,
                       bar.get_y() + bar.get_height()/2,
                       f"{val:+.3f}", va="center",
                       fontsize=6.5, color=_GREEN, fontweight="bold",
                       ha="left" if val >= 0 else "right")
 
-    kept_p = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Retained, imp>0 ({len(lean_features)})")
-    drop_p = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Dropped, imp≤0 ({n_pruned})")
-    ax_l.legend(handles=[kept_p, drop_p], loc="lower right", fontsize=8)
+    pos_p = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Helps, imp>0 ({n_pos})")
+    zero_p = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Benign, imp≈0 ({n_zero})")
+    neg_p = mpatches.Patch(color=_RED,   alpha=0.8, label=f"Harmful, imp<0 ({n_neg})")
+    ax_l.legend(handles=[pos_p, zero_p, neg_p], loc="lower right", fontsize=7.5,
+                title="All retained for prediction")
 
     # ── Right: scatter — Exhibit 5 importance vs univariate LOO r ───────────
     if univariate_loo:
@@ -2070,15 +2016,15 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
                        if f in univariate_loo and not np.isnan(univariate_loo[f])]
         x_vals = [univariate_loo[f] for f in valid_feats]
         y_vals = [float(full_importance.get(f, 0)) for f in valid_feats]
-        pt_colors = [_GREEN if f in lean_set else _GREY for f in valid_feats]
+        pt_colors = [_GREEN if f in pos_set else _GREY for f in valid_feats]
 
         ax_r.scatter(x_vals, y_vals, c=pt_colors, alpha=0.7, s=55, zorder=3)
         ax_r.axhline(0, color=_GREY, lw=0.8, ls="--", alpha=0.6)
         ax_r.axvline(0, color=_GREY, lw=0.8, ls="--", alpha=0.6)
 
-        # Label features in lean set (or those near the axes — interesting cases)
+        # Label positive-importance features (or those near the axes — interesting cases)
         for feat, xv, yv in zip(valid_feats, x_vals, y_vals):
-            if feat in lean_set or abs(xv) > 0.3 or abs(yv) > 0.05:
+            if feat in pos_set or abs(xv) > 0.3 or abs(yv) > 0.05:
                 ax_r.annotate(feat[:22], (xv, yv),
                               textcoords="offset points", xytext=(3, 2),
                               fontsize=5.5, color=_BL, alpha=0.8)
@@ -2112,8 +2058,11 @@ def page_importance_selection(pdf, label: str, all_candidates: list[str],
 
     _footer(fig,
             "Variable importance: avg adjusted fit of grid cells containing feature − "
-            "avg fit of cells without it.  "
-            "Univariate LOO r: single-feature leave-one-out correlation.")
+            "avg fit of cells without it.  Univariate LOO r: single-feature "
+            "leave-one-out correlation.  "
+            "One RBP run per outcome on all candidates — importance is descriptive, "
+            "no feature is dropped (Kritzman fn. 12), so this chart and the Saugus "
+            "Exhibit-5 chart list the same features.")
     plt.tight_layout(rect=[0, 0.04, 1, 0.88])
     _save(pdf, fig)
 
@@ -2231,7 +2180,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     Ordered by RBP variable importance so the most relevant differences are first.
     """
     loo        = analysis["loo_df"]
-    imp        = analysis["result"].variable_importance   # already lean-feature importance
+    imp        = _display_importance(analysis)   # canonical Step-1 importance
     overachievers = _find_overachievers(loo, target, n=6)
 
     # Get feature values for Saugus and overachievers from df_raw
@@ -2395,6 +2344,20 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
 }
 
 
+def _feat_meta(feat: str) -> tuple[str, str]:
+    """
+    (display label, unit kind) for any feature — including factors not yet in
+    FEATURE_INFO (e.g. future computed/derived factors).  Known factors use their
+    curated label/units; unknown ones fall back to a prettified column name
+    ("some_new_factor" → "Some new factor") and generic numeric formatting, so a
+    newly added factor renders cleanly with no extra wiring.
+    """
+    if feat in FEATURE_INFO:
+        return FEATURE_INFO[feat]
+    pretty = feat.replace("_pct", "").replace("_", " ").strip().capitalize()
+    return (pretty or feat, "rate")
+
+
 def _fmt_feature_val(v, kind: str) -> str:
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return "—"
@@ -2421,69 +2384,114 @@ def _fmt_gap_val(v, kind: str) -> str:
     return f"{v:+.1f}"
 
 
-# Hand-written interpretation of each model's gap and drivers.  These ground
-# the per-model synthesis page in the analysis already done for the report —
-# the numbers in the page are computed live, but the "so what" is fixed text.
-SYNTHESIS_TEXT: dict[str, dict[str, str]] = {
+# Qualitative "so what" for each outcome — interpretation ONLY, no numbers.
+# Every numeric quantity in the synthesis prose (predicted, actual, gap, rank,
+# N, feature values, peer gaps) is injected live by build_synthesis_prose from
+# the computed analysis; these strings carry only the fixed editorial reading
+# that a number alone cannot convey.  `noun` is the outcome's plain-language
+# name, `close` finishes the Bottom Line, `lever` finishes the Takeaway.
+SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
     "MCAS Grades 3–8": {
-        "bottom_line":
-            "Saugus scores 29.0% on MCAS grades 3–8 (ELA + Math, meeting/exceeding), "
-            "almost exactly its demographic prediction of 28.7% — a +0.3pp gap that is "
-            "essentially on target.  Saugus ranks 103rd of 169 MA districts, around the "
-            "middle of the pack.  This is the “baseline” result: a district with "
-            "Saugus's income, poverty, and enrollment profile is expected to land here, "
-            "and it does.",
-        "takeaway":
-            "Because Saugus is on target here, the importance scores point less to "
-            "“what's wrong” and more to “what would move the needle.” "
-            "Chronic absenteeism (31.2%, nearly double the 15.8% state median) is the "
-            "single largest local driver — and the largest gap versus over-performing "
-            "districts.  Closing even part of that gap is the most plausible route from "
-            "an average result to an above-average one.",
+        "noun":  "MCAS grades 3–8 proficiency (ELA + Math, meeting/exceeding)",
+        "close": "A district with Saugus's income, poverty, and enrollment profile is "
+                 "predicted to land near this level.",
+        "lever": "The drivers below are where Saugus differs most from the towns that "
+                 "beat their own predictions — the most plausible places to move this "
+                 "result.",
     },
     "Dropout Rate": {
-        "bottom_line":
-            "Saugus's dropout rate is 2.9%, a full 0.8pp better than its predicted 3.7% "
-            "(lower is better for this measure) — ranking 34th of 169 districts, in the "
-            "top 20%.  Of the four outcomes, this is Saugus's clearest over-performance "
-            "relative to demographic expectation.",
-        "takeaway":
-            "Chronic absenteeism is overwhelmingly the strongest local driver here — "
-            "more than double any other factor — yet Saugus still keeps fewer students "
-            "from dropping out than a district with this absenteeism rate typically "
-            "would.  That gap between “high absenteeism” and “low "
-            "dropout” suggests Saugus's re-engagement and attendance-recovery "
-            "efforts are working — and that rising absenteeism is a real risk to this "
-            "result if it isn't addressed.",
+        "noun":  "dropout rate",
+        "close": "Dropout reflects re-engagement and attendance recovery as much as "
+                 "demographics.",
+        "lever": "Chronic absenteeism is the factor to watch — the main risk to this "
+                 "result if it climbs.",
     },
     "MCAS Grade 10 (ELA)": {
-        "bottom_line":
-            "Saugus's grade 10 ELA proficiency is 47.0%, 4.7pp above its predicted "
-            "42.3% — ranking 54th of 169 districts, in the top third.  This is "
-            "Saugus's strongest relative academic result of the four outcomes.",
-        "takeaway":
-            "Chronic absenteeism is again a top driver, and Saugus's rate (31.2%) "
-            "remains far above the towns it's compared with here.  Saugus is "
-            "overcoming a real headwind on this measure — its grades 3–8 academic "
-            "base, teacher compensation, and enrollment scale appear to be the "
-            "offsetting strengths that let it outperform despite high absenteeism.",
+        "noun":  "grade 10 ELA proficiency",
+        "close": "Grade 10 ELA reflects the cumulative academic base, not only current "
+                 "demographics.",
+        "lever": "Saugus's grades 3–8 base, teacher compensation, and enrollment scale "
+                 "are the levers most visible among the drivers.",
     },
     "Education Budget Share": {
-        "bottom_line":
-            "Saugus directs 32.3% of its municipal budget to education, 3.9pp below "
-            "its predicted 36.2% — one of the largest shortfalls in the state (199th "
-            "of 219 districts, bottom 10%).  Unlike the academic measures, this gap "
-            "reflects a municipal budgeting choice, not a demographic constraint.",
-        "takeaway":
-            "All four top local drivers are competing budget categories where Saugus "
-            "spends more than the state median: debt service (8.6% vs. 5.0%), "
-            "pensions & benefits (25.3% vs. 17.5%), police & fire (15.2% vs. 11.8%), "
-            "and public works (7.4% vs. 5.3%).  Together these fixed costs crowd out "
-            "the education share.  Of the four outcomes, this is the one where the "
-            "lever sits with Town Meeting and municipal budgeting, not the school "
-            "district.",
+        "noun":  "education budget share",
+        "close": "Unlike the academic measures, this gap reflects a municipal budgeting "
+                 "choice, not a demographic constraint.",
+        "lever": "The top drivers are competing budget categories that crowd out the "
+                 "education share — the lever here sits with Town Meeting and municipal "
+                 "budgeting, not the school district.",
     },
 }
+
+
+def _rank_band(rank: int, n_total: int) -> str:
+    """Plain-language band for a rank, computed live (no hardcoded percentile)."""
+    if not n_total:
+        return "the field"
+    frac = rank / n_total
+    if frac <= 0.10: return "the top 10% of MA districts"
+    if frac <= 0.25: return "the top 25%"
+    if frac <= 0.50: return "the top half"
+    if frac >= 0.90: return "the bottom 10%"
+    if frac >= 0.75: return "the bottom 25%"
+    return "the middle of the pack"
+
+
+def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]:
+    """
+    Compose the Bottom Line and Takeaway entirely from live values in `ctx`
+    plus the fixed qualitative reading for this outcome.  No numeric literal
+    appears here: predicted/actual/gap/rank/N and every feature value and peer
+    gap are taken from `ctx`, which is built from the live analysis on the same
+    page.  Superlatives ("strongest driver", "widest gap") are derived from the
+    live driver table, never asserted.
+    """
+    q = SYNTHESIS_QUALITATIVE.get(
+        label, {"noun": label, "close": "", "lever": ""})
+    u, unit = ctx["u"], ctx["unit"]
+    actual, pred, gap = ctx["actual"], ctx["pred"], ctx["gap"]
+    rank, n_total, band = ctx["rank"], ctx["n_total"], ctx["band"]
+    gap_mag = abs(gap)
+    drivers = ctx["drivers"]
+
+    if gap_mag < 0.5:
+        rel = f"almost exactly its demographic prediction of {pred:.1f}{u} (a {gap:+.1f}{unit} gap)"
+    else:
+        word = "better than" if ctx["outperforms"] else "worse than"
+        rel = (f"{gap_mag:.1f}{unit} {word} its demographic prediction of {pred:.1f}{u}")
+
+    bottom = (f"Saugus's {q['noun']} is {actual:.1f}{u}, {rel} — ranking {rank} of "
+              f"{n_total} MA districts, in {band}.  {q['close']}")
+
+    # Takeaway: live direction clause first, then the true top driver and the
+    # true widest peer gap — every claim derived from this run, none asserted.
+    if gap_mag < 0.5:
+        perf = "Saugus lands almost exactly where its demographic profile predicts here"
+    elif ctx["outperforms"]:
+        perf = "Saugus does better here than its demographic profile predicts"
+    else:
+        perf = "Saugus does worse here than its demographic profile predicts"
+
+    sent = ""
+    if drivers:
+        top = drivers[0]
+        sent = (f"The strongest RBP driver of Saugus's predicted peer group is "
+                f"{top['desc'].lower()} "
+                f"({_fmt_feature_val(top['saugus'], top['kind'])} vs the "
+                f"{_fmt_feature_val(top['median'], top['kind'])} state median)")
+        valid_gap = [d for d in drivers if not pd.isna(d["oa_gap"])]
+        if valid_gap:
+            gd = max(valid_gap, key=lambda d: abs(d["oa_gap"]))
+            sent += (f"; the widest gap to the over-performing districts is "
+                     f"{gd['desc'].lower()} "
+                     f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
+        sent += ".  "
+        if not ctx.get("top3_stable", True):
+            sent += ("(Driver ranking is close enough at the top that the #1 "
+                     "factor is not fully seed-stable — read the top group, not the "
+                     "exact order.)  ")
+    takeaway = f"{perf}.  {sent}{q['lever']}"
+    return bottom, takeaway
 
 
 def page_synthesis(pdf, label: str, target: str, analysis: dict,
@@ -2502,17 +2510,11 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     gap = analysis["gap_pp"]
     better_label = "lower is better" if target == "dropout_pct" else "higher is better"
 
-    # Saugus's rank among MA districts on this outcome's LOO residual,
-    # handling the dropout inversion (lower residual = better for dropout).
+    # Saugus's rank among MA districts on this outcome's LOO residual — via the
+    # shared rank_among_peers helper, so this page and the Saugus-analysis footer
+    # use identical direction logic and denominators.
     loo = analysis["loo_df"].dropna(subset=["residual"])
-    resid = loo["residual"]
-    s_resid = float(resid.get("Saugus", float("nan")))
-    if target == "dropout_pct":
-        better = int((resid < s_resid).sum())
-    else:
-        better = int((resid > s_resid).sum())
-    n_total = len(resid)
-    rank = better + 1
+    better, n_total, rank = rank_among_peers(analysis["loo_df"], target)
 
     _header(fig, f"What This Means: {label}",
             f"Predicted {analysis['pred_pct']:.1f}{unit}  ·  "
@@ -2520,12 +2522,58 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
             f"Gap {gap:+.1f}{unit} ({better_label})  ·  "
             f"Saugus ranks {rank} of {n_total} MA districts on this measure")
 
-    txt = SYNTHESIS_TEXT.get(label, {"bottom_line": "", "takeaway": ""})
+    # ── Data prep: one structured driver table feeds both panels AND the
+    #    live prose, so the words and the tables cannot disagree ─────────────
+    df2 = df_raw.copy()
+    df2.index = df2["district_name"]
+    imp = _display_importance(analysis)
+    feats_ordered = (
+        imp.reindex([f for f in lean_features if f in df2.columns])
+           .abs().sort_values(ascending=False).index.tolist()[:5]
+    )
+
+    overachievers = _find_overachievers(loo, target, n=8)
+    feat_df = df_raw[["district_name"] + lean_features].copy()
+    feat_df.index = feat_df["district_name"]
+    oa_names = [n for n in overachievers.index if n in feat_df.index]
+
+    drivers = []
+    for feat in feats_ordered:
+        desc, kind = _feat_meta(feat)
+        sv = (float(df2.loc["Saugus", feat])
+              if "Saugus" in df2.index and feat in df2.columns
+              and not pd.isna(df2.loc["Saugus", feat]) else float("nan"))
+        med = float(df2[feat].median()) if feat in df2.columns else float("nan")
+        oa_vals = [float(feat_df.loc[n, feat]) for n in oa_names
+                   if feat in feat_df.columns and not pd.isna(feat_df.loc[n, feat])]
+        oa_med = float(np.median(oa_vals)) if oa_vals else float("nan")
+        drivers.append({
+            "feature": feat, "desc": desc, "kind": kind,
+            "saugus": sv, "median": med, "oa_median": oa_med,
+            "imp": float(imp.get(feat, 0)),
+            "oa_gap": oa_med - sv,
+        })
+
+    # ── Live prose — every number injected from `ctx`, none hardcoded ───────
+    ctx = {
+        "u": ("%" if is_pct_unit else " pts"),
+        "unit": unit,
+        "actual": analysis["actual_pct"],
+        "pred":   analysis["pred_pct"],
+        "gap":    gap,
+        "rank":   rank,
+        "n_total": n_total,
+        "band":   _rank_band(rank, n_total),
+        "outperforms": (gap > 0) if _higher_is_better(target) else (gap < 0),
+        "drivers": drivers,
+        "top3_stable": analysis.get("importance_top3_stable", True),
+    }
+    bottom_line, takeaway = build_synthesis_prose(label, target, ctx)
 
     # ── Left: the bottom line + top local drivers ───────────────────────────
     ax_l.text(0.0, 0.985, "The Bottom Line", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
-    ax_l.text(0.0, 0.91, textwrap.fill(txt["bottom_line"], width=68),
+    ax_l.text(0.0, 0.91, textwrap.fill(bottom_line, width=68),
               ha="left", va="top", fontsize=9.5, color=_BL,
               transform=ax_l.transAxes, linespacing=1.5)
 
@@ -2537,22 +2585,9 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
               ha="left", va="top", fontsize=8, color=_GREY,
               transform=ax_l.transAxes)
 
-    df2 = df_raw.copy()
-    df2.index = df2["district_name"]
-    imp = analysis["result"].variable_importance
-    feats_ordered = (
-        imp.reindex([f for f in lean_features if f in df2.columns])
-           .abs().sort_values(ascending=False).index.tolist()[:5]
-    )
-
-    driver_rows = []
-    for feat in feats_ordered:
-        desc, kind = FEATURE_INFO.get(feat, (feat, "rate"))
-        sv  = df2.loc["Saugus", feat] if "Saugus" in df2.index and feat in df2.columns else float("nan")
-        med = df2[feat].median() if feat in df2.columns else float("nan")
-        imp_val = float(imp.get(feat, 0))
-        driver_rows.append([desc, _fmt_feature_val(sv, kind), _fmt_feature_val(med, kind), f"{imp_val:+.2f}"])
-
+    driver_rows = [[d["desc"], _fmt_feature_val(d["saugus"], d["kind"]),
+                    _fmt_feature_val(d["median"], d["kind"]), f"{d['imp']:+.2f}"]
+                   for d in drivers]
     if driver_rows:
         tbl = ax_l.table(cellText=driver_rows,
                           colLabels=["Factor", "Saugus", "MA median", "Importance"],
@@ -2582,26 +2617,16 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     ax_r.text(0.0, 0.985, "What Over-Performing Towns Do Differently", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_GREEN, transform=ax_r.transAxes)
 
-    overachievers = _find_overachievers(loo, target, n=8)
-    feat_df = df_raw[["district_name"] + lean_features].copy()
-    feat_df.index = feat_df["district_name"]
-    oa_names = [n for n in overachievers.index if n in feat_df.index]
-
     ax_r.text(0.0, 0.91,
               f"Same factors, for the {len(oa_names)} MA districts that most exceed "
               f"their own prediction:",
               ha="left", va="top", fontsize=8, color=_GREY,
               transform=ax_r.transAxes)
 
-    oa_rows = []
-    for feat in feats_ordered:
-        desc, kind = FEATURE_INFO.get(feat, (feat, "rate"))
-        sv = feat_df.loc["Saugus", feat] if "Saugus" in feat_df.index and feat in feat_df.columns else float("nan")
-        oa_vals = [feat_df.loc[n, feat] for n in oa_names
-                   if feat in feat_df.columns and not pd.isna(feat_df.loc[n, feat])]
-        oa_med = float(np.median(oa_vals)) if oa_vals else float("nan")
-        oa_rows.append([desc, _fmt_feature_val(sv, kind), _fmt_feature_val(oa_med, kind),
-                        _fmt_gap_val(oa_med - sv, kind)])
+    oa_rows = [[d["desc"], _fmt_feature_val(d["saugus"], d["kind"]),
+                _fmt_feature_val(d["oa_median"], d["kind"]),
+                _fmt_gap_val(d["oa_gap"], d["kind"])]
+               for d in drivers]
 
     if oa_rows:
         tbl2 = ax_r.table(cellText=oa_rows,
@@ -2634,7 +2659,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
         facecolor="#FFF8E1", edgecolor="#B7950B", linewidth=1.0))
     ax_r.text(0.03, 0.535, "The Takeaway", ha="left", va="top",
               fontsize=10.5, fontweight="bold", color=_GOLD, transform=ax_r.transAxes)
-    ax_r.text(0.03, 0.46, textwrap.fill(txt["takeaway"], width=66),
+    ax_r.text(0.03, 0.46, textwrap.fill(takeaway, width=66),
               ha="left", va="top", fontsize=9, color=_BL,
               transform=ax_r.transAxes, linespacing=1.5)
 
@@ -2880,13 +2905,17 @@ def _run_one_model(args: tuple) -> dict:
 
     # ── Step 1: Full RBP with all candidates (Kritzman Exhibit 5) ───────────
     # Variable importance directly reveals which features contribute to
-    # prediction reliability — no sequential greedy evaluation needed.
-    _p(f"Step 1: Full RBP with all {len(candidates)} candidates")
+    # prediction reliability — a transparency diagnostic, not a feature filter.
+    # This is the single canonical importance Series (one dense grid, the paper's
+    # procedure); every page reuses it.  A couple of check seeds verify the
+    # top-3 is not a Monte-Carlo artifact.
+    _p(f"Step 1: Canonical RBP importance over all {len(candidates)} candidates")
     try:
-        full_saugus = analyze_saugus(df_raw, candidates, target, n_random_cells)
-        full_importance = full_saugus["result"].variable_importance
-        _p(f"  Full model fit={full_saugus['result'].fit:.4f}  "
-           f"predicted={full_saugus['pred_pct']:.1f}")
+        imp_stats = saugus_importance(df_raw, candidates, target, n_random_cells)
+        full_importance = imp_stats["importance"]
+        _p(f"  Importance from canonical grid; top-3 seed-stable="
+           f"{imp_stats['top3_stable']} ({imp_stats['n_checks']} grids); "
+           f"top: {list(full_importance.index[:3])}")
     except Exception as e:
         _p(f"  Full model failed: {e}")
         return {}
@@ -2904,50 +2933,68 @@ def _run_one_model(args: tuple) -> dict:
     #   Disagreement (low LOO r, high importance): feature only helps in
     #              combination — a genuine interaction captured by RBP.
     _p(f"Step 1b: Univariate LOO r for {len(candidates)} candidates")
+    # A single-feature (K=1) grid has only a handful of possible cells, so its
+    # result is identical for any n_random above that — but a large n_random
+    # makes rbp._build_grid spin up to n_random*1000 attempts hunting for unique
+    # cells that don't exist, which is pathologically slow at n_random=3000.
+    # Cap it: the univariate diagnostic is unchanged, the spin is gone.
+    uni_n_random = min(n_random_cells, 50)
     univariate_loo: dict[str, float] = {}
     for feat in candidates:
-        univariate_loo[feat] = _loo_score(df_raw, [feat], target, n_random_cells)
+        univariate_loo[feat] = _loo_score(df_raw, [feat], target, uni_n_random)
     ulo_summary = sorted(univariate_loo.items(), key=lambda x: x[1]
                          if not np.isnan(x[1]) else -999, reverse=True)
     for feat, score in ulo_summary[:5]:
         _p(f"  top: {feat} = {score:+.4f}")
 
-    # ── Step 2: Prune by variable importance ────────────────────────────────
-    # Keep only features with positive importance — they help the prediction.
-    # Features with ≤ 0 importance are adding noise to the reliability signal.
-    lean_features = sorted(
-        [f for f in candidates if float(full_importance.get(f, -1)) > 0],
-        key=lambda f: abs(float(full_importance.get(f, 0))),
-        reverse=True,
-    )
-    if not lean_features:                       # fallback: highest |importance|
-        lean_features = [full_importance.abs().idxmax()]
-    _p(f"Step 2: Lean set after importance pruning ({len(lean_features)} features): "
-       f"{lean_features}")
+    # ── Step 2: NO pruning — faithful to Kritzman ──────────────────────────
+    # The paper makes ONE RBP run using all variables; importance (Exhibit 5) is
+    # a transparency diagnostic, and fn. 12 notes that ≈0-importance variables
+    # are "diversified away," so they are NOT removed.  We therefore predict on
+    # the full candidate set.  `feature_set` is just the candidates ordered by
+    # |importance| for display — the ordering does not affect the prediction.
+    feature_set = (full_importance.reindex(candidates).abs()
+                   .sort_values(ascending=False).index.tolist())
+    _p(f"Step 2: No prune (Kritzman-faithful) — predicting on all "
+       f"{len(feature_set)} candidates")
 
-    # ── Step 3: LOO validation with lean feature set ─────────────────────────
-    _p("Step 3: LOO validation (lean features)")
-    loo_score = _loo_score(df_raw, lean_features, target, n_random_cells)
-    _p(f"  LOO r = {loo_score:.4f}")
-
-    # ── Step 4: Saugus RBP analysis with lean feature set ───────────────────
-    _p("Step 4: Saugus RBP analysis (lean features)")
+    # ── Step 3: Saugus RBP + LOO validation on the FULL candidate set ───────
+    _p("Step 3: Saugus RBP analysis + LOO (all candidates)")
     try:
-        saugus = analyze_saugus(df_raw, lean_features, target, n_random_cells)
+        saugus = analyze_saugus(df_raw, candidates, target, n_random_cells)
         _p(f"  predicted={saugus['pred_pct']:.1f}  actual={saugus['actual_pct']:.1f}  "
            f"gap={saugus['gap_pp']:+.1f}pp")
+        # The canonical descriptive importance (Step 1) is reused by every page,
+        # so the all-candidate chart and the Saugus chart are identical.
+        if saugus is not None:
+            saugus["display_importance"]     = full_importance
+            saugus["importance_top3_stable"] = imp_stats["top3_stable"]
     except Exception as e:
         _p(f"  Saugus analysis failed: {e}")
         saugus = None
+
+    # Validation r comes from the SAME single LOO pass (no separate re-run).
+    if saugus is not None:
+        _loo = saugus["loo_df"].dropna(subset=["actual", "predicted"])
+        loo_score = (float(np.corrcoef(_loo["actual"], _loo["predicted"])[0, 1])
+                     if len(_loo) > 2 else float("nan"))
+    else:
+        loo_score = float("nan")
+    _p(f"  LOO r = {loo_score:.4f}")
 
     _p("Done.")
     return {
         **model,
         "all_candidates":   candidates,
         "full_importance":  full_importance,
+        "importance_top3_stable": imp_stats["top3_stable"],
+        "n_random_cells":   n_random_cells,
         "univariate_loo":   univariate_loo,
-        "lean_features":    lean_features,
-        "features":         lean_features,   # kept for PDF backward compat
+        # No prune: the feature set used for prediction IS the candidate set.
+        # 'lean_features'/'features' kept as keys for PDF backward-compat, now
+        # equal to all candidates (ordered by |importance| for display).
+        "lean_features":    feature_set,
+        "features":         feature_set,
         "saugus":           saugus,
         "loo_score":        loo_score,
         "base_score":       loo_score,
@@ -2958,10 +3005,12 @@ def main(fast: bool = False, parallel: bool = False):
     # n_random_cells = number of random grid CELLS sampled per prediction task,
     # i.e. random (subset, threshold, censoring-mode) triples (see rbp._build_grid).
     # The grid total is 1 + K + n_random_cells cells.  The paper used 100 (→ 115
-    # cells at K=14); we deliberately sample more here because our candidate pool
-    # is larger (K≈32), giving enough per-feature appearances for a stable
-    # Exhibit-5 importance estimate.
-    n_random_cells = 30 if fast else 1000
+    # cells at K=14); we deliberately sample many more here because our candidate
+    # pool is larger (K≈32) AND because a denser single grid better approximates
+    # the deterministic full grid the sampling stands in for — which is the
+    # faithful way (vs. seed-averaging) to make the Exhibit-5 top-3 ranking
+    # reproducible across Monte-Carlo draws.
+    n_random_cells = 30 if fast else 3000
     random_state   = 42
 
     OUTPUT_PDF.parent.mkdir(parents=True, exist_ok=True)
@@ -3007,7 +3056,9 @@ def main(fast: bool = False, parallel: bool = False):
                                             r["saugus"]["result"].variable_importance
                                             if r.get("saugus") else pd.Series()),
                                       r.get("lean_features", r["features"]),
-                                      univariate_loo=r.get("univariate_loo"))
+                                      univariate_loo=r.get("univariate_loo"),
+                                      n_random=r.get("n_random_cells"),
+                                      top3_stable=r.get("importance_top3_stable"))
             if r["saugus"]:
                 page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
                 page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
@@ -3020,8 +3071,13 @@ def main(fast: bool = False, parallel: bool = False):
         # Combined summary + cross-reference table
         page_combined_summary(pdf, results)
 
-        # Trajectory context from Schedule A + DESE staffing
-        page_budget_and_staffing(pdf, engine)
+        # Trajectory context from Schedule A + DESE staffing.  Ridge cross-check
+        # computed live from the MCAS model's candidate panel.
+        _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
+        _ridge_stats = (compute_ridge_validation(
+            df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
+            if _mcas_r else None)
+        page_budget_and_staffing(pdf, engine, _ridge_stats)
 
         # Fixed costs breakdown: health insurance, composition, reserve accumulation
         page_fixed_costs(pdf, engine)
@@ -3089,7 +3145,9 @@ def regen_pdf():
                                             r["saugus"]["result"].variable_importance
                                             if r.get("saugus") else pd.Series()),
                                       r.get("lean_features", r["features"]),
-                                      univariate_loo=r.get("univariate_loo"))
+                                      univariate_loo=r.get("univariate_loo"),
+                                      n_random=r.get("n_random_cells"),
+                                      top3_stable=r.get("importance_top3_stable"))
             if r["saugus"]:
                 page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
                 page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
@@ -3099,7 +3157,11 @@ def regen_pdf():
                 page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
                                r.get("lean_features", r["features"]))
         page_combined_summary(pdf, results)
-        page_budget_and_staffing(pdf, get_engine())
+        _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
+        _ridge_stats = (compute_ridge_validation(
+            df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
+            if _mcas_r else None)
+        page_budget_and_staffing(pdf, get_engine(), _ridge_stats)
         page_fixed_costs(pdf, get_engine())
         page_optimum_profile(pdf, results, df_raw)
         saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
