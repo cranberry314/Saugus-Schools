@@ -867,6 +867,77 @@ def page_tiers_explained(pdf):
     _save(pdf, fig)
 
 
+def page_method_explainer(pdf):
+    """How RBP focuses on similar towns without shrinking the dataset — plain
+    language plus the underlying equations (signed relevance weighting)."""
+    fig, ax = _paper_fig(); ax.axis("off")
+    ax.set_position([0, 0, 1, 1])    # axes coords == figure coords
+    _header(fig, "How RBP Compares Saugus to Towns Like It — Without Shrinking the Data",
+            "It focuses on towns similar to Saugus using the FULL set of MA districts, "
+            "never a hand-picked subset — so the comparison keeps its statistical power.")
+
+    boxes = [
+        ("1.  Full sample, always — no pre-filtering", _BLUE,
+         "Every prediction uses all ~170–220 MA districts.",
+         "The full sample is what learns which towns are relevant to Saugus (the factor "
+         "covariance Ω).  Hand-filtering to a small peer set first would make that geometry "
+         "unestimable and turn the importance scores into noise."),
+        ("2.  Signed weighting — contrasts, not exclusion", _GREEN,
+         "Each town's weight may be positive OR negative, and the weights sum to 1.",
+         "Most-relevant towns get large positive weights; less-relevant towns get small, "
+         "often negative weights — used as contrasts (subtracted), as in regression.  "
+         "Only ~6–15 of ~170–220 towns sit near zero, and none is excluded."),
+        ("3.  A small effective core, plus a censored cross-check", _GOLD,
+         "About half the towns carry small negative weights; ~10–25 carry most of the weight.",
+         "RBP also re-predicts from only the top 80% / 50% / 20% most-relevant towns and "
+         "blends those tight-peer estimates by how reliably each predicts (its fit) — the "
+         "method decides how much to trust the tight group; no human picks the cutoff."),
+    ]
+    y = 0.87
+    for title, color, sub, body in boxes:
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (0.03, y - 0.125), 0.94, 0.112, boxstyle="round,pad=0.008",
+            facecolor="#FAFAFA", edgecolor=color, linewidth=1.6, transform=ax.transAxes))
+        ax.text(0.05, y - 0.004, title, fontsize=10.5, fontweight="bold",
+                color=color, transform=ax.transAxes, va="top")
+        ax.text(0.05, y - 0.034, sub, fontsize=8.2, color=_BL, style="italic",
+                transform=ax.transAxes, va="top")
+        for i, ln in enumerate(textwrap.fill(body, width=118).split("\n")):
+            ax.text(0.065, y - 0.060 - i * 0.023, ln, fontsize=7.7,
+                    color=_BL, transform=ax.transAxes, va="top")
+        y -= 0.150
+
+    # ── The math ────────────────────────────────────────────────────────────
+    ax.add_patch(mpatches.FancyBboxPatch(
+        (0.03, 0.055), 0.94, 0.33, boxstyle="round,pad=0.008",
+        facecolor="#EEF2F8", edgecolor=_BLUE, linewidth=1.4, transform=ax.transAxes))
+    ax.text(0.05, 0.375, "The math behind it", fontsize=11, fontweight="bold",
+            color=_BLUE, transform=ax.transAxes, va="top")
+
+    rows = [
+        (r"$\hat{y}_{Saugus}=\sum_i w_i\,y_i,\qquad \sum_i w_i=1$",
+         "The prediction is a signed weighted sum of town outcomes; the weights sum to 1."),
+        (r"$w_i=\dfrac{1}{N}+\dfrac{\lambda^{2}}{n-1}\,(\delta_i\,r_i-\phi\,\bar{r})$",
+         "Each weight = a uniform 1/N baseline + a tilt that turns NEGATIVE below average relevance."),
+        (r"$r_i=-\dfrac{1}{2}(x_i-x_S)^{T}\,\Omega^{-1}(x_i-x_S)\;+\;\mathrm{info}$",
+         "Relevance r = closeness to Saugus in factor space (Mahalanobis); Ω estimated from all N towns."),
+        (r"$N_{\mathrm{eff}}=1\,/\,\sum_i w_i^{2}$",
+         "Effective # of towns carrying the weight ≈ 10–25 of ~170–220 — a focus, not a deletion."),
+        (r"$w=x_S^{T}(X^{T}X)^{-1}X^{T}$",
+         "With all factors and no censoring this is exactly OLS — signed weights are inherent to regression."),
+    ]
+    yy = 0.335
+    for eq, note in rows:
+        ax.text(0.06, yy, eq, fontsize=11, color=_BL, transform=ax.transAxes, va="center")
+        ax.text(0.40, yy, note, fontsize=7.6, color=_GREY, transform=ax.transAxes, va="center")
+        yy -= 0.052
+
+    _footer(fig, "Because the relevance geometry Ω is learned from the full sample and the "
+            "weights sum to 1, concentrating the prediction on a relevant core costs no "
+            "stability — the instability a small hand-picked subset would create.")
+    _save(pdf, fig)
+
+
 def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
     fig, axes = _paper_fig(1, 2)
@@ -3256,6 +3327,7 @@ def _build_actionable_report(pdf, results, df_raw, engine):
     """
     page_title(pdf, results)
     page_tiers_explained(pdf)
+    page_method_explainer(pdf)
     page_combined_summary(pdf, results)
     for r in results:
         if r.get("saugus"):
