@@ -213,15 +213,24 @@ def _adjusted_fit(w: np.ndarray, y: np.ndarray, K: int,
     # Eq 14: asymmetry = ½(ρ(w+, y) − ρ(w−, y))²
     # w+ = weights formed from the retained (δ=1) set
     # w- = weights formed from the complementary censored (δ=0) set
-    # Each is Eq 1 re-evaluated on its own subsample (retain mask = δ for w+,
-    # 1−δ for w-), NOT the composite weights masked to zero — re-derivation is
-    # what the paper specifies ("the weights formed from the retained
-    # observations") and uses the subsample's own 1/n baseline, λ², and r̄_sub.
-    w_plus  = _prediction_weights(r, delta)
-    w_minus = _prediction_weights(r, 1.0 - delta)
-    rho_plus  = _corr(w_plus,  y)
-    rho_minus = _corr(w_minus, y)
-    asym = 0.5 * (rho_plus - rho_minus) ** 2               # Eq 14
+    # Each is Eq 1 re-evaluated on its own subsample, NOT the composite weights
+    # masked to zero — the paper specifies "the weights formed from the retained
+    # observations," using each subsample's own 1/n baseline, λ², and r̄_sub.
+    #
+    # Degenerate case: at threshold 0 nothing is censored, so the complementary
+    # (δ=0) set is empty.  _prediction_weights then returns uniform weights whose
+    # ρ with y is 0, which would make asym = ½·ρ(w+)² > 0 — a spurious asymmetry
+    # for every linear cell.  Eq 14 presupposes a non-degenerate complement, so
+    # when fewer than 2 observations are censored the asymmetry is undefined and
+    # contributes 0.  (The retained side is the input w itself: w == w+.)
+    n_censored = int(len(delta) - delta.sum())
+    if n_censored < 2:
+        asym = 0.0
+    else:
+        rho_plus  = _corr(w, y)                # w IS the retained-set weights (= w+)
+        w_minus   = _prediction_weights(r, 1.0 - delta)
+        rho_minus = _corr(w_minus, y)
+        asym = 0.5 * (rho_plus - rho_minus) ** 2           # Eq 14
 
     return float(K * (fit_sq + asym))                      # Eq 12
 

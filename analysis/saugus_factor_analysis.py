@@ -535,9 +535,17 @@ def analyze_saugus(df: pd.DataFrame,
     result = rbp(X_train, y_train, x_saugus, features, n_random_cells=n_random_cells)
 
     actual = float(y_all.loc[SAUGUS])
-    # Convert fraction targets (like avg_mcas which is 0–1) to percentage
     pred   = result.prediction
-    if actual < 2.0:   # likely a fraction
+    # Decide fraction-vs-percent from the COLUMN's scale, not Saugus's single
+    # value.  The old `actual < 2.0` test misclassifies any district whose value
+    # happens to be < 2 (e.g. a dropout rate of 0.1%) and would report it ×100.
+    # A 0–1 target (avg_mcas, mcas10_ela) has a small column max; an already-
+    # percentage target (dropout_pct 0–23, ed_budget_share 13–78) does not.
+    # (target_pct in MODELS does NOT encode this — ed_budget_share is target_pct
+    # True yet stored as a percentage — so it cannot be used here.)
+    col_max = float(y_all.dropna().abs().max())
+    is_fraction = col_max <= 1.5
+    if is_fraction:
         actual_pct = actual * 100
         pred_pct   = pred * 100
     else:
@@ -1662,17 +1670,30 @@ def page_budget_and_staffing(pdf, engine, ridge_stats: dict | None = None) -> No
                         if ridge_stats["is_top"]
                         else f"#{ridge_stats['focus_rank']} of "
                              f"{ridge_stats['n_features']} standardized predictors")
+        # Branch on whether Ridge actually agrees with RBP.  When absenteeism
+        # ranks LOW in the linear model but HIGH in RBP, that is a divergence, not
+        # corroboration — and it is the paper's whole point (a linear coefficient
+        # and RBP's interaction-aware importance measure different things).
+        if ridge_stats["is_top"]:
+            _agreement = ("corroborating the RBP Exhibit 5 ranking by an independent "
+                          "linear method")
+        else:
+            _agreement = (
+                f"a divergence, not corroboration: a linear model assigns {_focus_desc} "
+                f"a small standardized coefficient, whereas RBP's Exhibit 5 ranks it among "
+                f"the top drivers — the kind of nonlinear / interaction effect RBP is "
+                f"designed to surface and linear regression misses")
         _ridge_note = (
             f"Independent cross-validation (computed in this run): standardized Ridge "
             f"regression on {ridge_stats['n']} MA districts (5-fold CV R²="
             f"{ridge_stats['r2']:.2f}) ranks {_focus_desc} {_rank_phrase} of MCAS 3–8 "
-            f"(|standardized β|={ridge_stats['focus_abs_beta']:.2f}) — corroborating the "
-            f"RBP Exhibit 5 finding by a separate method.  " + _peer_note
+            f"(|standardized β|={ridge_stats['focus_abs_beta']:.2f}) — {_agreement}.  "
+            + _peer_note
         )
     else:
         _ridge_note = (
             "Independent cross-validation: a standardized Ridge regression on the same "
-            "district panel corroborates the RBP Exhibit 5 ranking (figures unavailable "
+            "district panel cross-checks the RBP Exhibit 5 ranking (figures unavailable "
             "in this run).  " + _peer_note
         )
     fig.text(0.5, 0.01, textwrap.fill(_ridge_note, width=180),
@@ -2870,16 +2891,20 @@ def _run_one_model(args: tuple) -> dict:
     Top-level worker function — must be at module level to be picklable
     on macOS (which uses 'spawn' for multiprocessing).
 
-    Implements the Kritzman (2024) approach directly:
-      Step 1 — Run RBP once with ALL candidate features, Saugus as the
-               prediction task.  Variable importance (Exhibit 5) measures
-               each feature's marginal contribution to prediction reliability
-               given all other features simultaneously — no greedy iteration.
-      Step 2 — Prune features with non-positive importance: they add noise
-               rather than signal.  Features with positive importance form
-               the lean set.
-      Step 3 — Validate with leave-one-out LOO r across all districts.
-      Step 4 — Saugus analysis with lean feature set.
+    Implements the Kritzman (2024) approach directly — ONE run, all variables,
+    no pruning:
+      Step 1  — Canonical RBP importance (Exhibit 5): one dense-grid RBP with
+                ALL candidate features on the Saugus prediction task.  Importance
+                is read as a transparency diagnostic only — no features are
+                dropped (fn. 12: ≈0-importance features are diversified away and
+                do no harm).  A couple of check seeds confirm the top-3 is not a
+                Monte-Carlo artifact.
+      Step 1b — Univariate LOO r per candidate (diagnostic only; not used to
+                prune).
+      Step 2  — NO PRUNING.  The full candidate set is used for prediction,
+                ordered by |importance| for display purposes only.
+      Step 3  — Saugus RBP prediction + leave-one-out LOO r across all MA
+                districts (Saugus excluded from its own training set).
     """
     model, n_random_cells, random_state = args
     tag    = model["label"]
