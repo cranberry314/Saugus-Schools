@@ -2256,6 +2256,31 @@ def _find_overachievers(loo_df: pd.DataFrame, target: str,
     return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
 
 
+def _comparable_overperformers(loo_df: pd.DataFrame, target: str,
+                               n: int = 6) -> pd.DataFrame:
+    """
+    Towns the model predicted SIMILARLY to Saugus but whose ACTUAL outcome was
+    better — the most genuinely comparable peers to learn from.  ("A town the
+    model expected to score like Saugus, but that actually did better.")
+
+    Selection: among towns that beat Saugus's actual value (direction-aware —
+    higher for academics, lower for dropout), take the ones whose predicted
+    value is closest to Saugus's predicted value.
+    """
+    df = loo_df.dropna(subset=["actual", "predicted"]).copy()
+    if SAUGUS not in df.index:
+        return df.head(0)
+    s_pred = float(df.loc[SAUGUS, "predicted"])
+    s_act  = float(df.loc[SAUGUS, "actual"])
+    df = df[df.index != SAUGUS]
+    better = (df[df["actual"] > s_act] if _higher_is_better(target)
+              else df[df["actual"] < s_act])
+    if better.empty:
+        better = df
+    better = better.assign(_d=(better["predicted"] - s_pred).abs())
+    return better.nsmallest(n, "_d").drop(columns=["_d"])
+
+
 def _find_underachievers(loo_df: pd.DataFrame, target: str,
                          n: int = 6) -> pd.DataFrame:
     """
@@ -2348,12 +2373,13 @@ def page_what_overachievers_did(pdf, label: str, target: str,
                                  analysis: dict, df_raw: pd.DataFrame,
                                  lean_features: list[str]):
     """
-    Feature comparison: overachiever values vs Saugus on each important factor.
-    Ordered by RBP variable importance so the most relevant differences are first.
+    Factor comparison: Saugus vs. the towns the model predicted SIMILARLY to
+    Saugus but that scored better — the genuinely comparable peers.  Ordered by
+    RBP variable importance so the most relevant differences are first.
     """
     loo        = analysis["loo_df"]
     imp        = _display_importance(analysis)   # canonical Step-1 importance
-    overachievers = _find_overachievers(loo, target, n=6)
+    overachievers = _comparable_overperformers(loo, target, n=6)
 
     # Get feature values for Saugus and overachievers from df_raw
     feat_df = df_raw[["district_name"] + lean_features].copy()
@@ -2377,8 +2403,9 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     fig, axes = _paper_fig(1, 2)
     ax_l, ax_r = axes
 
-    _header(fig, f"What Over-Performers Do Differently: {label}",
-            "Actionable-factor values for the top over-performing towns vs Saugus — ordered by importance")
+    _header(fig, f"What Comparable Better Towns Do Differently: {label}",
+            "Towns the model predicted like Saugus that scored better — their actionable-factor "
+            "values vs Saugus, ordered by importance")
 
     # ── Left: heatmap of feature values (z-scored relative to all districts) ──
     ax_l.axis("off")
@@ -2399,7 +2426,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     # 2 comparison towns leaves room to widen the Factor column so the full
     # factor labels fit without colliding with the values.
     n_compare = min(2, len(oa_names))
-    col_names = ["Factor", "Saugus"] + [n[:9] for n in oa_names[:n_compare]] + ["Imp"]
+    col_names = ["Factor", "Saugus"] + [n[:9] for n in oa_names[:n_compare]] + ["Importance"]
     rows = []
     for feat in feats_ordered[:15]:
         sv = saugus_vals.get(feat, float("nan"))
@@ -2412,7 +2439,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
 
     # ── Left: factor comparison table ──────────────────────────────────────────
     ax_l.text(0.5, 0.98,
-              f"Actionable-factor values — Saugus (highlighted) vs over-performers\n"
+              f"Saugus (highlighted) vs towns predicted like Saugus that scored better\n"
               f"Ordered by |importance|, top {min(len(feats_ordered), 15)} shown",
               ha="center", va="top", fontsize=8.5, fontweight="bold",
               color=_BLUE, transform=ax_l.transAxes)
@@ -2469,7 +2496,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         oa_rows_display = [[">> Saugus",
                              f"{s_act:.1f}", f"{s_pred:.1f}",
                              f"{s_res:+.1f}pp"]] + oa_rows
-        ax_r.text(0.5, 0.98, "Over-performer residuals vs Saugus",
+        ax_r.text(0.5, 0.98, "Predicted like Saugus — but scored better",
                   ha="center", va="top", fontsize=9, fontweight="bold",
                   color=_BL, transform=ax_r.transAxes)
         oa_tbl = ax_r.table(cellText=oa_rows_display,
@@ -3325,6 +3352,12 @@ def _build_actionable_report(pdf, results, df_raw, engine):
       page_saugus_analysis, page_overachievers_scatter, page_scatter_all.
       They remain defined and are one line away if ever needed.
     """
+    # Display order: the two MCAS outcomes together, then budget share, then dropout.
+    _ORDER = ["MCAS Grades 3–8", "MCAS Grade 10 (ELA)",
+              "Education Budget Share", "Dropout Rate"]
+    results = sorted(results, key=lambda r: _ORDER.index(r["label"])
+                     if r["label"] in _ORDER else 99)
+
     page_title(pdf, results)
     page_tiers_explained(pdf)
     page_method_explainer(pdf)
