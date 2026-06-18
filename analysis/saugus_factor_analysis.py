@@ -825,7 +825,7 @@ def page_tiers_explained(pdf):
     fig, ax = _paper_fig(); ax.axis("off")
     _header(fig, "How to Read This Report — Three Tiers of Factors",
             "This report matches Saugus to demographically-similar towns using Tier 3, "
-            "then ranks the Tier 1 & 2 levers Saugus can actually change.  Structural "
+            "then ranks the Tier 1 & 2 factors Saugus can actually change.  Structural "
             "traits are the backdrop for finding peers — never a recommendation.")
 
     tiers = [
@@ -840,13 +840,13 @@ def page_tiers_explained(pdf):
          ["Chronic absenteeism — attendance & re-engagement programs",
           "Teacher staffing levels and pay",
           "How the school dollar splits between classroom and overhead",
-          "Health-insurance plan design / GIC membership"]),
+          "Above-minimum school spending funded from reserves"]),
         ("TIER 3 — Structural  (NOT changeable by vote)", _GREY,
          "What the community IS — used ONLY to find Saugus's true peer towns.",
          ["Household income · property wealth · adult education",
           "Poverty · English-learner · special-education shares",
           "Housing tenure · district enrollment · regional economy",
-          "→ Defines the peer group; never shown as a 'lever' in this report."]),
+          "→ Defines the peer group; never shown as an actionable factor here."]),
     ]
     y = 0.84
     for title, color, sub, items in tiers:
@@ -862,7 +862,7 @@ def page_tiers_explained(pdf):
                     color=_BL, transform=ax.transAxes, va="top")
         y -= 0.275
 
-    _footer(fig, "Tiers 1 & 2 = actionable levers (what this report ranks).  "
+    _footer(fig, "Tiers 1 & 2 = actionable factors (what this report ranks).  "
             "Tier 3 = structural controls (the peer-matching basis, not recommendations).")
     _save(pdf, fig)
 
@@ -1024,11 +1024,11 @@ def page_combined_summary(pdf, results: list[dict]):
 
     # ── Bottom: feature cross-reference ──────────────────────────────────────
     ax_bot.axis("off")
-    ax_bot.text(0.5, 0.98, "Actionable Lever Cross-Reference — Which Levers Matter Across Outcomes",
+    ax_bot.text(0.5, 0.98, "Actionable Factor Cross-Reference — Which Factors Matter Across Outcomes",
                 ha="center", va="top", fontsize=10, fontweight="bold",
                 color=_BLUE, transform=ax_bot.transAxes)
     ax_bot.text(0.5, 0.93,
-                "Actionable levers only (structural traits are matching-only).  A lever "
+                "Actionable factors only (structural traits are matching-only).  A factor "
                 "that matters in multiple outcomes is a robust target.",
                 ha="center", va="top", fontsize=8.5, color=_GREY, transform=ax_bot.transAxes)
 
@@ -1454,11 +1454,10 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     actionable = [
         ("chronic_absenteeism_pct",   "Chronic absenteeism (%)",         "%", False),
         ("teachers_per_100_students", "Teachers / 100 students",         "",  True),
-        ("teachers_per_lowincome",    "Teachers / 100 ÷ low-income %",    "",  True),
+        ("teachers_per_lowincome",    "Teachers per low-income student",  "",  True),
         ("spend_vs_required_nss",     "Spending vs Ch70 minimum (×)",     "",  True),
-        ("nss_per_eqv",               "School spend ÷ property wealth",   "",  True),
+        ("nss_per_eqv",               "School spending vs. property wealth", "", True),
         ("teacher_share_of_spend",    "Teacher share of school $",        "",  True),
-        ("health_ins_per_capita",     "Health insurance $ / resident",    "$", False),
     ]
 
     # ── Helper: build a comparison grid ─────────────────────────────────────
@@ -2446,8 +2445,8 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
     "dropout_pct":               ("Annual dropout rate",                           "pct"),
     "attending_pct":             ("HS completers attending college",               "pct"),
     # Derived actionable "effort / intensity" levers (see add_actionable_levers)
-    "teachers_per_lowincome":    ("Teachers per 100 ÷ low-income %",               "rate"),
-    "nss_per_eqv":               ("School spending ÷ property wealth/capita",      "rate"),
+    "teachers_per_lowincome":    ("Teachers per low-income student",               "rate"),
+    "nss_per_eqv":               ("School spending vs. property wealth",           "rate"),
     "spend_vs_required_nss":     ("Spending vs Ch70 required minimum (×)",         "rate"),
     "teacher_share_of_spend":    ("Teacher pay share of school spending",          "rate"),
     "health_ins_per_capita":     ("Health insurance $ per resident",               "dollar"),
@@ -2511,7 +2510,7 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
         "noun":  "MCAS grades 3–8 proficiency (ELA + Math, meeting/exceeding)",
         "close": "A district with Saugus's income, poverty, and enrollment profile is "
                  "predicted to land near this level.",
-        "lever": "The drivers below are where Saugus differs most from the towns that "
+        "lever": "The factors below are where Saugus differs most from the towns that "
                  "beat their own predictions — the most plausible places to move this "
                  "result.",
     },
@@ -2524,10 +2523,10 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
     },
     "MCAS Grade 10 (ELA)": {
         "noun":  "grade 10 ELA proficiency",
-        "close": "Note: the grade 3–8 academic base is an outcome, not a lever, so it is "
+        "close": "Note: the grade 3–8 academic base is an outcome, not an actionable factor, so it is "
                  "excluded from this model — part of the over-performance shown here "
                  "reflects that omitted prior strength rather than a grade-10 effect.",
-        "lever": "Among the actionable drivers, chronic absenteeism and teacher staffing "
+        "lever": "Among the actionable factors, chronic absenteeism and teacher staffing "
                  "are the most visible — Saugus clears this bar despite lagging peers on "
                  "both.",
     },
@@ -2535,8 +2534,8 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
         "noun":  "education budget share",
         "close": "Unlike the academic measures, this gap reflects a municipal budgeting "
                  "choice, not a demographic constraint.",
-        "lever": "The top drivers are competing budget categories that crowd out the "
-                 "education share — the lever here sits with Town Meeting and municipal "
+        "lever": "The top factors are competing budget categories that crowd out the "
+                 "education share — the choice here sits with Town Meeting and municipal "
                  "budgeting, not the school district.",
     },
 }
@@ -2593,7 +2592,7 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
     sent = ""
     if drivers:
         top = drivers[0]
-        sent = (f"The strongest actionable driver is "
+        sent = (f"The strongest actionable factor is "
                 f"{top['desc'].lower()} "
                 f"({_fmt_feature_val(top['saugus'], top['kind'])} vs the "
                 f"{_fmt_feature_val(top['median'], top['kind'])} state median)")
@@ -2605,7 +2604,7 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
                      f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
         sent += ".  "
         if not ctx.get("top3_stable", True):
-            sent += ("(Seed-stability: the top lever is seed-stable; the leading levers "
+            sent += ("(Seed-stability: the top factor is seed-stable; the leading factors "
                      "below it recur across random grids but their order and importance "
                      "values jump run-to-run — read them as a co-equal group, not a "
                      "strict ranking.)  ")
@@ -2698,7 +2697,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
               ha="left", va="top", fontsize=9.5, color=_BL,
               transform=ax_l.transAxes, linespacing=1.5)
 
-    ax_l.text(0.0, 0.50, "Top Actionable Levers (what Saugus can change)", ha="left", va="top",
+    ax_l.text(0.0, 0.50, "Top Actionable Factors (what Saugus can change)", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
     ax_l.text(0.0, 0.45,
               "Highest-importance actionable factors, Saugus vs. statewide median.\n"
@@ -2921,6 +2920,9 @@ STRUCTURAL_FEATURES = {
     "low_income_pct", "median_hh_income", "equalized_income",
     "pct_bachelors_plus", "pct_owner_occupied", "ell_pct", "sped_pct",
     "total_enrollment", "crime_rate",
+    # Municipal employee health-insurance spending per resident: tracks town
+    # wealth / workforce, not a clean town-vote lever — treated as structural.
+    "health_ins_per_capita",
 }
 
 # Tier 1/2 — what a town DOES (votable or managed).  Includes the derived
@@ -2939,7 +2941,6 @@ ACTIONABLE_LEVERS = {
     "nss_per_eqv",                # spending RELATIVE TO property wealth
     "spend_vs_required_nss",      # effort above the Ch70 legal minimum
     "teacher_share_of_spend",     # share of the school dollar reaching teachers
-    "health_ins_per_capita",      # benefit-cost drag
 }
 
 
