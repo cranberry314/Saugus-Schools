@@ -2362,6 +2362,12 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
     "mcas10_ela":                ("MCAS 10 ELA (% meeting/exceeding)",             "pct100"),
     "dropout_pct":               ("Annual dropout rate",                           "pct"),
     "attending_pct":             ("HS completers attending college",               "pct"),
+    # Derived actionable "effort / intensity" levers (see add_actionable_levers)
+    "teachers_per_lowincome":    ("Teachers per 100 ÷ low-income %",               "rate"),
+    "nss_per_eqv":               ("School spending ÷ property wealth/capita",      "rate"),
+    "spend_vs_required_nss":     ("Spending vs Ch70 required minimum (×)",         "rate"),
+    "teacher_share_of_spend":    ("Teacher pay share of school spending",          "rate"),
+    "health_ins_per_capita":     ("Health insurance $ per resident",               "dollar"),
 }
 
 
@@ -2389,6 +2395,10 @@ def _fmt_feature_val(v, kind: str) -> str:
         if abs(v) >= 1e6: return f"${v / 1e6:.0f}M"
         return f"${v:,.0f}"
     if kind == "count":  return f"{v:,.0f}"
+    # "rate" / ratio: small ratios (e.g. school-spending ÷ wealth ≈ 0.07) need
+    # more precision than 1 decimal, or real gaps round away to "0.0".
+    if abs(v) < 1:   return f"{v:.3f}"
+    if abs(v) < 10:  return f"{v:.2f}"
     return f"{v:.1f}"
 
 
@@ -2402,6 +2412,8 @@ def _fmt_gap_val(v, kind: str) -> str:
         if abs(v) >= 1e6: return f"{v / 1e6:+.0f}M"
         return f"{v:+,.0f}"
     if kind == "count":  return f"{v:+,.0f}"
+    if abs(v) < 1:   return f"{v:+.3f}"
+    if abs(v) < 10:  return f"{v:+.2f}"
     return f"{v:+.1f}"
 
 
@@ -2429,10 +2441,12 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
     },
     "MCAS Grade 10 (ELA)": {
         "noun":  "grade 10 ELA proficiency",
-        "close": "Grade 10 ELA reflects the cumulative academic base, not only current "
-                 "demographics.",
-        "lever": "Saugus's grades 3–8 base, teacher compensation, and enrollment scale "
-                 "are the levers most visible among the drivers.",
+        "close": "Note: the grade 3–8 academic base is an outcome, not a lever, so it is "
+                 "excluded from this model — part of the over-performance shown here "
+                 "reflects that omitted prior strength rather than a grade-10 effect.",
+        "lever": "Among the actionable drivers, chronic absenteeism and teacher staffing "
+                 "are the most visible — Saugus clears this bar despite lagging peers on "
+                 "both.",
     },
     "Education Budget Share": {
         "noun":  "education budget share",
@@ -2804,6 +2818,90 @@ PRE_SPECIFIED_POOL = {
     "nss_per_pupil",             # Net school spending per pupil
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Tiered "actionable lever" candidate pool  (USE_ACTIONABLE_POOL)
+# ─────────────────────────────────────────────────────────────────────────────
+# RBP is tier-blind — it treats every column identically — so we impose the
+# Tier 3 (structural) vs Tier 1/2 (actionable) distinction by CHOOSING which
+# columns enter the run.  With this pool the RBP relevance still matches Saugus
+# to structurally-similar towns (the demographic features dominate the
+# covariance), but the Exhibit-5 importance now scores the levers Saugus can
+# actually change — answering "given towns like us, which controllable thing
+# moves the outcome," instead of mixing in demographics it cannot act on.
+USE_ACTIONABLE_POOL = True
+
+# Tier 3 — what a community IS (the peer-matching basis; not levers).
+STRUCTURAL_FEATURES = {
+    "low_income_pct", "median_hh_income", "equalized_income",
+    "pct_bachelors_plus", "pct_owner_occupied", "ell_pct", "sped_pct",
+    "total_enrollment", "crime_rate",
+}
+
+# Tier 1/2 — what a town DOES (votable or managed).  Includes the derived
+# effort/intensity ratios the lever screen (actionable_levers.py) validated as
+# carrying signal where the raw levels did not.
+ACTIONABLE_LEVERS = {
+    # raw levers already in load_features
+    "chronic_absenteeism_pct",    # attendance policy (dominant on dropout)
+    "teachers_per_100_students",  # staffing density
+    "nss_per_pupil",              # spending level
+    "res_tax_rate",               # revenue / override
+    "ed_budget_share",            # Town Meeting allocation
+    "fixed_costs_pct",            # pensions/benefits/health (crowd-out)
+    # derived effort/intensity (added by add_actionable_levers)
+    "teachers_per_lowincome",     # staffing RELATIVE TO need
+    "nss_per_eqv",                # spending RELATIVE TO property wealth
+    "spend_vs_required_nss",      # effort above the Ch70 legal minimum
+    "teacher_share_of_spend",     # share of the school dollar reaching teachers
+    "health_ins_per_capita",      # benefit-cost drag
+}
+
+
+def add_actionable_levers(df: pd.DataFrame, engine) -> pd.DataFrame:
+    """
+    Augment df_raw with the derived 'effort / intensity' levers used by the
+    tiered pool.  Two are pure df_raw ratios (no join); three need one extra
+    column each from the wider DB (latest non-null per municipality):
+        teachers_per_lowincome = teachers/100 ÷ low-income %        (need vs staffing)
+        teacher_share_of_spend = teacher $/pupil ÷ NSS/pupil        (classroom share)
+        nss_per_eqv            = NSS/pupil ÷ property wealth/capita  (effort vs wealth)
+        spend_vs_required_nss  = NSS/pupil ÷ Ch70 required NSS/pupil (effort vs floor)
+        health_ins_per_capita  = health insurance ÷ population       (cost drag)
+    """
+    from sqlalchemy import text as _text
+    d = df.copy()
+    d["_k"] = d["district_name"].str.lower().str.strip()
+
+    def latest(table, namecol, cols, notnull=None):
+        nn = f"WHERE {notnull} IS NOT NULL" if notnull else ""
+        sql = (f"SELECT DISTINCT ON (lower({namecol})) lower({namecol}) AS _k, "
+               + ", ".join(cols) + f" FROM {table} {nn} "
+               f"ORDER BY lower({namecol}), fiscal_year DESC")
+        with engine.connect() as c:
+            return pd.read_sql(_text(sql), c)
+
+    for t in (
+        latest("municipal_income_eqv", "municipality",
+               ["eqv_per_capita", "population AS muni_pop"]),
+        latest("district_chapter70", "district_name",
+               ["required_nss_per_pupil AS req_nss_pp"], notnull="required_nss_per_pupil"),
+        latest("municipal_health_insurance", "municipality",
+               ["health_insurance_expenditure AS health_ins"], notnull="health_insurance_expenditure"),
+    ):
+        d = d.merge(t, on="_k", how="left")
+
+    def _safe(a, b):
+        return a / b.replace(0, np.nan)
+
+    d["teachers_per_lowincome"] = _safe(d["teachers_per_100_students"], d["low_income_pct"])
+    d["teacher_share_of_spend"] = _safe(d["teacher_spending_per_pupil"], d["nss_per_pupil"])
+    d["nss_per_eqv"]            = _safe(d["nss_per_pupil"], d["eqv_per_capita"])
+    d["spend_vs_required_nss"]  = _safe(d["nss_per_pupil"], d["req_nss_pp"])
+    d["health_ins_per_capita"]  = _safe(d["health_ins"], d["muni_pop"])
+    return d.drop(columns=["_k", "eqv_per_capita", "muni_pop", "req_nss_pp", "health_ins"],
+                  errors="ignore")
+
+
 MODELS = [
     {
         "label":        "MCAS Grades 3–8",
@@ -2916,12 +3014,19 @@ def _run_one_model(args: tuple) -> dict:
     _p(f"Starting  (target={target!r})")
     engine = get_engine()
     df_raw = load_features(engine)
+    if USE_ACTIONABLE_POOL:
+        df_raw = add_actionable_levers(df_raw, engine)   # derived effort/intensity levers
 
     exclude = ALWAYS_EXCLUDE | {target} | model.get("also_exclude", set())
 
-    # Candidates = pre-specified pure predictors + outcome vars allowed for
-    # this model (i.e. OUTCOME_VARS that aren't in exclude).
-    allowed = PRE_SPECIFIED_POOL | (OUTCOME_VARS - exclude)
+    if USE_ACTIONABLE_POOL:
+        # Tiered pool: Tier-3 structural features (the peer match) + Tier-1/2
+        # actionable levers (importance-scored).  RBP stays tier-blind; the tier
+        # roles are imposed purely by which columns we let in.
+        allowed = STRUCTURAL_FEATURES | ACTIONABLE_LEVERS
+    else:
+        # Legacy pool: pre-specified pure predictors + allowed outcome vars.
+        allowed = PRE_SPECIFIED_POOL | (OUTCOME_VARS - exclude)
     candidates = [c for c in df_raw.columns
                   if c not in exclude
                   and c in allowed
@@ -3063,6 +3168,8 @@ def main(fast: bool = False, parallel: bool = False):
     print("\n[factor_analysis] Loading features for PDF generation...")
     engine = get_engine()
     df_raw = load_features(engine)
+    if USE_ACTIONABLE_POOL:
+        df_raw = add_actionable_levers(df_raw, engine)   # so pages resolve derived levers
     print(f"  {len(df_raw)} districts, {len(df_raw.columns)} columns")
 
     # ── Write PDF (write to /tmp first, then copy to avoid network timeouts) ──
