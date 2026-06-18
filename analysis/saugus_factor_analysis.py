@@ -756,9 +756,9 @@ def page_title(pdf, models: list[dict]):
 
     lines = [
         "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
-        "One RBP run per outcome on ALL candidate variables — no feature pruning (faithful to Kritzman)",
-        "Exhibit 5 importance is descriptive: positive = helps, ≈0 = benign / diversified away (fn. 12), <0 = harmful",
-        "Saugus analyzed as the prediction task; most/least relevant towns identified per Exhibit 4",
+        "One RBP run per outcome on ALL candidate factors — no pruning (faithful to Kritzman)",
+        "Factors split into tiers: Tier 3 (structural) matches Saugus to peer towns; Tiers 1 & 2 (actionable) are ranked",
+        "Saugus analyzed as the prediction task; importance scores the actionable factors it can change",
         "Leave-one-out LOO r validates the predictions across all MA districts",
     ]
     for i, line in enumerate(lines):
@@ -997,7 +997,7 @@ def page_combined_summary(pdf, results: list[dict]):
             str(len(r.get("lean_features", r["features"]))),
         ])
 
-    col_heads = ["Model", "Predicted", "Actual", "Gap", "Direction", "LOO r", "Features"]
+    col_heads = ["Model", "Predicted", "Actual", "Gap", "Direction", "LOO r", "Factors"]
     if summary_rows:
         tbl = ax_top.table(cellText=summary_rows, colLabels=col_heads,
                            bbox=[0.0, 0.05, 1.0, 0.88])
@@ -1057,11 +1057,11 @@ def page_combined_summary(pdf, results: list[dict]):
                     "Dropout Rate": "Dropout", "SAT Performance": "SAT",
                     "MCAS Grade 10 (ELA)": "MCAS 10",
                     "Education Budget Share": "Ed Budget"}
-    col_h2 = ["Feature", "# Models"] + [short_labels.get(m, m[:8]) for m in model_labels]
+    col_h2 = ["Factor", "# Models"] + [short_labels.get(m, m[:8]) for m in model_labels]
     xref_rows = []
     for feat, model_imps in sorted_feats:
         n_models = len(model_imps)
-        row = [feat, str(n_models)]
+        row = [_feat_meta(feat)[0], str(n_models)]
         for lbl in model_labels:
             if lbl in model_imps:
                 row.append(f"{model_imps[lbl]:+.3f}")
@@ -1103,7 +1103,7 @@ def page_combined_summary(pdf, results: list[dict]):
                             pass
             cell.set_edgecolor("#CCCCCC")
 
-    _footer(fig, "Green rows = feature appears in 3+ models.  "
+    _footer(fig, "Green rows = factor matters in 3+ outcomes.  "
             "Cell colour: green = positive importance, red = negative importance, white = not in that model (—).")
     _save(pdf, fig)
 
@@ -1581,7 +1581,7 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(_PAGE_W, _PAGE_H))
     fig.patch.set_facecolor("white")
     _header(fig, "Optimum Profile — What Overachievers Look Like",
-            "Each grid shows actionable feature values for Saugus vs overachiever towns.  "
+            "Each grid shows actionable factor values for Saugus vs over-performer towns.  "
             "Showing both peer groups tests whether the finding holds across definitions.")
 
     _make_grid(
@@ -1761,7 +1761,7 @@ def page_budget_and_staffing(pdf, engine, ridge_stats: dict | None = None) -> No
             _agreement = (
                 f"a divergence, not corroboration: a linear model assigns {_focus_desc} "
                 f"a small standardized coefficient, whereas RBP's Exhibit 5 ranks it among "
-                f"the top drivers — the kind of nonlinear / interaction effect RBP is "
+                f"the top factors — the kind of nonlinear / interaction effect RBP is "
                 f"designed to surface and linear regression misses")
         _ridge_note = (
             f"Independent cross-validation (computed in this run): standardized Ridge "
@@ -2306,8 +2306,8 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     fig, axes = _paper_fig(1, 2)
     ax_l, ax_r = axes
 
-    _header(fig, f"What Overachievers Do Differently: {label}",
-            "Feature values for top overachievers vs Saugus — ordered by RBP variable importance")
+    _header(fig, f"What Over-Performers Do Differently: {label}",
+            "Actionable-factor values for the top over-performing towns vs Saugus — ordered by importance")
 
     # ── Left: heatmap of feature values (z-scored relative to all districts) ──
     ax_l.axis("off")
@@ -2325,10 +2325,10 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         if av >= 10:   return f"{v:.1f}"
         return f"{v:.2f}"
 
-    # 3 comparison towns keeps 6 columns total (Feature, Saugus, 3 towns, Imp)
-    # which fits the left panel without overflow at fontsize 7.5
-    n_compare = min(3, len(oa_names))
-    col_names = ["Feature", "Saugus"] + [n[:9] for n in oa_names[:n_compare]] + ["Imp"]
+    # 2 comparison towns leaves room to widen the Factor column so the full
+    # factor labels fit without colliding with the values.
+    n_compare = min(2, len(oa_names))
+    col_names = ["Factor", "Saugus"] + [n[:9] for n in oa_names[:n_compare]] + ["Imp"]
     rows = []
     for feat in feats_ordered[:15]:
         sv = saugus_vals.get(feat, float("nan"))
@@ -2337,11 +2337,11 @@ def page_what_overachievers_did(pdf, label: str, target: str,
             v = feat_df.loc[name, feat] if feat in feat_df.columns else float("nan")
             oa_vals.append(_fmt(v))
         imp_val = float(imp.get(feat, 0))
-        rows.append([feat[:28], _fmt(sv)] + oa_vals + [f"{imp_val:+.3f}"])
+        rows.append([_feat_meta(feat)[0][:34], _fmt(sv)] + oa_vals + [f"{imp_val:+.3f}"])
 
-    # ── Left: feature comparison table ──────────────────────────────────────────
+    # ── Left: factor comparison table ──────────────────────────────────────────
     ax_l.text(0.5, 0.98,
-              f"Feature values — Saugus (highlighted) vs overachievers\n"
+              f"Actionable-factor values — Saugus (highlighted) vs over-performers\n"
               f"Ordered by |importance|, top {min(len(feats_ordered), 15)} shown",
               ha="center", va="top", fontsize=8.5, fontweight="bold",
               color=_BLUE, transform=ax_l.transAxes)
@@ -2350,20 +2350,21 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         tbl = ax_l.table(cellText=rows, colLabels=used_cols,
                           bbox=[0.0, 0.0, 1.0, 0.90], cellLoc="center")
         tbl.auto_set_font_size(False)
-        tbl.set_fontsize(7.5)
+        tbl.set_fontsize(6.5)
 
-        # Explicit column widths: Feature=0.34, Saugus=0.13,
-        # each comparison town=0.14, Imp=0.11  (sum=1.0 for 3 towns)
+        # Wide Factor column for the full labels; 2 comparison towns.
         n_cols = len(used_cols)
-        n_town_cols = n_cols - 3          # subtract Feature, Saugus, Imp
-        town_w = 0.14
-        feat_w = 0.34
-        saugus_w = 0.13
-        imp_w   = max(0.05, 1.0 - feat_w - saugus_w - n_town_cols * town_w)
+        n_town_cols = n_cols - 3          # subtract Factor, Saugus, Imp
+        feat_w   = 0.52
+        saugus_w = 0.11
+        town_w   = 0.13
+        imp_w    = max(0.05, 1.0 - feat_w - saugus_w - n_town_cols * town_w)
         explicit_w = [feat_w, saugus_w] + [town_w] * n_town_cols + [imp_w]
         for (row_idx, col_idx), cell in tbl.get_celld().items():
             if col_idx < len(explicit_w):
                 cell.set_width(explicit_w[col_idx])
+            if col_idx == 0 and row_idx > 0:           # left-align factor labels
+                cell.set_text_props(ha="left")
             if row_idx == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
             elif col_idx == 1 and row_idx > 0:
@@ -2397,7 +2398,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         oa_rows_display = [[">> Saugus",
                              f"{s_act:.1f}", f"{s_pred:.1f}",
                              f"{s_res:+.1f}pp"]] + oa_rows
-        ax_r.text(0.5, 0.98, "Overachiever residuals vs Saugus",
+        ax_r.text(0.5, 0.98, "Over-performer residuals vs Saugus",
                   ha="center", va="top", fontsize=9, fontweight="bold",
                   color=_BL, transform=ax_r.transAxes)
         oa_tbl = ax_r.table(cellText=oa_rows_display,
@@ -2415,7 +2416,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
             cell.set_edgecolor("#CCCCCC")
 
     _footer(fig, "Gap = actual − predicted.  Positive = outperforming demographic expectation.  "
-            "Feature values shown in raw units; importance scores from RBP Exhibit 5.")
+            "Factor values shown in raw units; importance scores from RBP Exhibit 5.")
     _save(pdf, fig)
 
 
@@ -2446,9 +2447,9 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
     "attending_pct":             ("HS completers attending college",               "pct"),
     # Derived actionable "effort / intensity" levers (see add_actionable_levers)
     "teachers_per_lowincome":    ("Teachers per low-income student",               "rate"),
-    "nss_per_eqv":               ("School spending vs. property wealth",           "rate"),
-    "spend_vs_required_nss":     ("Spending vs Ch70 required minimum (×)",         "rate"),
-    "teacher_share_of_spend":    ("Teacher pay share of school spending",          "rate"),
+    "nss_per_eqv":               ("School spend vs. property wealth",              "rate"),
+    "spend_vs_required_nss":     ("Spending vs Ch70 required minimum",             "rate"),
+    "teacher_share_of_spend":    ("Teacher share of school spending",              "rate"),
     "health_ins_per_capita":     ("Health insurance $ per resident",               "dollar"),
 }
 
@@ -2783,8 +2784,9 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
               ha="left", va="top", fontsize=9, color=_BL,
               transform=ax_r.transAxes, linespacing=1.5)
 
-    _footer(fig, "Synthesis of the preceding three pages: factor selection, Saugus RBP "
-            "analysis, and over-/under-performer comparison.")
+    _footer(fig, "Left: top actionable factors by RBP importance, Saugus vs. the state "
+            "median.  Right: the same factors for the towns that most beat their own "
+            "demographic prediction.  Structural traits are used for peer-matching only.")
     _save(pdf, fig)
 
 
