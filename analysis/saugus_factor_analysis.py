@@ -2580,9 +2580,10 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
                      f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
         sent += ".  "
         if not ctx.get("top3_stable", True):
-            sent += ("(The #1 lever is seed-stable; the lower-ranked levers are not "
-                     "seed-stable — they reshuffle between random grids, so read the "
-                     "top 2–3 as a group rather than the exact order.)  ")
+            sent += ("(Seed-stability: the top lever is seed-stable; the leading levers "
+                     "below it recur across random grids but their order and importance "
+                     "values jump run-to-run — read them as a co-equal group, not a "
+                     "strict ranking.)  ")
     takeaway = f"{perf}.  {sent}{q['lever']}"
     return bottom, takeaway
 
