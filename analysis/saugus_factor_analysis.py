@@ -795,6 +795,53 @@ def page_title(pdf, models: list[dict]):
     _save(pdf, fig)
 
 
+def page_tiers_explained(pdf):
+    """Plain-language guide to the three factor tiers and how the report uses them."""
+    fig, ax = _paper_fig(); ax.axis("off")
+    _header(fig, "How to Read This Report — Three Tiers of Factors",
+            "This report matches Saugus to demographically-similar towns using Tier 3, "
+            "then ranks the Tier 1 & 2 levers Saugus can actually change.  Structural "
+            "traits are the backdrop for finding peers — never a recommendation.")
+
+    tiers = [
+        ("TIER 1 — Directly votable  (Town Meeting / ballot)", _GREEN,
+         "What the town changes by a vote.",
+         ["Education's share of the municipal budget",
+          "Residential tax rate · Proposition 2½ override · debt exclusion",
+          "Spending above the state-required school minimum (Ch. 70)",
+          "Reserves (free cash, stabilization) · OPEB funding · capital projects"]),
+        ("TIER 2 — Policy / management  (administration decides)", _BLUE,
+         "What the school department & town administration run day-to-day (funded by Tier 1).",
+         ["Chronic absenteeism — attendance & re-engagement programs",
+          "Teacher staffing levels and pay",
+          "How the school dollar splits between classroom and overhead",
+          "Health-insurance plan design / GIC membership"]),
+        ("TIER 3 — Structural  (NOT changeable by vote)", _GREY,
+         "What the community IS — used ONLY to find Saugus's true peer towns.",
+         ["Household income · property wealth · adult education",
+          "Poverty · English-learner · special-education shares",
+          "Housing tenure · district enrollment · regional economy",
+          "→ Defines the peer group; never shown as a 'lever' in this report."]),
+    ]
+    y = 0.84
+    for title, color, sub, items in tiers:
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (0.03, y - 0.225), 0.94, 0.205, boxstyle="round,pad=0.012",
+            facecolor="#FAFAFA", edgecolor=color, linewidth=1.8, transform=ax.transAxes))
+        ax.text(0.055, y - 0.01, title, fontsize=12.5, fontweight="bold",
+                color=color, transform=ax.transAxes, va="top")
+        ax.text(0.055, y - 0.052, sub, fontsize=9, color=_BL, style="italic",
+                transform=ax.transAxes, va="top")
+        for i, it in enumerate(items):
+            ax.text(0.075, y - 0.088 - i * 0.030, "•  " + it, fontsize=8.8,
+                    color=_BL, transform=ax.transAxes, va="top")
+        y -= 0.275
+
+    _footer(fig, "Tiers 1 & 2 = actionable levers (what this report ranks).  "
+            "Tier 3 = structural controls (the peer-matching basis, not recommendations).")
+    _save(pdf, fig)
+
+
 def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
     """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
     fig, axes = _paper_fig(1, 2)
@@ -952,19 +999,20 @@ def page_combined_summary(pdf, results: list[dict]):
 
     # ── Bottom: feature cross-reference ──────────────────────────────────────
     ax_bot.axis("off")
-    ax_bot.text(0.5, 0.98, "Feature Cross-Reference — Which Factors Earn Their Place Across Models",
+    ax_bot.text(0.5, 0.98, "Actionable Lever Cross-Reference — Which Levers Matter Across Outcomes",
                 ha="center", va="top", fontsize=10, fontweight="bold",
                 color=_BLUE, transform=ax_bot.transAxes)
     ax_bot.text(0.5, 0.93,
-                "A feature appearing in multiple models is a robust signal, not a model-specific artifact.",
+                "Actionable levers only (structural traits are matching-only).  A lever "
+                "that matters in multiple outcomes is a robust target.",
                 ha="center", va="top", fontsize=8.5, color=_GREY, transform=ax_bot.transAxes)
 
-    # Build cross-reference: feature → {model: importance}
+    # Build cross-reference: lever → {model: importance}  (actionable only)
     model_labels = [r["label"] for r in results]
     feature_set: dict[str, dict] = {}
     for r in results:
         s = r.get("saugus")
-        lean = r.get("lean_features", r["features"])
+        lean = _display_features(r.get("lean_features", r["features"]))
         imp_series = _display_importance(s) if s else None
         for feat in lean:
             if feat not in feature_set:
@@ -2216,10 +2264,12 @@ def page_what_overachievers_did(pdf, label: str, target: str,
                 ha="center", va="center")
         _save(pdf, fig); return
 
-    # Order features by |importance| descending
-    feats_ordered = imp.reindex([f for f in lean_features if f in feat_df.columns]).abs().sort_values(ascending=False).index.tolist()
+    # Order ACTIONABLE levers by |importance| descending (structural traits are
+    # matching-only and not shown).
+    _disp = _display_features([f for f in lean_features if f in feat_df.columns])
+    feats_ordered = imp.reindex(_disp).abs().sort_values(ascending=False).index.tolist()
     if not feats_ordered:
-        feats_ordered = lean_features
+        feats_ordered = _display_features(lean_features)
 
     fig, axes = _paper_fig(1, 2)
     ax_l, ax_r = axes
@@ -2562,9 +2612,11 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     df2 = df_raw.copy()
     df2.index = df2["district_name"]
     imp = _display_importance(analysis)
+    # Show only ACTIONABLE levers as drivers — structural traits match peers
+    # silently and are hidden from this table.
+    _disp = _display_features([f for f in lean_features if f in df2.columns])
     feats_ordered = (
-        imp.reindex([f for f in lean_features if f in df2.columns])
-           .abs().sort_values(ascending=False).index.tolist()[:5]
+        imp.reindex(_disp).abs().sort_values(ascending=False).index.tolist()[:5]
     )
 
     overachievers = _find_overachievers(loo, target, n=8)
@@ -2612,13 +2664,13 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
               ha="left", va="top", fontsize=9.5, color=_BL,
               transform=ax_l.transAxes, linespacing=1.5)
 
-    ax_l.text(0.0, 0.50, "What Shapes Saugus's Predicted Peer Group", ha="left", va="top",
+    ax_l.text(0.0, 0.50, "Top Actionable Levers (what Saugus can change)", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
-    ax_l.text(0.0, 0.445,
-              "Top RBP Exhibit 5 drivers of the Saugus prediction, vs. the "
-              "statewide median:",
+    ax_l.text(0.0, 0.45,
+              "Highest-importance actionable factors, Saugus vs. statewide median.\n"
+              "Structural traits match peers silently and are not shown here.",
               ha="left", va="top", fontsize=8, color=_GREY,
-              transform=ax_l.transAxes)
+              transform=ax_l.transAxes, linespacing=1.3)
 
     driver_rows = [[d["desc"], _fmt_feature_val(d["saugus"], d["kind"]),
                     _fmt_feature_val(d["median"], d["kind"]), f"{d['imp']:+.2f}"]
@@ -2855,6 +2907,24 @@ ACTIONABLE_LEVERS = {
     "teacher_share_of_spend",     # share of the school dollar reaching teachers
     "health_ins_per_capita",      # benefit-cost drag
 }
+
+
+def _is_structural(feat: str) -> bool:
+    """A Tier-3 structural trait — used for peer-matching, NOT an actionable lever."""
+    return USE_ACTIONABLE_POOL and feat in STRUCTURAL_FEATURES
+
+
+def _display_features(features) -> list:
+    """
+    Features to SHOW as drivers/levers in the narrative tables.  In actionable
+    mode the Tier-3 structural traits define Saugus's peer group and are used
+    for matching only — they are hidden from the 'what to do' tables so the
+    report surfaces what the town can actually change.  Order is preserved.
+    """
+    if not USE_ACTIONABLE_POOL:
+        return list(features)
+    levers = [f for f in features if f in ACTIONABLE_LEVERS]
+    return levers or list(features)
 
 
 def add_actionable_levers(df: pd.DataFrame, engine) -> pd.DataFrame:
@@ -3131,6 +3201,41 @@ def _run_one_model(args: tuple) -> dict:
     }
 
 
+def _build_actionable_report(pdf, results, df_raw, engine):
+    """
+    Lean, ACTIONABLE report — only pages that tell Saugus what it can change:
+      1. Title
+      2. How to read it (the three factor tiers)
+      3. Combined standings across the four outcomes
+      4. Per outcome: "What This Means" (actionable drivers) + what the
+         over-performing peers do differently
+      5. Fiscal levers: budget/staffing trajectory + fixed-cost breakdown
+      6. Optimum profile (what over-performers look like on actionable factors)
+
+    Intentionally OMITTED (methodology / structural — not actionable):
+      page_candidate_pool, page_correlation_matrix, page_importance_selection,
+      page_saugus_analysis, page_overachievers_scatter, page_scatter_all.
+      They remain defined and are one line away if ever needed.
+    """
+    page_title(pdf, results)
+    page_tiers_explained(pdf)
+    page_combined_summary(pdf, results)
+    for r in results:
+        if r.get("saugus"):
+            page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
+                           r.get("lean_features", r["features"]))
+            page_what_overachievers_did(pdf, r["label"], r["target"],
+                                        r["saugus"], df_raw,
+                                        r.get("lean_features", r["features"]))
+    _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
+    _ridge_stats = (compute_ridge_validation(
+        df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
+        if _mcas_r else None)
+    page_budget_and_staffing(pdf, engine, _ridge_stats)
+    page_fixed_costs(pdf, engine)
+    page_optimum_profile(pdf, results, df_raw)
+
+
 def main(fast: bool = False, parallel: bool = False):
     # n_random_cells = number of random grid CELLS sampled per prediction task,
     # i.e. random (subset, threshold, censoring-mode) triples (see rbp._build_grid).
@@ -3177,53 +3282,7 @@ def main(fast: bool = False, parallel: bool = False):
     _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
     print(f"\n[factor_analysis] Writing PDF...")
     with PdfPages(str(_tmp_pdf)) as pdf:
-        page_title(pdf, results)
-        page_candidate_pool(pdf)
-        page_correlation_matrix(pdf, df_raw)
-
-        for r in results:
-            page_importance_selection(pdf, r["label"],
-                                      r.get("all_candidates", r["features"]),
-                                      r.get("full_importance",
-                                            r["saugus"]["result"].variable_importance
-                                            if r.get("saugus") else pd.Series()),
-                                      r.get("lean_features", r["features"]),
-                                      univariate_loo=r.get("univariate_loo"),
-                                      n_random=r.get("n_random_cells"),
-                                      top3_stable=r.get("importance_top3_stable"))
-            if r["saugus"]:
-                page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
-                page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
-                page_what_overachievers_did(pdf, r["label"], r["target"],
-                                            r["saugus"], df_raw,
-                                            r.get("lean_features", r["features"]))
-                page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
-                               r.get("lean_features", r["features"]))
-
-        # Combined summary + cross-reference table
-        page_combined_summary(pdf, results)
-
-        # Trajectory context from Schedule A + DESE staffing.  Ridge cross-check
-        # computed live from the MCAS model's candidate panel.
-        _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
-        _ridge_stats = (compute_ridge_validation(
-            df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
-            if _mcas_r else None)
-        page_budget_and_staffing(pdf, engine, _ridge_stats)
-
-        # Fixed costs breakdown: health insurance, composition, reserve accumulation
-        page_fixed_costs(pdf, engine)
-
-        # Synthesis and optimum profile (after the model detail, before scatter)
-        page_optimum_profile(pdf, results, df_raw)
-
-        # Combined scatter
-        saugus_with_data = [r["saugus"] for r in results if r["saugus"]]
-        if len(saugus_with_data) == 3:
-            for r in results:
-                if r["saugus"]:
-                    r["saugus"]["label"] = r["label"]
-            page_scatter_all(pdf, [r["saugus"] for r in results if r["saugus"]])
+        _build_actionable_report(pdf, results, df_raw, engine)
 
     # ── Write CSV summary ──────────────────────────────────────────────────────
     rows = []
@@ -3267,41 +3326,7 @@ def regen_pdf():
     print(f"[regen-pdf] Regenerating PDF ({len(results)} models)...")
     _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
     with PdfPages(str(_tmp_pdf)) as pdf:
-        page_title(pdf, results)
-        page_candidate_pool(pdf)
-        page_correlation_matrix(pdf, df_raw)
-        for r in results:
-            page_importance_selection(pdf, r["label"],
-                                      r.get("all_candidates", r["features"]),
-                                      r.get("full_importance",
-                                            r["saugus"]["result"].variable_importance
-                                            if r.get("saugus") else pd.Series()),
-                                      r.get("lean_features", r["features"]),
-                                      univariate_loo=r.get("univariate_loo"),
-                                      n_random=r.get("n_random_cells"),
-                                      top3_stable=r.get("importance_top3_stable"))
-            if r["saugus"]:
-                page_saugus_analysis(pdf, r["label"], r["target"], r["saugus"])
-                page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
-                page_what_overachievers_did(pdf, r["label"], r["target"],
-                                            r["saugus"], df_raw,
-                                            r.get("lean_features", r["features"]))
-                page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
-                               r.get("lean_features", r["features"]))
-        page_combined_summary(pdf, results)
-        _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
-        _ridge_stats = (compute_ridge_validation(
-            df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
-            if _mcas_r else None)
-        page_budget_and_staffing(pdf, get_engine(), _ridge_stats)
-        page_fixed_costs(pdf, get_engine())
-        page_optimum_profile(pdf, results, df_raw)
-        saugus_analyses = [r["saugus"] for r in results if r.get("saugus")]
-        if len(saugus_analyses) >= 3:
-            for r in results:
-                if r.get("saugus"):
-                    r["saugus"]["label"] = r["label"]
-            page_scatter_all(pdf, saugus_analyses[:3])
+        _build_actionable_report(pdf, results, df_raw, get_engine())
     _shutil.copy2(str(_tmp_pdf), str(OUTPUT_PDF))
     print(f"[regen-pdf] Done → {OUTPUT_PDF}")
 
