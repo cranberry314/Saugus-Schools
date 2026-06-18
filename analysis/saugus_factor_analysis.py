@@ -775,19 +775,44 @@ def page_title(pdf, models: list[dict]):
             ha="center", va="center", fontsize=10, fontweight="bold",
             color=_BLUE, transform=ax.transAxes)
     col_w = box_w / len(models)
+
+    def _fit_metrics(m):
+        """(LOO r, r², MAE in pp) from the leave-one-out predictions."""
+        s = m.get("saugus")
+        if not s or "loo_df" not in s:
+            return None
+        loo = s["loo_df"].dropna(subset=["actual", "predicted"])
+        if len(loo) < 3:
+            return None
+        a = loo["actual"].values.astype(float)
+        p = loo["predicted"].values.astype(float)
+        mult = 100 if np.nanmax(np.abs(a)) <= 1.5 else 1   # 0–1 fraction → pp
+        a, p = a * mult, p * mult
+        r = float(np.corrcoef(a, p)[0, 1])
+        return r, r * r, float(np.mean(np.abs(a - p)))
+
     for j, m in enumerate(models):
         xpos = box_x0 + (j + 0.5) * col_w
         n_candidates = len(m.get("all_candidates", m["features"]))
-        imp = m.get("full_importance")
-        n_pos = int((imp > 0).sum()) if imp is not None else 0
-        ax.text(xpos, 0.25, m["label"], ha="center", fontsize=9,
+        fm = _fit_metrics(m)
+        ax.text(xpos, 0.255, m["label"], ha="center", fontsize=9,
                 color=_BL, fontweight="bold", transform=ax.transAxes)
-        ax.text(xpos, 0.20, f"Predicted on {n_candidates} candidates",
+        ax.text(xpos, 0.205, f"Predicted on {n_candidates} factors",
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
-        ax.text(xpos, 0.16, f"Positive importance: {n_pos} of {n_candidates}",
-                ha="center", fontsize=8.5, color=_GREEN, transform=ax.transAxes)
-        ax.text(xpos, 0.11, f"LOO r = {m['loo_score']:+.3f}",
-                ha="center", fontsize=8.5, color=_BLUE, transform=ax.transAxes)
+        if fm:
+            r, r2, mae = fm
+            ax.text(xpos, 0.16, f"LOO r = {r:.2f}  ·  r² = {r2:.2f}",
+                    ha="center", fontsize=8.5, color=_BLUE, fontweight="bold",
+                    transform=ax.transAxes)
+            ax.text(xpos, 0.115, f"Typical error ± {mae:.1f} pp",
+                    ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
+
+    ax.text(0.5, 0.065,
+            "LOO r = leave-one-out correlation of predicted vs. actual (range −1 to +1; "
+            "noise below ≈ 0.15 at this sample size).  r² = share of town-to-town variance "
+            "explained.  Typical error = mean absolute error, in percentage points.",
+            ha="center", va="center", fontsize=6.8, color=_GREY, style="italic",
+            transform=ax.transAxes)
 
     _footer(fig,
             "Relevance-Based Prediction, utilizing Czasonis, Kritzman & Turkington (2024) "
