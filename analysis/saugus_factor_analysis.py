@@ -1424,12 +1424,16 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     sim_pool = _demo_similar_overachievers(df2, saugus, oa_pool,
                                            threshold=DEMO_SIM_THRESHOLD)
 
-    # Actionable features shown in both grids
+    # Actionable levers shown in both grids — the validated set (lever screen),
+    # ordered roughly by importance.  (feature, label, unit, higher_is_better)
     actionable = [
-        ("chronic_absenteeism_pct",   "Chronic absenteeism (%)",    "%", False),
-        ("teachers_per_100_students", "Teachers / 100 students",    "",  True),
-        ("avg_teacher_salary",        "Avg teacher salary",         "$", True),
-        ("nss_per_pupil",             "Net school spending / pupil","$", True),
+        ("chronic_absenteeism_pct",   "Chronic absenteeism (%)",         "%", False),
+        ("teachers_per_100_students", "Teachers / 100 students",         "",  True),
+        ("teachers_per_lowincome",    "Teachers / 100 ÷ low-income %",    "",  True),
+        ("spend_vs_required_nss",     "Spending vs Ch70 minimum (×)",     "",  True),
+        ("nss_per_eqv",               "School spend ÷ property wealth",   "",  True),
+        ("teacher_share_of_spend",    "Teacher share of school $",        "",  True),
+        ("health_ins_per_capita",     "Health insurance $ / resident",    "$", False),
     ]
 
     # ── Helper: build a comparison grid ─────────────────────────────────────
@@ -1476,11 +1480,15 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
                 if np.isnan(v): return "—"
                 if unit == "$": return f"${v:,.0f}"
                 if unit == "%": return f"{v:.1f}%"
+                if abs(v) < 1:  return f"{v:.3f}"      # small ratios
+                if abs(v) < 10: return f"{v:.2f}"
                 return f"{v:.1f}"
 
             def _fgap(v):
                 if unit == "$": return f"${v:+,.0f}"
                 if unit == "%": return f"{v:+.1f}pp"
+                if abs(v) < 1:  return f"{v:+.3f}"
+                if abs(v) < 10: return f"{v:+.2f}"
                 return f"{v:+.1f}"
 
             town_vals = []
@@ -2560,7 +2568,7 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
     sent = ""
     if drivers:
         top = drivers[0]
-        sent = (f"The strongest RBP driver of Saugus's predicted peer group is "
+        sent = (f"The strongest actionable driver is "
                 f"{top['desc'].lower()} "
                 f"({_fmt_feature_val(top['saugus'], top['kind'])} vs the "
                 f"{_fmt_feature_val(top['median'], top['kind'])} state median)")
@@ -2572,9 +2580,9 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
                      f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
         sent += ".  "
         if not ctx.get("top3_stable", True):
-            sent += ("(Driver ranking is close enough at the top that the #1 "
-                     "factor is not fully seed-stable — read the top group, not the "
-                     "exact order.)  ")
+            sent += ("(The lead lever is stable across random grids; the lower-ranked "
+                     "levers reshuffle between runs, so read the top 2–3 as a group "
+                     "rather than the exact order.)  ")
     takeaway = f"{perf}.  {sent}{q['lever']}"
     return bottom, takeaway
 
@@ -3224,6 +3232,8 @@ def _build_actionable_report(pdf, results, df_raw, engine):
         if r.get("saugus"):
             page_synthesis(pdf, r["label"], r["target"], r["saugus"], df_raw,
                            r.get("lean_features", r["features"]))
+            # Visual standing: actual vs predicted, Saugus starred, peers labeled.
+            page_overachievers_scatter(pdf, r["label"], r["target"], r["saugus"])
             page_what_overachievers_did(pdf, r["label"], r["target"],
                                         r["saugus"], df_raw,
                                         r.get("lean_features", r["features"]))
