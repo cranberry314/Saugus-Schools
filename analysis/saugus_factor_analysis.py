@@ -2698,7 +2698,7 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
         valid_gap = [d for d in drivers if not pd.isna(d["oa_gap"])]
         if valid_gap:
             gd = max(valid_gap, key=lambda d: abs(d["oa_gap"]))
-            sent += (f"; the widest gap to the over-performing districts is "
+            sent += (f"; the widest gap to the comparable towns that scored better is "
                      f"{gd['desc'].lower()} "
                      f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
         sent += ".  "
@@ -2751,7 +2751,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
         imp.reindex(_disp).abs().sort_values(ascending=False).index.tolist()[:5]
     )
 
-    overachievers = _find_overachievers(loo, target, n=8)
+    overachievers = _comparable_overperformers(loo, target, n=8)
     feat_df = df_raw[["district_name"] + lean_features].copy()
     feat_df.index = feat_df["district_name"]
     oa_names = [n for n in overachievers.index if n in feat_df.index]
@@ -2799,8 +2799,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     ax_l.text(0.0, 0.50, "Top Actionable Factors (what Saugus can change)", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
     ax_l.text(0.0, 0.45,
-              "Highest-importance actionable factors, Saugus vs. statewide median.\n"
-              "Structural traits match peers silently and are not shown here.",
+              "Highest-importance actionable factors, Saugus vs. the statewide median.",
               ha="left", va="top", fontsize=8, color=_GREY,
               transform=ax_l.transAxes, linespacing=1.3)
 
@@ -2833,12 +2832,12 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
               transform=ax_l.transAxes, linespacing=1.4)
 
     # ── Right: what over-performers do differently + takeaway ───────────────
-    ax_r.text(0.0, 0.985, "What Over-Performing Towns Do Differently", ha="left", va="top",
+    ax_r.text(0.0, 0.985, "What Comparable Better Towns Do Differently", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_GREEN, transform=ax_r.transAxes)
 
     ax_r.text(0.0, 0.91,
-              f"Same factors, for the {len(oa_names)} MA districts that most exceed "
-              f"their own prediction:",
+              f"Same factors, for the {len(oa_names)} towns the model predicted like "
+              f"Saugus that scored better:",
               ha="left", va="top", fontsize=8, color=_GREY,
               transform=ax_r.transAxes)
 
@@ -2865,7 +2864,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
             cell.set_edgecolor("#CCCCCC")
         ax_r.text(0.0, 0.625,
                   textwrap.fill(
-                      "Difference = over-performer median − Saugus.  Sign direction "
+                      "Difference = comparable-town median − Saugus.  Sign direction "
                       "depends on the factor; see takeaway below.", width=80),
                   ha="left", va="top", fontsize=7.5, color=_GREY, style="italic",
                   transform=ax_r.transAxes, linespacing=1.4)
@@ -2883,8 +2882,8 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
               transform=ax_r.transAxes, linespacing=1.5)
 
     _footer(fig, "Left: top actionable factors by RBP importance, Saugus vs. the state "
-            "median.  Right: the same factors for the towns that most beat their own "
-            "demographic prediction.  Structural traits are used for peer-matching only.")
+            "median.  Right: the same factors for the towns the model predicted like Saugus "
+            "that scored better.  Structural traits are used for peer-matching only.")
     _save(pdf, fig)
 
 
