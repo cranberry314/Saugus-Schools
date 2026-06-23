@@ -101,7 +101,7 @@ def latest_analysis_year(engine) -> int:
     carries teacher_spending_per_pupil — a central metric we will not drop) and
     the MCAS outcomes; the DESE spending feed lags the MCAS/budget feeds by about
     a year.  We therefore take the latest year present in BOTH, which is the
-    latest year the report can be built without leaving a key spending lever
+    latest year the report can be built without leaving a key spending factor
     blank.  Derived from the data (no hardcoded year) and self-updating: when the
     spending feed catches up, the analysis year advances on its own.  The chosen
     year is carried on df.attrs['analysis_fiscal_year'] and labelled on the title
@@ -561,13 +561,6 @@ def analyze_saugus(df: pd.DataFrame,
         gap_pp      : actual − predicted (percentage points)
         n_above     : number of districts outperforming Saugus (by residual)
     """
-    sub = df[features + [target]].dropna().copy()
-    if SAUGUS not in sub["district_name"].values if "district_name" in sub.columns else []:
-        sub_idx = df.dropna(subset=features + [target]).index
-        saugus_mask = df.loc[sub_idx, "district_name"] == SAUGUS
-    else:
-        saugus_mask = sub["district_name"] == SAUGUS if "district_name" in sub.columns else None
-
     # Use the full df with district_name for lookup, then drop it for RBP
     full = df[["district_name"] + features + [target]].dropna().copy()
     saugus_row = full[full["district_name"] == SAUGUS]
@@ -688,12 +681,14 @@ def _display_importance(analysis: dict) -> pd.Series:
     """
     Canonical Exhibit-5 importance Series for any display.
 
-    Returns the seed-averaged all-candidate importance computed once in Step 1
-    (attached to the analysis dict as 'display_importance'), so every page —
-    the all-candidate chart (p.4), the lean Saugus chart (p.5), the synthesis
-    drivers table, and the combined summary — reads the SAME numbers and cannot
-    disagree on the top driver.  Falls back to the run's own importance only for
-    older caches that predate this field.
+    Returns the single canonical-seed (seed 42) all-candidate importance from
+    Step 1 (attached to the analysis dict as 'display_importance').  It is NOT
+    seed-averaged: saugus_importance reads one dense grid, and the check-seeds are
+    used only to test top-3 stability, never to average.  Every page — the
+    all-candidate chart (p.4), the lean Saugus chart (p.5), the synthesis drivers
+    table, and the combined summary — reads this SAME Series and cannot disagree
+    on the top driver.  Falls back to the run's own importance only for older
+    caches that predate this field.
     """
     imp = analysis.get("display_importance")
     if imp is None:
@@ -814,7 +809,7 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
         "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
         "One RBP run per outcome over the full candidate pool — no in-model pruning (faithful to Kritzman)",
         "The one discretionary step is which factors enter and how they tier: Tier 3 (structural) matches Saugus to peers; Tiers 1 & 2 (actionable) are ranked",
-        "Saugus analyzed as the prediction task; importance flags where it is most distinctive among actionable factors — a prediction-sharpening measure, not a causal lever",
+        "Saugus analyzed as the prediction task; importance flags where it is most distinctive among actionable factors — a prediction-sharpening measure, not a causal driver",
         "Leave-one-out LOO r validates the predictions across all MA districts",
     ]
     for i, line in enumerate(lines):
@@ -833,7 +828,10 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
     col_w = box_w / len(models)
 
     def _fit_metrics(m):
-        """(LOO r, r², MAE in pp) from the leave-one-out predictions."""
+        """(LOO r, out-of-sample R², MAE in pp) from the leave-one-out predictions.
+        R² is the true 1 − SSE/SST, NOT the squared correlation: squared r overstates
+        variance explained whenever predictions are compressed toward the mean, which
+        RBP's weighted averages do."""
         s = m.get("saugus")
         if not s or "loo_df" not in s:
             return None
@@ -845,7 +843,10 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
         mult = 100 if _on_fraction_scale(a) else 1   # 0–1 fraction → pp
         a, p = a * mult, p * mult
         r = float(np.corrcoef(a, p)[0, 1])
-        return r, r * r, float(np.mean(np.abs(a - p)))
+        sse = float(((a - p) ** 2).sum())
+        sst = float(((a - a.mean()) ** 2).sum())
+        r2 = (1.0 - sse / sst) if sst > 0 else float("nan")
+        return r, r2, float(np.mean(np.abs(a - p)))
 
     for j, m in enumerate(models):
         xpos = box_x0 + (j + 0.5) * col_w
@@ -857,7 +858,7 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
                 ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
         if fm:
             r, r2, mae = fm
-            ax.text(xpos, 0.16, f"LOO r = {r:.2f}  ·  r² = {r2:.2f}",
+            ax.text(xpos, 0.16, f"LOO r = {r:.2f}  ·  R² = {r2:.2f}",
                     ha="center", fontsize=8.5, color=_BLUE, fontweight="bold",
                     transform=ax.transAxes)
             ax.text(xpos, 0.115, f"Typical error ± {mae:.1f} pp",
@@ -865,8 +866,9 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
 
     ax.text(0.5, 0.065,
             "LOO r = leave-one-out correlation of predicted vs. actual (range −1 to +1; "
-            "noise below ≈ 0.15 at this sample size).  r² = share of town-to-town variance "
-            "explained.  Typical error = mean absolute error, in percentage points.",
+            "noise below ≈ 0.15 at this sample size).  R² = 1 − SSE/SST, the out-of-sample "
+            "share of town-to-town variance explained (≤ r² because RBP's weighted averages "
+            "compress toward the mean).  Typical error = mean absolute error, in percentage points.",
             ha="center", va="center", fontsize=6.8, color=_GREY, style="italic",
             transform=ax.transAxes)
 
@@ -1162,7 +1164,7 @@ def page_combined_summary(pdf, results: list[dict]):
                 "that matters in multiple outcomes is a robust target.",
                 ha="center", va="top", fontsize=8.5, color=_GREY, transform=ax_bot.transAxes)
 
-    # Build cross-reference: lever → {model: importance}  (actionable only)
+    # Build cross-reference: factor → {model: importance}  (actionable only)
     model_labels = [r["label"] for r in results]
     feature_set: dict[str, dict] = {}
     for r in results:
@@ -1313,7 +1315,7 @@ def page_candidate_pool(pdf):
         ["teachers_per_100_fte",     "t_per_100_students",  "r=+0.872 — duplicate ratio"],
         ["teacher_spending_pp",      "nss_per_pupil",       "r≈+0.85  — redundant spending"],
         ["gf_exp_per_capita",        "res_tax_rate",        "r≈+0.75  — redundant municipal"],
-        ["pct_65_plus",              "—",                   "Weak signal, no policy lever"],
+        ["pct_65_plus",              "—",                   "Weak signal, not actionable"],
         ["com_tax_rate",             "res_tax_rate",        "r≈+0.65  — commercial tax dup"],
         ["mcas10_math",              "mcas10_ela",          "r=+0.90  — one grade-10 measure"],
     ]
@@ -1648,7 +1650,7 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
 
     sim_pool = _peers["sim_pool"]
 
-    # Actionable levers shown in both grids — the validated set (lever screen),
+    # Actionable factors shown in both grids — the validated set (factor screen),
     # ordered roughly by importance.  (feature, label, unit, higher_is_better)
     actionable = [
         ("chronic_absenteeism_pct",   "Chronic absenteeism (%)",         "%", False),
@@ -1994,7 +1996,7 @@ def page_budget_and_staffing(pdf, engine, results: list[dict],
                 f"subject town is an outlier, and Saugus sits well into the upper tail of the "
                 f"statewide distribution on {_focus_desc}.  A high RBP rank therefore sharpens Saugus's "
                 f"prediction; on its own it is not evidence that {_focus_desc} is a uniquely "
-                f"powerful lever")
+                f"powerful driver")
         _validation = (
             f"Independent cross-validation (computed in this run): standardized Ridge "
             f"regression on {ridge_stats['n']} MA districts (5-fold CV R²="
@@ -2589,10 +2591,27 @@ def page_what_overachievers_did(pdf, label: str, target: str,
                 ha="center", va="center")
         _save(pdf, fig); return
 
-    # Order ACTIONABLE levers by |importance| descending (structural traits are
-    # matching-only and not shown).
+    # Order by STANDARDIZED absolute peer gap, not |importance|.  This is an action
+    # table ("what comparable better towns do differently"), so the honest orderer
+    # is how far Saugus sits from those peers on each factor — in pooled SDs, so
+    # different-unit factors are comparable — NOT RBP importance, which measures
+    # peer-matching sharpness, not lever strength.  Importance is still shown as a
+    # reference column; it just no longer dictates the row order.
     _disp = _display_features([f for f in lean_features if f in feat_df.columns])
-    feats_ordered = imp.reindex(_disp).abs().sort_values(ascending=False).index.tolist()
+    _saugus_vals = feat_df.loc["Saugus"]
+    _pop_std = feat_df[_disp].std(ddof=1).replace(0, np.nan) if _disp else pd.Series(dtype=float)
+
+    def _std_peer_gap(feat):
+        if feat not in feat_df.columns:
+            return -1.0
+        sv = _saugus_vals.get(feat, np.nan)
+        pm = feat_df.loc[oa_names, feat].median()
+        sd = _pop_std.get(feat, np.nan)
+        if pd.isna(sv) or pd.isna(pm) or pd.isna(sd):
+            return -1.0
+        return abs(pm - sv) / sd
+
+    feats_ordered = sorted(_disp, key=_std_peer_gap, reverse=True)
     if not feats_ordered:
         feats_ordered = _display_features(lean_features)
 
@@ -2601,7 +2620,8 @@ def page_what_overachievers_did(pdf, label: str, target: str,
 
     _header(fig, f"What Comparable Better Towns Do Differently: {label}",
             "Towns the model predicted like Saugus that scored better — their actionable-factor "
-            "values vs Saugus, ordered by importance")
+            "values vs Saugus, ordered by where Saugus is furthest from these peers "
+            "(gap measured in standard deviations, so different-unit factors compare)")
 
     # ── Left: heatmap of feature values (z-scored relative to all districts) ──
     ax_l.axis("off")
@@ -2638,7 +2658,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     # ── Left: factor comparison table ──────────────────────────────────────────
     ax_l.text(0.5, 0.98,
               f"Saugus (highlighted) vs towns predicted like Saugus that scored better\n"
-              f"Ordered by |importance|, top {min(len(feats_ordered), 15)} shown",
+              f"Ordered by largest peer gap (in SDs), top {min(len(feats_ordered), 15)} shown",
               ha="center", va="top", fontsize=8.5, fontweight="bold",
               color=_BLUE, transform=ax_l.transAxes)
     if rows:
@@ -2760,7 +2780,7 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
     "mcas10_ela":                ("MCAS 10 ELA (% meeting/exceeding)",             "pct100"),
     "dropout_pct":               ("Annual dropout rate",                           "pct"),
     "attending_pct":             ("HS completers attending college",               "pct"),
-    # Derived actionable "effort / intensity" levers (see add_actionable_levers)
+    # Derived actionable "effort / intensity" factors (see add_actionable_factors)
     "teachers_per_lowincome":    ("Teachers per low-income student",               "rate"),
     "nss_per_eqv":               ("School spend vs. property wealth",              "rate"),
     "spend_vs_required_nss":     ("Spending vs Ch70 required minimum",             "rate"),
@@ -2820,13 +2840,13 @@ def _fmt_gap_val(v, kind: str) -> str:
 # N, feature values, peer gaps) is injected live by build_synthesis_prose from
 # the computed analysis; these strings carry only the fixed editorial reading
 # that a number alone cannot convey.  `noun` is the outcome's plain-language
-# name, `close` finishes the Bottom Line, `lever` finishes the Takeaway.
+# name, `close` finishes the Bottom Line, `action` finishes the Takeaway.
 SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
     "MCAS Grades 3–8": {
         "noun":  "MCAS grades 3–8 proficiency (ELA + Math, meeting/exceeding)",
         "close": "A district with Saugus's income, poverty, and enrollment profile is "
                  "predicted to land near this level.",
-        "lever": "The factors below are where Saugus differs most from the towns that "
+        "action": "The factors below are where Saugus differs most from the towns that "
                  "beat their own predictions — the most plausible places to focus "
                  "attention, though the comparison is associational, not proof of cause.",
     },
@@ -2834,7 +2854,7 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
         "noun":  "dropout rate",
         "close": "Dropout reflects re-engagement and attendance recovery as much as "
                  "demographics.",
-        "lever": "Chronic absenteeism is the factor to watch — the main risk to this "
+        "action": "Chronic absenteeism is the factor to watch — the main risk to this "
                  "result if it climbs.",
     },
     "MCAS Grade 10 (ELA)": {
@@ -2842,7 +2862,7 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
         "close": "Note: the grade 3–8 academic base is an outcome, not an actionable factor, so it is "
                  "excluded from this model — part of the over-performance shown here "
                  "reflects that omitted prior strength rather than a grade-10 effect.",
-        "lever": "Among the actionable factors, chronic absenteeism and teacher staffing "
+        "action": "Among the actionable factors, chronic absenteeism and teacher staffing "
                  "are the most visible — Saugus clears this bar despite lagging peers on "
                  "both.",
     },
@@ -2853,7 +2873,7 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
                  "compositional — they sum to the total budget — so a high importance for a "
                  "competing category is partly mechanical (a larger slice elsewhere "
                  "necessarily leaves a smaller one for schools), not an independent effect.",
-        "lever": "The top factors are competing budget categories that crowd out the "
+        "action": "The top factors are competing budget categories that crowd out the "
                  "education share — the choice here sits with Town Meeting and municipal "
                  "budgeting, not the school district.",
     },
@@ -2883,7 +2903,7 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
     live driver table, never asserted.
     """
     q = SYNTHESIS_QUALITATIVE.get(
-        label, {"noun": label, "close": "", "lever": ""})
+        label, {"noun": label, "close": "", "action": ""})
     u, unit = ctx["u"], ctx["unit"]
     actual, pred, gap = ctx["actual"], ctx["pred"], ctx["gap"]
     rank, n_total, band = ctx["rank"], ctx["n_total"], ctx["band"]
@@ -2911,23 +2931,38 @@ def build_synthesis_prose(label: str, target: str, ctx: dict) -> tuple[str, str]
     sent = ""
     if drivers:
         top = drivers[0]
-        sent = (f"The strongest actionable factor is "
-                f"{top['desc'].lower()} "
-                f"({_fmt_feature_val(top['saugus'], top['kind'])} vs the "
-                f"{_fmt_feature_val(top['median'], top['kind'])} state median)")
         valid_gap = [d for d in drivers if not pd.isna(d["oa_gap"])]
-        if valid_gap:
-            gd = max(valid_gap, key=lambda d: abs(d["oa_gap"]))
-            sent += (f"; the widest gap to the comparable towns that scored better is "
-                     f"{gd['desc'].lower()} "
-                     f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
-        sent += ".  "
+        gd = max(valid_gap, key=lambda d: abs(d["oa_gap"])) if valid_gap else None
+
+        if gd is not None and gd["feature"] == top["feature"]:
+            # Same factor tops RBP importance AND shows the widest peer gap.  These
+            # are NOT two independent signals: footnote-12 importance is mechanically
+            # elevated for any feature on which the task town is a statewide outlier,
+            # and that same outlier status produces the peer gap.  State that at the
+            # point of claim rather than implying two confirmations.
+            sent = (f"The factor on which Saugus is most demographically unusual is "
+                    f"{top['desc'].lower()} "
+                    f"({_fmt_feature_val(top['saugus'], top['kind'])} vs the "
+                    f"{_fmt_feature_val(top['median'], top['kind'])} state median; "
+                    f"peer gap {_fmt_gap_val(top['oa_gap'], top['kind'])}).  It both "
+                    f"tops the RBP importance and shows the widest peer gap — two views "
+                    f"of the same outlier status, not independent confirmation.  ")
+        else:
+            sent = (f"The strongest actionable factor is "
+                    f"{top['desc'].lower()} "
+                    f"({_fmt_feature_val(top['saugus'], top['kind'])} vs the "
+                    f"{_fmt_feature_val(top['median'], top['kind'])} state median)")
+            if gd is not None:
+                sent += (f"; the widest gap to the comparable towns that scored better is "
+                         f"{gd['desc'].lower()} "
+                         f"({_fmt_gap_val(gd['oa_gap'], gd['kind'])}, peer median − Saugus)")
+            sent += ".  "
         if not ctx.get("top3_stable", True):
             sent += ("(Seed-stability: the top factor is seed-stable; the leading factors "
                      "below it recur across random grids but their order and importance "
                      "values jump run-to-run — read them as a co-equal group, not a "
                      "strict ranking.)  ")
-    takeaway = f"{perf}.  {sent}{q['lever']}"
+    takeaway = f"{perf}.  {sent}{q['action']}"
     return bottom, takeaway
 
 
@@ -2964,7 +2999,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     df2 = df_raw.copy()
     df2.index = df2["district_name"]
     imp = _display_importance(analysis)
-    # Show only ACTIONABLE levers as drivers — structural traits match peers
+    # Show only ACTIONABLE factors as drivers — structural traits match peers
     # silently and are hidden from this table.
     _disp = _display_features([f for f in lean_features if f in df2.columns])
     feats_ordered = (
@@ -3201,7 +3236,7 @@ OUTCOME_VARS = {
 #   teachers_per_100_fte  r=+0.872 with teachers_per_100_students → duplicate
 #   teacher_spending_pp   r≈+0.85  with nss_per_pupil   → redundant spending
 #   gf_exp_per_capita     r≈+0.75  with res_tax_rate     → redundant municipal
-#   pct_65_plus           weak signal, no clear school policy lever
+#   pct_65_plus           weak signal, no clear school policy factor
 #   com_tax_rate          r≈+0.65  with res_tax_rate     → redundant tax
 PRE_SPECIFIED_POOL = {
     # Poverty & wealth (three distinct angles)
@@ -3227,39 +3262,39 @@ PRE_SPECIFIED_POOL = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tiered "actionable lever" candidate pool  (USE_ACTIONABLE_POOL)
+# Tiered "actionable factor" candidate pool  (USE_ACTIONABLE_POOL)
 # ─────────────────────────────────────────────────────────────────────────────
 # RBP is tier-blind — it treats every column identically — so we impose the
 # Tier 3 (structural) vs Tier 1/2 (actionable) distinction by CHOOSING which
 # columns enter the run.  With this pool the RBP relevance still matches Saugus
 # to structurally-similar towns (the demographic features dominate the
-# covariance), but the Exhibit-5 importance now scores the levers Saugus can
+# covariance), but the Exhibit-5 importance now scores the factors Saugus can
 # actually change — answering "given towns like us, which controllable thing
 # moves the outcome," instead of mixing in demographics it cannot act on.
 USE_ACTIONABLE_POOL = True
 
-# Tier 3 — what a community IS (the peer-matching basis; not levers).
+# Tier 3 — what a community IS (the peer-matching basis; not factors).
 STRUCTURAL_FEATURES = {
     "low_income_pct", "median_hh_income", "equalized_income",
     "pct_bachelors_plus", "pct_owner_occupied", "ell_pct", "sped_pct",
     "total_enrollment", "crime_rate",
     # Municipal employee health-insurance spending per resident: tracks town
-    # wealth / workforce, not a clean town-vote lever — treated as structural.
+    # wealth / workforce, not a clean town-vote factor — treated as structural.
     "health_ins_per_capita",
 }
 
 # Tier 1/2 — what a town DOES (votable or managed).  Includes the derived
-# effort/intensity ratios the lever screen (actionable_levers.py) validated as
+# effort/intensity ratios the factor screen (actionable_levers.py) validated as
 # carrying signal where the raw levels did not.
-ACTIONABLE_LEVERS = {
-    # raw levers already in load_features
+ACTIONABLE_FACTORS = {
+    # raw factors already in load_features
     "chronic_absenteeism_pct",    # attendance policy (dominant on dropout)
     "teachers_per_100_students",  # staffing density
     "nss_per_pupil",              # spending level
     "res_tax_rate",               # revenue / override
     "ed_budget_share",            # Town Meeting allocation
     "fixed_costs_pct",            # pensions/benefits/health (crowd-out)
-    # derived effort/intensity (added by add_actionable_levers)
+    # derived effort/intensity (added by add_actionable_factors)
     "teachers_per_lowincome",     # staffing RELATIVE TO need
     "nss_per_eqv",                # spending RELATIVE TO property wealth
     "spend_vs_required_nss",      # effort above the Ch70 legal minimum
@@ -3268,26 +3303,26 @@ ACTIONABLE_LEVERS = {
 
 
 def _is_structural(feat: str) -> bool:
-    """A Tier-3 structural trait — used for peer-matching, NOT an actionable lever."""
+    """A Tier-3 structural trait — used for peer-matching, NOT an actionable factor."""
     return USE_ACTIONABLE_POOL and feat in STRUCTURAL_FEATURES
 
 
 def _display_features(features) -> list:
     """
-    Features to SHOW as drivers/levers in the narrative tables.  In actionable
+    Features to SHOW as drivers/factors in the narrative tables.  In actionable
     mode the Tier-3 structural traits define Saugus's peer group and are used
     for matching only — they are hidden from the 'what to do' tables so the
     report surfaces what the town can actually change.  Order is preserved.
     """
     if not USE_ACTIONABLE_POOL:
         return list(features)
-    levers = [f for f in features if f in ACTIONABLE_LEVERS]
-    return levers or list(features)
+    factors = [f for f in features if f in ACTIONABLE_FACTORS]
+    return factors or list(features)
 
 
-def add_actionable_levers(df: pd.DataFrame, engine) -> pd.DataFrame:
+def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
     """
-    Augment df_raw with the derived 'effort / intensity' levers used by the
+    Augment df_raw with the derived 'effort / intensity' factors used by the
     tiered pool.  Two are pure df_raw ratios (no join); three need one extra
     column each from the wider DB (latest non-null per municipality):
         teachers_per_lowincome = teachers/100 ÷ low-income %        (need vs staffing)
@@ -3332,7 +3367,7 @@ def add_actionable_levers(df: pd.DataFrame, engine) -> pd.DataFrame:
 
 # NOTE on also_exclude: these sets are written for BOTH pool modes.  In the
 # default actionable-pool mode (USE_ACTIONABLE_POOL=True) the candidate set is
-# already restricted to STRUCTURAL_FEATURES | ACTIONABLE_LEVERS, so the
+# already restricted to STRUCTURAL_FEATURES | ACTIONABLE_FACTORS, so the
 # outcome-variable entries below (mcas10_*, sat_*, grad/dropout/attending) are
 # inert there — they were never candidates.  They bite only in legacy mode,
 # where outcome vars CAN enter.  The entries that bite in BOTH modes are the
@@ -3381,13 +3416,12 @@ MODELS = [
         #     SAT is voluntary; students not planning on college often skip it.
         #   - SAT has a private-prep ceiling (~1200) from tutoring spend,
         #     not school quality. MCAS10 has neither distortion.
-        # Exclusions:
-        #   mcas10_math: circular — same cohort, same test session (r=0.90)
-        #   sat_*: circular — both measure HS academic performance of same cohort
-        # Allowed:
-        #   avg_mcas: elementary pipeline → HS readiness (causal; grades 3-8 is
-        #             a prior cohort measure, not the same students at grade 10)
-        #   dropout_pct, attending_pct: school environment signals
+        # Exclusions (circular academic measures): mcas10_math (same cohort/session,
+        # r=0.90) and the SAT variables.  NOTE: in the default actionable pool every
+        # outcome variable — avg_mcas, dropout_pct, attending_pct included — is out
+        # of pool already, so avg_mcas is NOT a feature in this model (the report
+        # correctly shows grade 3–8 excluded).  The academic reasoning here only
+        # bites in legacy non-actionable mode.
         "also_exclude": {"mcas10_math",
                          "sat_ebrw", "sat_math", "sat_combined",
                          "fixed_costs_pct", "debt_service_pct",
@@ -3411,9 +3445,11 @@ MODELS = [
             "attending_pct", "dropout_pct",
             "four_yr_grad_pct", "five_yr_grad_pct",
         },
-        # fixed_costs_pct, debt_service_pct, public_safety_pct, public_works_pct
-        # are NOT excluded — they are the competing line items that mechanically
-        # explain where the money goes instead.
+        # Of the competing budget-share line items, only fixed_costs_pct is in
+        # ACTIONABLE_FACTORS, so it is the SINGLE competing share that actually
+        # enters this model.  debt_service_pct / public_safety_pct / public_works_pct
+        # are not in the pool and never become candidates (see the realized-
+        # candidate log each run prints).
     },
     # SAT removed: scores above ~1200 driven by private prep, not school quality.
     # Self-selection: students not going to college don't take it.
@@ -3453,15 +3489,15 @@ def _run_one_model(args: tuple) -> dict:
     engine = get_engine()
     df_raw = load_features(engine)
     if USE_ACTIONABLE_POOL:
-        df_raw = add_actionable_levers(df_raw, engine)   # derived effort/intensity levers
+        df_raw = add_actionable_factors(df_raw, engine)   # derived effort/intensity factors
 
     exclude = ALWAYS_EXCLUDE | {target} | model.get("also_exclude", set())
 
     if USE_ACTIONABLE_POOL:
         # Tiered pool: Tier-3 structural features (the peer match) + Tier-1/2
-        # actionable levers (importance-scored).  RBP stays tier-blind; the tier
+        # actionable factors (importance-scored).  RBP stays tier-blind; the tier
         # roles are imposed purely by which columns we let in.
-        allowed = STRUCTURAL_FEATURES | ACTIONABLE_LEVERS
+        allowed = STRUCTURAL_FEATURES | ACTIONABLE_FACTORS
     else:
         # Legacy pool: pre-specified pure predictors + allowed outcome vars.
         allowed = PRE_SPECIFIED_POOL | (OUTCOME_VARS - exclude)
@@ -3472,7 +3508,7 @@ def _run_one_model(args: tuple) -> dict:
                   and df_raw[c].dtype.kind in "fiu"]
 
     # Transparency / audit trail: in actionable-pool mode a candidate must be in
-    # STRUCTURAL_FEATURES | ACTIONABLE_LEVERS, so any also_exclude entry that is
+    # STRUCTURAL_FEATURES | ACTIONABLE_FACTORS, so any also_exclude entry that is
     # an outcome variable (mcas10_*, sat_*, grad/dropout/attending) is never a
     # candidate to begin with — excluding it is inert.  Only entries that are
     # actually in the pool (the competing fiscal ratios) bite.  Log both the
@@ -3591,7 +3627,7 @@ def _build_actionable_report(pdf, results, df_raw, engine):
       3. Combined standings across the four outcomes
       4. Per outcome: "What This Means" (actionable drivers) + what the
          over-performing peers do differently
-      5. Fiscal levers: budget/staffing trajectory + fixed-cost breakdown
+      5. Fiscal factors: budget/staffing trajectory + fixed-cost breakdown
       6. Optimum profile (what over-performers look like on actionable factors)
 
     Intentionally OMITTED (methodology / structural — not actionable):
@@ -3671,7 +3707,7 @@ def main(fast: bool = False, parallel: bool = False):
     engine = get_engine()
     df_raw = load_features(engine)
     if USE_ACTIONABLE_POOL:
-        df_raw = add_actionable_levers(df_raw, engine)   # so pages resolve derived levers
+        df_raw = add_actionable_factors(df_raw, engine)   # so pages resolve derived factors
     print(f"  {len(df_raw)} districts, {len(df_raw.columns)} columns")
 
     # ── Write PDF (write to /tmp first, then copy to avoid network timeouts) ──
