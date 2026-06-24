@@ -776,8 +776,12 @@ def _header(fig, title: str, subtitle: str = ""):
                  linespacing=1.3)
 
 
-def _footer(fig, text: str):
-    fig.text(0.5, 0.02, text, ha="center", va="bottom",
+def _footer(fig, text: str, width: int = 165):
+    # Auto-wrap so long footers never run off the 11" page.  Any explicit '\n' a
+    # caller already inserted is honoured as a hard break (each such line is
+    # wrapped independently); everything else flows to `width` characters.
+    wrapped = "\n".join(textwrap.fill(line, width=width) for line in text.split("\n"))
+    fig.text(0.5, 0.02, wrapped, ha="center", va="bottom",
              fontsize=7, color=_GREY, style="italic",
              transform=fig.transFigure)
 
@@ -874,7 +878,7 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
 
     _gen_date = datetime.date.today().strftime("%B %Y")
     _footer(fig,
-            "Relevance-Based Prediction, utilizing Czasonis, Kritzman & Turkington (2024) "
+            "Relevance-Based Prediction "
             f"— Applied to MA School District Analysis  ·  Saugus Schools Project · {_gen_date}")
     _save(pdf, fig)
 
@@ -2238,8 +2242,10 @@ def page_fixed_costs(pdf, engine, fiscal_year: int) -> None:
     ax_bl.set_xlabel("$ millions")
     ax_bl.set_title(f"Fixed Cost Composition (FY{FY})\n"
                     "HI  |  OPEB trust contributions  |  Remainder", fontsize=8.5)
-    ax_bl.legend(fontsize=7, loc="upper center", ncol=3,
-                 bbox_to_anchor=(0.45, -0.14), framealpha=0.90)
+    # Color legend intentionally omitted: the subtitle above already names the three
+    # segments left-to-right in bar order (HI / OPEB / Remainder), and the gold OPEB
+    # callout labels that slice — a separate legend below the axis only collided with
+    # the data-source footer.
     ax_bl.grid(axis="x", alpha=0.25)
     ax_bl.set_xlim(0, max(fc_totals) * 1.30)
 
@@ -2289,7 +2295,9 @@ def page_fixed_costs(pdf, engine, fiscal_year: int) -> None:
         f"vs. comparable-town avg ~${_comp_avg_last:,.0f}K."
     )
 
-    plt.tight_layout(rect=[0, 0.04, 1, 0.86])
+    # Reserve a bottom band for the ~3-line data-source footer (no legend competes
+    # for it now).
+    plt.tight_layout(rect=[0, 0.10, 1, 0.86])
     _save(pdf, fig)
 
 
@@ -2642,9 +2650,14 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     # 2 comparison towns leaves room to widen the Factor column so the full
     # factor labels fit without colliding with the values.  Town names use a
     # graceful ellipsis only when genuinely long, rather than a hard 9-char cut.
+    # Only a couple of example towns fit as columns, so add a "Peer med" column —
+    # the median of ALL the comparable better-performing towns — so the reader sees
+    # the typical peer value, not just the examples.  Median (not mean) matches the
+    # synthesis page's "Peer median" for the same set, so the numbers agree.
     n_compare = min(2, len(oa_names))
     col_names = (["Factor", "Saugus"] +
-                 [_shorten(n, 14) for n in oa_names[:n_compare]] + ["Imp."])
+                 [_shorten(n, 14) for n in oa_names[:n_compare]] +
+                 ["Peer med", "Imp."])
     rows = []
     for feat in feats_ordered[:15]:
         sv = saugus_vals.get(feat, float("nan"))
@@ -2652,8 +2665,11 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         for name in oa_names[:n_compare]:
             v = feat_df.loc[name, feat] if feat in feat_df.columns else float("nan")
             oa_vals.append(_fmt(v))
+        peer_med = (float(feat_df.loc[oa_names, feat].median())
+                    if feat in feat_df.columns else float("nan"))
         imp_val = float(imp.get(feat, 0))
-        rows.append([_shorten(_feat_meta(feat)[0], 38), _fmt(sv)] + oa_vals + [f"{imp_val:+.3f}"])
+        rows.append([_shorten(_feat_meta(feat)[0], 38), _fmt(sv)] + oa_vals
+                    + [_fmt(peer_med), f"{imp_val:+.3f}"])
 
     # ── Left: factor comparison table ──────────────────────────────────────────
     ax_l.text(0.5, 0.98,
@@ -2668,14 +2684,16 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(6.5)
 
-        # Wide Factor column for the full labels; 2 comparison towns.
+        # Columns: Factor | Saugus | town... | Peer med | Imp.
         n_cols = len(used_cols)
-        n_town_cols = n_cols - 3          # subtract Factor, Saugus, Imp
-        feat_w   = 0.50
-        saugus_w = 0.10
-        town_w   = 0.14
-        imp_w    = max(0.05, 1.0 - feat_w - saugus_w - n_town_cols * town_w)
-        explicit_w = [feat_w, saugus_w] + [town_w] * n_town_cols + [imp_w]
+        n_town_cols = n_cols - 4          # subtract Factor, Saugus, Peer med, Imp
+        feat_w   = 0.46
+        saugus_w = 0.09
+        town_w   = 0.11
+        peer_w   = 0.12
+        imp_w    = max(0.05, 1.0 - feat_w - saugus_w - n_town_cols * town_w - peer_w)
+        explicit_w = ([feat_w, saugus_w] + [town_w] * n_town_cols + [peer_w, imp_w])
+        peer_col = 2 + n_town_cols        # index of the "Peer med" column
         for (row_idx, col_idx), cell in tbl.get_celld().items():
             if col_idx < len(explicit_w):
                 cell.set_width(explicit_w[col_idx])
@@ -2683,8 +2701,10 @@ def page_what_overachievers_did(pdf, label: str, target: str,
                 cell.set_text_props(ha="left")
             if row_idx == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-            elif col_idx == 1 and row_idx > 0:
+            elif col_idx == 1 and row_idx > 0:         # Saugus column
                 cell.set_facecolor("#FFF8E1")
+            elif col_idx == peer_col and row_idx > 0:  # Peer median column
+                cell.set_facecolor("#EAF4EA")
             else:
                 cell.set_facecolor("#F7F7F7" if row_idx % 2 else "white")
             cell.set_edgecolor("#DDDDDD")
@@ -2749,9 +2769,10 @@ def page_what_overachievers_did(pdf, label: str, target: str,
                       ha="center", va="top", fontsize=7, style="italic",
                       color=_GREY, transform=ax_r.transAxes)
 
-    _footer(fig, "vs Expected = how far actual beats the demographic prediction, signed so + always means "
-            "better than expected (for dropout, lower-than-predicted shows as a positive 'better').  "
-            "Factor values shown in raw units; importance scores from RBP Exhibit 5.")
+    _footer(fig, "Peer med = median across ALL comparable better-performing towns (not just the "
+            "examples shown).  vs Expected = how far actual beats the demographic prediction, signed "
+            "so + always means better than expected (for dropout, lower-than-predicted shows as a "
+            "positive 'better').  Factor values shown in raw units; importance scores from RBP Exhibit 5.")
     _save(pdf, fig)
 
 
