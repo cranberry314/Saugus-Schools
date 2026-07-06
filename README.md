@@ -162,8 +162,6 @@ Nothing is hardcoded. Re-running after a data update automatically reflects all 
 | `factor_portfolio.py` | Quant-investing-style analysis: sorts MA towns into quartiles by each policy input (level and YoY change) and compares 15 outcomes between the top and bottom quartiles ("long/short alpha"). | `Reports/town_factor_quartile_portfolio.pdf` |
 | `ma_town_health.py` | Broad health check across ~350 MA towns — educational outcomes, fiscal health, and community vitality, with 5- and 10-year backtests. | `Reports/ma_town_health_analysis.pdf` |
 | `peer_analysis_comprehensive.py` | Full Mahalanobis peer analysis using all Tier 1–3 demographic/fiscal variables, with plain-language explanations. | `Reports/saugus_peer_analysis_comprehensive.xlsx` + `.pdf` |
-| `peer_analysis_timeseries.py` | Mahalanobis peer rankings for each available year, plus leave-one-out sensitivity (how much each feature changes the peer set). | `Reports/saugus_peer_analysis_timeseries.xlsx` |
-| `peer_finder_basic.py` | Lightweight Mahalanobis peer finder (6 metrics); caches results to the `peer_districts` table. | console + DB |
 | `saugus_spending_comparison.py` | Per-pupil spending vs. the statewide distribution and vs. the Mahalanobis peer group, nominal and inflation-adjusted. | `Reports/saugus_spending_vs_peers.pdf` |
 | `data_integrity.py` | Data-quality checks across every multi-source/stitched table (e.g. the Chapter 70 FY2007–2022 / FY2023–2026 seam). | `Reports/data_integrity_checks.pdf` + console summary |
 | `data_consistency_tests.py` | Statistical consistency tests across the dataset. | `Reports/data_consistency_tests.pdf` |
@@ -357,10 +355,8 @@ Schools/
 │   ├── panel.py                       # Shared town×year panel builder + 16-outcome taxonomy (used by factor_portfolio)
 │   ├── peer_trajectory_study.py       # "What makes towns succeed" trajectory study
 │   ├── ma_town_health.py              # MA town health report (~350 towns)
-│   ├── peers.py                       # Shared Mahalanobis peer-distance kernel (used by the 3 peer scripts)
+│   ├── peers.py                       # Shared Mahalanobis peer-distance kernel
 │   ├── peer_analysis_comprehensive.py # Comprehensive Mahalanobis peer analysis (Excel + PDF)
-│   ├── peer_analysis_timeseries.py    # Peer rankings through time + sensitivity analysis
-│   ├── peer_finder_basic.py           # Basic Mahalanobis peer finder (writes peer_districts table)
 │   ├── saugus_spending_comparison.py  # Per-pupil spending vs. state & peer distributions
 │   ├── data_integrity.py              # Data quality checks across all stitched tables
 │   └── data_consistency_tests.py      # Statistical consistency tests
@@ -489,7 +485,7 @@ total fatalities, total injuries. Coverage: all ~350 MA municipalities, 2021–2
 | `districts` | MA district registry (org codes, names, types) |
 | `schools` | MA school registry (populated by districts.py) |
 | `ch70_district_mapping` | Lookup table mapping LEA codes to DESE district names |
-| `peer_districts` | Historical peer district selections (older analysis) |
+| `peer_districts` | Legacy peer selections — no longer written or read (its writer, `peer_finder_basic.py`, was retired); kept only for historical rows |
 | `ingest_log` | Load history written by all scrapers |
 
 ### Analysis Snapshots (computed per report run)

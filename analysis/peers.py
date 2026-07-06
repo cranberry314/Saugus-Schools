@@ -1,18 +1,14 @@
 """
 peers.py — shared Mahalanobis peer-distance kernel.
 
-One robust implementation, used by the peer-analysis scripts (peer_finder_basic,
-peer_analysis_comprehensive, peer_analysis_timeseries) so the distance math lives
-in one place instead of three subtly-different copies.
+One robust implementation of Mahalanobis peer distance, so the math lives in a
+single place instead of being re-derived in each peer-analysis script.
 
 Method: Mahalanobis distance from a base row to every other row, using the
 pseudo-inverse of the ridge-regularized feature covariance.  pinv + ridge keeps it
 stable when the peer features are collinear (income / poverty / education move
 together across MA towns); the clamp guards against sqrt of a tiny-negative
-quadratic form (a floating-point artifact) producing NaN.  This is the robust
-variant peer_analysis_comprehensive and peer_analysis_timeseries already used;
-peer_finder_basic previously used a plain matrix inverse with no clamp and is now
-unified onto this.
+quadratic form (a floating-point artifact) producing NaN.
 
 The caller owns feature selection and NaN handling: pass a fully-filled numeric
 matrix (typically NaNs replaced by column medians) indexed by id.
