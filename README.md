@@ -217,7 +217,7 @@ columns; seven are normalized ratios computed from public data.
 | `instructional_share` | 2 (managed) | Share of the school dollar reaching the classroom vs. overhead |
 | `teacher_share_of_spend` | 2 (managed) | Share of the school dollar going specifically to teacher pay |
 
-The derived actionable ratios are built by `analysis/actionable_levers.py`; the
+The derived actionable ratios are built by `analysis/actionable_factors.py`; the
 factor definitions and their formulas also appear on a dedicated page inside
 `Reports/saugus_factor_analysis.pdf`.
 
@@ -345,7 +345,7 @@ Schools/
 ├── analysis/
 │   ├── saugus_factor_analysis.py      # ★ Flagship: RBP over the tiered factor pool + Saugus prediction (4 outcome models)
 │   ├── rbp.py                         # Reference implementation: Czasonis/Kritzman/Turkington (2024) RBP
-│   ├── actionable_levers.py           # Builds the derived Tier-1/2 lever ratios; scores each lever's marginal lift
+│   ├── actionable_factors.py          # Builds the derived Tier-1/2 factor ratios; scores each factor's marginal lift
 │   ├── saugus_synthesis.py            # Two-audience narrative report (--parent for community brief)
 │   ├── municipal_finance_report.py    # Municipal finance report generator (PDF)
 │   ├── policy_backtest.py             # Two-way fixed-effects panel regression (16 outcomes)

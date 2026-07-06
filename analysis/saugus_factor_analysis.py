@@ -3421,7 +3421,7 @@ STRUCTURAL_FEATURES = {
 }
 
 # Tier 1/2 — what a town DOES (votable or managed).  Includes the derived
-# effort/intensity ratios the factor screen (actionable_levers.py) validated as
+# effort/intensity ratios the factor screen (actionable_factors.py) validated as
 # carrying signal where the raw levels did not.
 ACTIONABLE_FACTORS = {
     # ── The 9 best Tier-1/2 levers, chosen by the cross-sectional factor screen

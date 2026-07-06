@@ -1,18 +1,18 @@
 """
-actionable_levers.py  —  Design B: "match on structure, test the levers"
+actionable_factors.py  —  Design B: "match on structure, test the factors"
 ========================================================================
 RBP is tier-blind: it treats every feature column identically.  To answer
-"among demographically similar towns, how much does each *actionable* lever
+"among demographically similar towns, how much does each *actionable* factor
 matter for the outcome," we impose the tier structure ourselves by choosing
 which columns RBP sees:
 
   1. STRUCTURAL (Tier 3 — what a town IS): the matching basis.  A baseline RBP
      leave-one-out is run on these alone → baseline LOO r per outcome.
-  2. For each ACTIONABLE lever (Tier 1/2 — what a town DOES), re-run RBP LOO on
-     STRUCTURAL + that one lever.  Its *marginal* contribution is:
-        lift        = LOO r(structural + lever) − LOO r(structural)
-        importance  = the lever's Exhibit-5 importance in the augmented Saugus run
-     i.e. how much the lever sharpens the prediction ON TOP OF the structural
+  2. For each ACTIONABLE factor (Tier 1/2 — what a town DOES), re-run RBP LOO on
+     STRUCTURAL + that one factor.  Its *marginal* contribution is:
+        lift        = LOO r(structural + factor) − LOO r(structural)
+        importance  = the factor's Exhibit-5 importance in the augmented Saugus run
+     i.e. how much the factor sharpens the prediction ON TOP OF the structural
      match — which is exactly "how important is this difference."
 
   3. The descriptive "difference" is Saugus's value vs. the median of its
@@ -25,7 +25,7 @@ the covariance).  rbp.py is untouched.
 
 Caveat this CANNOT escape: lift/importance are association-given-peers, not a
 causal dose-response.  Read the output as a screened shortlist, not a promise
-that moving a lever moves the outcome.
+that moving a factor moves the outcome.
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ STRUCTURAL = [
     "total_enrollment", "crime_rate",
 ]
 
-# ── Tier 1/2: actionable levers (what a town DOES — votable or managed) ──────
-LEVERS = [
+# ── Tier 1/2: actionable factors (what a town DOES — votable or managed) ──────
+FACTORS = [
     "chronic_absenteeism_pct",    # Tier 2 — attendance policy
     "teachers_per_100_students",  # Tier 2 — staffing
     "avg_teacher_salary",         # Tier 2 — pay / retention
@@ -71,7 +71,7 @@ LEVERS = [
     "public_works_pct",           # Tier 1 — allocation
 ]
 
-# ── Derived "effort / intensity / efficiency" levers, mined from the wider DB ─
+# ── Derived "effort / intensity / efficiency" factors, mined from the wider DB ─
 # Mostly wealth-normalized or per-unit ratios: they ask "how hard is this town
 # trying, given what it has," which a raw level can't capture.  (label, kind)
 DERIVED_INFO: dict[str, tuple[str, str]] = {
@@ -101,7 +101,7 @@ def _lev_label(lv: str) -> tuple[str, str]:
 
 def build_derived(df: pd.DataFrame, engine) -> tuple[pd.DataFrame, list[str]]:
     """Join wider-DB columns (latest non-null per municipality) and compute the
-    derived levers.  Returns (augmented_df, derived_names)."""
+    derived factors.  Returns (augmented_df, derived_names)."""
     d = df.copy()
     d["_k"] = d["district_name"].str.lower().str.strip()
 
@@ -171,16 +171,16 @@ def build_derived(df: pd.DataFrame, engine) -> tuple[pd.DataFrame, list[str]]:
     if len(sv):
         vals = {k: (round(float(sv[k].iloc[0]), 3) if pd.notna(sv[k].iloc[0]) else None)
                 for k in derived}
-        print("[levers] Saugus derived values:")
+        print("[factors] Saugus derived values:")
         for k, v in vals.items():
             print(f"          {k:30s} = {v}")
     cov = {k: int(d[k].notna().sum()) for k in derived}
-    print(f"[levers] derived coverage (of {len(d)} towns):",
+    print(f"[factors] derived coverage (of {len(d)} towns):",
           {k: cov[k] for k in derived})
     return d, derived
 
 
-# Academic outcomes are where "which lever helps?" is the live question.
+# Academic outcomes are where "which factor helps?" is the live question.
 OUTCOMES = [
     ("MCAS Grades 3–8",     "avg_mcas"),
     ("Dropout Rate",        "dropout_pct"),
@@ -191,8 +191,8 @@ N_RANDOM = 800     # screening density — fine for relative lifts (full prod = 
 SEED     = 42
 
 OUT_DIR  = Path(__file__).resolve().parent.parent / "Reports"
-OUT_CSV  = OUT_DIR / "actionable_levers.csv"
-OUT_PDF  = OUT_DIR / "actionable_levers.pdf"
+OUT_CSV  = OUT_DIR / "actionable_factors.csv"
+OUT_PDF  = OUT_DIR / "actionable_factors.pdf"
 
 
 # ── Core RBP helpers (full N, Saugus excluded only by LOO itself) ───────────
@@ -213,13 +213,13 @@ def _loo_r(df: pd.DataFrame, features: list[str], target: str, n_random: int) ->
     return float(np.corrcoef(loo["actual"], loo["predicted"])[0, 1]), len(loo)
 
 
-def _lever_importance(df, features, target, lever, n_random) -> float:
+def _factor_importance(df, features, target, factor, n_random) -> float:
     X, y = _design(df, features, target)
     if SAUGUS not in X.index:
         return float("nan")
     res = rbp(X.drop(index=SAUGUS), y.drop(index=SAUGUS), X.loc[SAUGUS],
               features, n_random_cells=n_random, random_state=SEED)
-    return float(res.variable_importance.get(lever, float("nan")))
+    return float(res.variable_importance.get(factor, float("nan")))
 
 
 def structural_peers(df: pd.DataFrame, n: int = 25) -> list[str]:
@@ -241,43 +241,43 @@ def structural_peers(df: pd.DataFrame, n: int = 25) -> list[str]:
     return sorted(dists, key=dists.get)[:n]
 
 
-# ── Parallel worker: one (outcome, lever-or-baseline) cell ──────────────────
+# ── Parallel worker: one (outcome, factor-or-baseline) cell ──────────────────
 def _run_task(args: tuple) -> dict:
-    df, label, target, lever, n_random = args
-    feats = list(STRUCTURAL) if lever is None else list(STRUCTURAL) + [lever]
+    df, label, target, factor, n_random = args
+    feats = list(STRUCTURAL) if factor is None else list(STRUCTURAL) + [factor]
     # never let the target sit in its own predictor set
     feats = [f for f in feats if f != target]
     r, n = _loo_r(df, feats, target, n_random)
-    imp = (float("nan") if lever is None
-           else _lever_importance(df, feats, target, lever, n_random))
-    tag = "baseline(structural)" if lever is None else lever
-    print(f"[levers] {label:20s} {tag:26s} LOO r={r:+.4f} (N={n})", flush=True)
+    imp = (float("nan") if factor is None
+           else _factor_importance(df, feats, target, factor, n_random))
+    tag = "baseline(structural)" if factor is None else factor
+    print(f"[factors] {label:20s} {tag:26s} LOO r={r:+.4f} (N={n})", flush=True)
     return {"label": label, "target": target,
-            "lever": ("__baseline__" if lever is None else lever),
+            "factor": ("__baseline__" if factor is None else factor),
             "loo_r": r, "n": n, "importance": imp}
 
 
 def main(parallel: bool = True):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    print("[levers] Loading features...")
+    print("[factors] Loading features...")
     df, derived = build_derived(load_features(get_engine()), get_engine())
-    lever_pool = LEVERS + derived
+    factor_pool = FACTORS + derived
     peers = structural_peers(df, n=25)
-    print(f"[levers] {len(df)} districts; {len(peers)} structural peers of Saugus")
-    print(f"[levers] nearest peers: {', '.join(peers[:10])} ...")
-    print(f"[levers] testing {len(lever_pool)} levers ({len(LEVERS)} raw + {len(derived)} derived)")
+    print(f"[factors] {len(df)} districts; {len(peers)} structural peers of Saugus")
+    print(f"[factors] nearest peers: {', '.join(peers[:10])} ...")
+    print(f"[factors] testing {len(factor_pool)} factors ({len(FACTORS)} raw + {len(derived)} derived)")
 
-    # Build task list: per outcome, a baseline + one per available lever.
-    # Skip levers with thin coverage (need enough towns for a stable LOO).
+    # Build task list: per outcome, a baseline + one per available factor.
+    # Skip factors with thin coverage (need enough towns for a stable LOO).
     tasks = []
     for label, target in OUTCOMES:
-        avail = [lv for lv in lever_pool
+        avail = [lv for lv in factor_pool
                  if lv in df.columns and lv != target and df[lv].notna().sum() >= 120]
         tasks.append((df, label, target, None, N_RANDOM))          # baseline
         for lv in avail:
             tasks.append((df, label, target, lv, N_RANDOM))
 
-    print(f"[levers] {len(tasks)} RBP-LOO passes (n_random={N_RANDOM})...")
+    print(f"[factors] {len(tasks)} RBP-LOO passes (n_random={N_RANDOM})...")
     if parallel:
         import multiprocessing as mp
         ctx = mp.get_context("spawn")
@@ -289,56 +289,56 @@ def main(parallel: bool = True):
     res = pd.DataFrame(rows)
 
     # Marginal lift = augmented LOO r − that outcome's baseline LOO r.
-    base = (res[res["lever"] == "__baseline__"]
+    base = (res[res["factor"] == "__baseline__"]
             .set_index("target")["loo_r"].to_dict())
     res["baseline_loo_r"] = res["target"].map(base)
     res["lift"] = res["loo_r"] - res["baseline_loo_r"]
 
-    # Descriptive gap vs structurally-nearest peers (median), per lever.
+    # Descriptive gap vs structurally-nearest peers (median), per factor.
     d2 = df.set_index("district_name")
     def _saugus(c):  # noqa
         return float(d2.loc[SAUGUS, c]) if SAUGUS in d2.index and c in d2.columns else float("nan")
     def _peermed(c):  # noqa
         vals = d2.loc[[p for p in peers if p in d2.index], c].dropna() if c in d2.columns else pd.Series(dtype=float)
         return float(vals.median()) if len(vals) else float("nan")
-    res["saugus_val"]  = res["lever"].map(lambda lv: _saugus(lv) if lv != "__baseline__" else float("nan"))
-    res["peer_median"] = res["lever"].map(lambda lv: _peermed(lv) if lv != "__baseline__" else float("nan"))
+    res["saugus_val"]  = res["factor"].map(lambda lv: _saugus(lv) if lv != "__baseline__" else float("nan"))
+    res["peer_median"] = res["factor"].map(lambda lv: _peermed(lv) if lv != "__baseline__" else float("nan"))
     res["gap_peer_minus_saugus"] = res["peer_median"] - res["saugus_val"]
 
-    res = res[["label", "target", "lever", "baseline_loo_r", "loo_r", "lift",
+    res = res[["label", "target", "factor", "baseline_loo_r", "loo_r", "lift",
                "importance", "saugus_val", "peer_median",
                "gap_peer_minus_saugus", "n"]]
     res.to_csv(OUT_CSV, index=False)
-    print(f"[levers] wrote {OUT_CSV}")
+    print(f"[factors] wrote {OUT_CSV}")
 
     _render_pdf(res, peers)
-    print(f"[levers] wrote {OUT_PDF}")
+    print(f"[factors] wrote {OUT_PDF}")
     return res
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────
 def _render_pdf(res: pd.DataFrame, peers: list[str]):
-    levers_only = res[res["lever"] != "__baseline__"].copy()
+    factors_only = res[res["factor"] != "__baseline__"].copy()
     with PdfPages(str(OUT_PDF)) as pdf:
         # Title / method page
         fig, ax = plt.subplots(figsize=(_PAGE_W, _PAGE_H)); ax.axis("off")
-        _header(fig, "Actionable Levers — Match on Structure, Test the Levers",
+        _header(fig, "Actionable Factors — Match on Structure, Test the Factors",
                 "Design B: RBP relevance is anchored on Tier-3 structural features (the "
-                "peer match); each Tier-1/2 lever is added on top and scored by its "
+                "peer match); each Tier-1/2 factor is added on top and scored by its "
                 "marginal LOO-r lift and Exhibit-5 importance.  Full N — no subsetting.")
         lines = [
             "Structural matching basis (what a town IS): " + ", ".join(STRUCTURAL),
             "",
             "For each outcome:  baseline = RBP LOO on structural features only.",
-            "Then, per lever:  lift = LOO r(structural + lever) − LOO r(structural).",
-            "importance = that lever's Exhibit-5 score in the augmented Saugus run.",
+            "Then, per factor:  lift = LOO r(structural + factor) − LOO r(structural).",
+            "importance = that factor's Exhibit-5 score in the augmented Saugus run.",
             "gap = (median of Saugus's 25 structurally-nearest peers) − Saugus.",
             "",
             "Read: high lift / high importance = the difference MATTERS for the outcome;",
             "a non-trivial gap = Saugus is an outlier on it.  Both ⇒ shortlist.",
             "",
             "CAVEAT: association given peers, NOT a causal dose-response.  This screens",
-            "candidates; it does not promise that moving a lever moves the outcome.",
+            "candidates; it does not promise that moving a factor moves the outcome.",
         ]
         for i, ln in enumerate(lines):
             ax.text(0.06, 0.78 - i * 0.045, ln, fontsize=9.5,
@@ -352,7 +352,7 @@ def _render_pdf(res: pd.DataFrame, peers: list[str]):
 
         # One page per outcome: sorted marginal-lift bars + detail table.
         for label, target in [(l, t) for l, t in OUTCOMES]:
-            sub = (levers_only[levers_only["label"] == label]
+            sub = (factors_only[factors_only["label"] == label]
                    .sort_values("lift", ascending=True))
             if sub.empty:
                 continue
@@ -360,12 +360,12 @@ def _render_pdf(res: pd.DataFrame, peers: list[str]):
             fig, (axL, axR) = plt.subplots(
                 1, 2, figsize=(_PAGE_W, _PAGE_H), gridspec_kw={"width_ratios": [1.1, 1.0]})
             base_r = float(sub["baseline_loo_r"].iloc[0])
-            _header(fig, f"Actionable Levers: {label}",
+            _header(fig, f"Actionable Factors: {label}",
                     f"Structural baseline LOO r = {base_r:+.3f}  ·  bars = marginal lift "
-                    f"from adding each lever  ·  n_random={N_RANDOM}")
+                    f"from adding each factor  ·  n_random={N_RANDOM}")
 
             # Left: marginal lift bars
-            names = [_lev_label(lv)[0] for lv in sub["lever"]]
+            names = [_lev_label(lv)[0] for lv in sub["factor"]]
             lifts = sub["lift"].values
             colors = [_GREEN if v > 0 else _RED for v in lifts]
             y = range(len(names))
@@ -373,7 +373,7 @@ def _render_pdf(res: pd.DataFrame, peers: list[str]):
             axL.set_yticks(list(y)); axL.set_yticklabels(names, fontsize=8)
             axL.axvline(0, color=_BL, lw=0.8)
             axL.set_xlabel("Marginal LOO-r lift over structural baseline")
-            axL.set_title("Does the lever sharpen the prediction?", fontsize=9)
+            axL.set_title("Does the factor sharpen the prediction?", fontsize=9)
             axL.grid(axis="x", alpha=0.25)
             for yi, v in zip(y, lifts):
                 axL.text(v + (0.001 if v >= 0 else -0.001), yi, f"{v:+.3f}",
@@ -384,7 +384,7 @@ def _render_pdf(res: pd.DataFrame, peers: list[str]):
             axR.axis("off")
             tbl_rows = []
             for _, r in sub.sort_values("lift", ascending=False).iterrows():
-                lv = r["lever"]
+                lv = r["factor"]
                 _, kind = _lev_label(lv)
                 gap = r["gap_peer_minus_saugus"]
                 # interpret gap direction for the outcome-agnostic descriptive note
@@ -398,7 +398,7 @@ def _render_pdf(res: pd.DataFrame, peers: list[str]):
                 ])
             tbl = axR.table(
                 cellText=tbl_rows,
-                colLabels=["Lever", "Lift", "Imp", "Saugus", "Peer med", "Gap"],
+                colLabels=["Factor", "Lift", "Imp", "Saugus", "Peer med", "Gap"],
                 bbox=[0.0, 0.05, 1.0, 0.86], cellLoc="center")
             tbl.auto_set_font_size(False); tbl.set_fontsize(7.5)
             col_w = [0.34, 0.13, 0.10, 0.15, 0.15, 0.13]
