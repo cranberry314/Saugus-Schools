@@ -26,6 +26,7 @@ from config import get_engine
 from db.queries import (
     FEATURE_MATRIX_FULL, MAHAL_FEATURE_COLS, FEATURE_LABEL, FEATURE_TIER,
 )
+from analysis import inflation
 from analysis.peer_analysis_comprehensive import fetch_matrix, compute_year
 
 import matplotlib
@@ -77,18 +78,14 @@ def load_spending(engine) -> pd.DataFrame:
 def load_cpi(engine) -> pd.Series:
     """Return cumulative price index, normalised so 2024 = 100."""
     with engine.connect() as conn:
-        rows = conn.execute(
-            text("SELECT year, cpi_pct_change FROM inflation_cpi ORDER BY year")
-        ).fetchall()
-    if not rows:
+        cpi = pd.read_sql(
+            text("SELECT year, cpi_pct_change FROM inflation_cpi ORDER BY year"), conn)
+    if cpi.empty:
         return pd.Series(dtype=float)
-    cpi_pct = pd.Series({r[0]: float(r[1]) for r in rows})
-    index = {}
-    base = 100.0
-    for i, yr in enumerate(cpi_pct.index):
-        index[yr] = base if i == 0 else list(index.values())[-1] * (1 + cpi_pct[yr] / 100.0)
-    idx = pd.Series(index)
-    return idx / idx.get(2024, idx.iloc[-1]) * 100
+    # Cumulative price level (shared helper), anchored at the first data year,
+    # then rescaled so 2024 = 100 — matches this report's inflate_to_2024.
+    level = inflation.price_level_from_pct(cpi, int(cpi["year"].min()))
+    return level / level.get(2024, level.iloc[-1]) * 100
 
 
 def inflate_to_2024(df: pd.DataFrame, cpi: pd.Series) -> pd.DataFrame:

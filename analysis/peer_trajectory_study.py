@@ -27,6 +27,7 @@ from scipy import stats as scipy_stats
 warnings.filterwarnings("ignore")
 
 from config import get_engine
+from analysis import inflation
 from sqlalchemy import text
 
 matplotlib.rcParams.update({"pdf.use14corefonts": True,
@@ -188,10 +189,10 @@ def build_town_snapshot(frames: dict, year_window: tuple) -> pd.DataFrame:
     snap_abs = avg(frames["absent"], "absenteeism_rate")
 
     # Per-pupil (CPI-deflated to latest year)
-    cpi = frames["cpi"].set_index("year")["cpi_index"].to_dict()
-    base_cpi = cpi.get(max(cpi), 1.0)
+    _cpi_level = inflation.price_level_from_index(frames["cpi"], "year", "cpi_index")
+    _factors = inflation.deflator(_cpi_level, int(_cpi_level.index.max()))
     pp = frames["pp"].copy()
-    pp["pp_real"] = pp["pp_exp"] * pp["year"].map(lambda y: base_cpi / cpi.get(y, np.nan))
+    pp["pp_real"] = pp["pp_exp"] * pp["year"].map(lambda y: _factors.get(y, np.nan))
     snap_pp = avg(pp, "pp_real")
 
     # Teachers per 1k + raw FTE and enrollment for context
@@ -733,10 +734,10 @@ def make_case_study(traj: pd.DataFrame, frames: dict, town: str, note: str) -> p
     grad = frames["grad"]
     zh   = frames["zillow"]
 
-    cpi = frames["cpi"].set_index("year")["cpi_index"].to_dict()
-    base_cpi = cpi.get(max(cpi), 1.0)
+    _cpi_level = inflation.price_level_from_index(frames["cpi"], "year", "cpi_index")
+    _factors = inflation.deflator(_cpi_level, int(_cpi_level.index.max()))
     pp = frames["pp"].copy()
-    pp["pp_real"] = pp["pp_exp"] * pp["year"].map(lambda y: base_cpi / cpi.get(y, np.nan))
+    pp["pp_real"] = pp["pp_exp"] * pp["year"].map(lambda y: _factors.get(y, np.nan))
 
     series_map = {
         "mcas_ela":        ela.pivot_table(index="year", columns="town", values="proficient_pct"),

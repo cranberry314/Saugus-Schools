@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
+from analysis import inflation
+
 
 # ---------------------------------------------------------------------------
 # 16 outcome definitions
@@ -227,13 +229,13 @@ def load_panel(engine, lag: int) -> pd.DataFrame:
         frames[key] = df
 
     # -----------------------------------------------------------------------
-    # Build CPI lookup for deflating
+    # Build CPI lookup for deflating (Boston MSA index → real latest-year $)
     # -----------------------------------------------------------------------
-    cpi = frames["cpi"].set_index("year")["cpi_index"].to_dict()
-    base_cpi = cpi.get(max(cpi.keys()), 1.0)
+    _cpi_level = inflation.price_level_from_index(frames["cpi"], "year", "cpi_index")
+    _factors = inflation.deflator(_cpi_level, int(_cpi_level.index.max()))
 
     def deflate(series: pd.Series, year_series: pd.Series) -> pd.Series:
-        return series * year_series.map(lambda y: base_cpi / cpi.get(y, np.nan))
+        return series * year_series.map(lambda y: _factors.get(y, np.nan))
 
     # -----------------------------------------------------------------------
     # Construct feature panel

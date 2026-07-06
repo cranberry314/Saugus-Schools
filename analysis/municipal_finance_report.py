@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from config import get_engine
+from analysis import inflation
 from scipy.spatial.distance import mahalanobis
 from scipy.cluster.hierarchy import linkage as hc_linkage, fcluster
 
@@ -107,21 +108,15 @@ def load_data(engine) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 def build_deflator(cpi: pd.DataFrame, years: list[int]) -> dict[int, float]:
     """
     Returns a dict mapping fiscal_year -> deflator so that
-    nominal * deflator = real (FY2010 dollars).
+    nominal * deflator = real (FY2010 dollars).  Years at or before the FY2010
+    base take a deflator of 1.0 (this report only shows FY2010 onward).
+
+    The cumulative-price-level math lives in analysis/inflation.py; here we just
+    anchor it at FY2010.
     """
-    # Build cumulative price level index, base = FY2010
-    price_level = {CPI_BASE_YEAR: 1.0}
-    all_years = sorted(set(list(cpi["year"]) + years))
-    for yr in all_years:
-        if yr <= CPI_BASE_YEAR:
-            continue
-        prev = price_level.get(yr - 1, price_level.get(max(k for k in price_level if k < yr)))
-        row = cpi[cpi["year"] == yr]
-        pct = float(row["cpi_pct_change"].iloc[0]) / 100.0 if len(row) else 0.0
-        price_level[yr] = prev * (1 + pct)
-    # Deflator = base / current price level
-    deflator = {yr: 1.0 / price_level.get(yr, 1.0) for yr in years}
-    return deflator
+    factors = inflation.deflator(inflation.price_level_from_pct(cpi, CPI_BASE_YEAR),
+                                 CPI_BASE_YEAR)
+    return {yr: (factors.get(yr, 1.0) if yr >= CPI_BASE_YEAR else 1.0) for yr in years}
 
 
 def load_acs_data(engine) -> pd.DataFrame:
