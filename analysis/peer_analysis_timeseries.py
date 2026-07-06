@@ -19,12 +19,12 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import argparse
-import warnings
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sqlalchemy import text
 from config import get_engine
+from analysis.peers import mahalanobis_distances
 from analysis.peer_finder_basic import fetch_feature_matrix, FEATURE_COLS
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -43,39 +43,6 @@ FEATURE_LABELS = {
     "ela_me_pct":       "ELA M+E %",
     "math_me_pct":      "Math M+E %",
 }
-
-
-# ── Core distance helpers ─────────────────────────────────────────────────────
-
-def _mahal_distances(feat_filled: pd.DataFrame, base_vec: np.ndarray,
-                     feature_cols: list[str]) -> pd.Series:
-    """
-    Compute Mahalanobis distances from base_vec to all rows of feat_filled
-    using the specified feature columns.  Returns a Series indexed by org_code.
-    """
-    X = feat_filled[feature_cols].values
-    cov = np.cov(X, rowvar=False)
-    if cov.ndim == 0:
-        cov = np.array([[float(cov)]])
-    reg = 1e-6 * np.eye(cov.shape[0])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        cov_inv = np.linalg.pinv(cov + reg)
-    base = feat_filled[feature_cols].loc[
-        feat_filled.index[feat_filled.index == feat_filled.index[0]]
-    ].values[0] if False else np.array(
-        [feat_filled[feature_cols].iloc[
-            feat_filled.index.get_loc(feat_filled.index[0])
-        ].values[0]] * len(feature_cols)
-    )   # placeholder — overwritten below
-
-    # Build distance for each row
-    distances = {}
-    for org_code, row in feat_filled[feature_cols].iterrows():
-        diff = row.values - base_vec
-        dist = float(np.sqrt(max(0.0, diff @ cov_inv @ diff)))
-        distances[org_code] = dist
-    return pd.Series(distances)
 
 
 def compute_full_and_loo(df: pd.DataFrame, base_org_code: str,
@@ -131,27 +98,10 @@ def compute_full_and_loo(df: pd.DataFrame, base_org_code: str,
 
     def _rank(feature_cols):
         """Return ranked rows (excluding base) using given cols."""
-        # Only use cols that exist in feat_filled
-        use_cols = [c for c in feature_cols if c in feat_filled.columns]
-        if len(use_cols) < 1:
+        dists = mahalanobis_distances(feat_filled, base_org_code, feature_cols)
+        if dists.empty:
             return pd.DataFrame(columns=["org_code", "mahal_dist", "rank"])
-        X    = feat_filled[use_cols].values.astype(float)
-        base = feat_filled.loc[base_org_code, use_cols].values.astype(float)
-        cov  = np.cov(X, rowvar=False)
-        if cov.ndim == 0:
-            cov = np.array([[float(cov)]])
-        reg     = 1e-6 * np.eye(cov.shape[0])
-        cov_inv = np.linalg.pinv(cov + reg)
-        rows = []
-        for oc, row in feat_filled[feature_cols].iterrows():
-            if oc == base_org_code:
-                continue
-            diff = row.values - base
-            dist = float(np.sqrt(max(0.0, diff @ cov_inv @ diff)))
-            rows.append({"org_code": oc, "mahal_dist": round(dist, 4)})
-        result = (pd.DataFrame(rows)
-                    .sort_values("mahal_dist")
-                    .reset_index(drop=True))
+        result = dists.round(4).rename("mahal_dist").rename_axis("org_code").reset_index()
         result["rank"] = result.index + 1
         return result
 

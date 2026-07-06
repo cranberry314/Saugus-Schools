@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from config import get_engine
+from analysis.peers import mahalanobis_distances
 from db.queries import (
     FEATURE_MATRIX_FULL, ALL_FEATURE_COLS, FEATURE_LABEL,
     FEATURE_TIER, FEATURE_CATALOG, TIER1_COLS, TIER2_COLS, TIER3_COLS, OUTCOME_COLS
@@ -69,29 +70,11 @@ def _rank_by_distance(feat_filled: pd.DataFrame, base_org: str,
     Compute Mahalanobis distance from base_org to all other rows.
     Returns DataFrame: org_code, mahal_dist, rank — sorted ascending.
     """
-    use_cols = [c for c in feature_cols if c in feat_filled.columns]
-    if not use_cols:
+    dists = mahalanobis_distances(feat_filled, base_org, feature_cols)
+    if dists.empty:
         return pd.DataFrame(columns=["org_code", "mahal_dist", "rank"])
 
-    X    = feat_filled[use_cols].values.astype(float)
-    base = feat_filled.loc[base_org, use_cols].values.astype(float)
-
-    cov = np.cov(X, rowvar=False)
-    if cov.ndim == 0:
-        cov = np.array([[float(cov)]])
-    cov_inv = np.linalg.pinv(cov + 1e-6 * np.eye(cov.shape[0]))
-
-    rows = []
-    for oc in feat_filled.index:
-        if oc == base_org:
-            continue
-        diff = feat_filled.loc[oc, use_cols].values.astype(float) - base
-        dist = float(np.sqrt(max(0.0, diff @ cov_inv @ diff)))
-        rows.append({"org_code": oc, "mahal_dist": round(dist, 4)})
-
-    result = (pd.DataFrame(rows)
-                .sort_values("mahal_dist")
-                .reset_index(drop=True))
+    result = dists.round(4).rename("mahal_dist").rename_axis("org_code").reset_index()
     result["rank"] = result.index + 1
     return result
 

@@ -19,11 +19,10 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import argparse
-import numpy as np
 import pandas as pd
-from scipy.spatial.distance import mahalanobis
 from sqlalchemy import text
 from config import get_engine
+from analysis.peers import mahalanobis_distances
 
 # Default: Saugus MA
 DEFAULT_DISTRICT = "02620000"
@@ -159,29 +158,19 @@ def compute_peers(df: pd.DataFrame, base_org_code: str, top_n: int = TOP_N) -> p
     # Fill remaining NaN with column median for the covariance calculation
     feat_filled = feat.fillna(feat.median(numeric_only=True))
 
-    # Covariance matrix (with regularisation to avoid singularity)
-    cov = feat_filled.cov().values
-    reg = 1e-6 * np.eye(cov.shape[0])
-    cov_inv = np.linalg.inv(cov + reg)
+    # Shared Mahalanobis kernel (pinv + ridge + clamp) — sorted, base excluded.
+    dists = mahalanobis_distances(feat_filled, base_org_code, FEATURE_COLS)
 
-    base_vec = feat_filled.loc[base_org_code].values
+    results = [{
+        "peer_org_code":    org_code,
+        "district_name":    df.loc[org_code, "district_name"] if org_code in df.index else None,
+        "town":             df.loc[org_code, "town"] if org_code in df.index else None,
+        "mahalanobis_dist": round(float(dist), 6),
+        **{col: feat.loc[org_code, col] if org_code in feat.index else None
+           for col in FEATURE_COLS},
+    } for org_code, dist in dists.items()]
 
-    results = []
-    for org_code, row in feat_filled.iterrows():
-        if org_code == base_org_code:
-            continue
-        diff = row.values - base_vec
-        dist = float(np.sqrt(diff @ cov_inv @ diff))
-        results.append({
-            "peer_org_code":    org_code,
-            "district_name":    df.loc[org_code, "district_name"] if org_code in df.index else None,
-            "town":             df.loc[org_code, "town"] if org_code in df.index else None,
-            "mahalanobis_dist": round(dist, 6),
-            **{col: feat.loc[org_code, col] if org_code in feat.index else None
-               for col in FEATURE_COLS},
-        })
-
-    peers_df = pd.DataFrame(results).sort_values("mahalanobis_dist").head(top_n)
+    peers_df = pd.DataFrame(results).head(top_n)
     peers_df["rank_order"] = range(1, len(peers_df) + 1)
     return peers_df
 

@@ -357,6 +357,7 @@ Schools/
 │   ├── panel.py                       # Shared town×year panel builder + 16-outcome taxonomy (used by factor_portfolio)
 │   ├── peer_trajectory_study.py       # "What makes towns succeed" trajectory study
 │   ├── ma_town_health.py              # MA town health report (~350 towns)
+│   ├── peers.py                       # Shared Mahalanobis peer-distance kernel (used by the 3 peer scripts)
 │   ├── peer_analysis_comprehensive.py # Comprehensive Mahalanobis peer analysis (Excel + PDF)
 │   ├── peer_analysis_timeseries.py    # Peer rankings through time + sensitivity analysis
 │   ├── peer_finder_basic.py           # Basic Mahalanobis peer finder (writes peer_districts table)
