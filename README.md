@@ -14,9 +14,7 @@ what Saugus spends on education and how its students perform — and, more
 importantly, *why* that gap exists and what (if anything) about non-spending factors
 explains it.
 
-It started as a community research project. The goal is analysis rigorous enough to
-hand to a school committee or town meeting, available in both a technical version
-and a plain-language community brief generated from the same underlying data.
+This is me trying to understand the strengths and weaknesses in the Saugus school system.
 
 **What's in the repo, end to end:**
 
