@@ -33,11 +33,12 @@ This is me trying to understand the strengths and weaknesses in the Saugus schoo
    (e.g. income and poverty rate move together across MA towns, so they shouldn't
    be treated as independent).
 
-3. **Causal-leaning regression** (`analysis/policy_backtest.py`) — a two-way
-   fixed-effects panel regression (town + year fixed effects, clustered standard
-   errors, via `linearmodels`) tests whether *lagged* policy inputs (spending,
-   staffing ratios, Chapter 70 state aid, crime) predict 16 distinct town-level
-   outcomes, across ~5,600 town-year observations (2009–2024).
+3. **Within-town temporal analysis** *(work in progress)* — a within-district
+   fixed-effects "event study" asks whether a town's *own* change in an actionable
+   factor moved its *own* later outcomes — the causal-leaning complement to the
+   cross-sectional RBP model. It is live but still being built out and is not yet
+   published here. (It supersedes an earlier lagged two-way fixed-effects panel
+   regression, `policy_backtest.py`, which has been retired.)
 
 4. **Flagship — Relevance-Based Prediction** (`analysis/rbp.py`,
    `analysis/saugus_factor_analysis.py`) — a from-scratch implementation of
@@ -82,7 +83,6 @@ to build them):
 | `Reports/saugus_factor_analysis.pdf` | `analysis/saugus_factor_analysis.py` — flagship RBP factor analysis |
 | `Reports/saugus_full_analysis.pdf` / `saugus_community_brief.pdf` | `analysis/saugus_synthesis.py` |
 | `Reports/municipal_finance_report.pdf` | `analysis/municipal_finance_report.py` |
-| `Reports/policy_backtest_panel_regression.pdf` | `analysis/policy_backtest.py` |
 
 ---
 
@@ -158,7 +158,6 @@ Nothing is hardcoded. Re-running after a data update automatically reflects all 
 
 | Script | What it does | Output |
 |---|---|---|
-| `policy_backtest.py` | Two-way fixed-effects panel regression — do lagged policy inputs predict 16 town-level outcomes? | `Reports/policy_backtest_panel_regression.pdf`, `Reports/policy_backtest_raw_results.csv` |
 | `peer_trajectory_study.py` | Finds MA towns demographically similar to Saugus circa 2012, ranks them by improvement on a composite quality-of-life score by 2023, and case-studies the biggest "risers" vs. "stagnators." | `Reports/saugus_peer_improvement_trajectories.pdf` |
 | `factor_portfolio.py` | Quant-investing-style analysis: sorts MA towns into quartiles by each policy input (level and YoY change) and compares 15 outcomes between the top and bottom quartiles ("long/short alpha"). | `Reports/town_factor_quartile_portfolio.pdf` |
 | `ma_town_health.py` | Broad health check across ~350 MA towns — educational outcomes, fiscal health, and community vitality, with 5- and 10-year backtests. | `Reports/ma_town_health_analysis.pdf` |
@@ -354,8 +353,8 @@ Schools/
 │   ├── actionable_factors.py          # Builds the derived Tier-1/2 factor ratios; scores each factor's marginal lift
 │   ├── saugus_synthesis.py            # Two-audience narrative report (--parent for community brief)
 │   ├── municipal_finance_report.py    # Municipal finance report generator (PDF)
-│   ├── policy_backtest.py             # Two-way fixed-effects panel regression (16 outcomes)
 │   ├── factor_portfolio.py            # Quartile long/short factor-portfolio analysis
+│   ├── panel.py                       # Shared town×year panel builder + 16-outcome taxonomy (used by factor_portfolio)
 │   ├── peer_trajectory_study.py       # "What makes towns succeed" trajectory study
 │   ├── ma_town_health.py              # MA town health report (~350 towns)
 │   ├── peer_analysis_comprehensive.py # Comprehensive Mahalanobis peer analysis (Excel + PDF)

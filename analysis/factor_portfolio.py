@@ -35,7 +35,7 @@ matplotlib.rcParams.update({
     "font.sans-serif":    ["Helvetica", "DejaVu Sans", "Arial"],
 })
 
-from analysis.policy_backtest import load_panel, OUTCOMES, CAT_COLOURS, CAT_LIGHT
+from analysis.panel import load_panel, OUTCOMES, CAT_COLOURS, CAT_LIGHT
 from config import get_engine
 
 _FINAL_PDF = os.path.join(
