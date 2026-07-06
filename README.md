@@ -47,12 +47,24 @@ and a plain-language community brief generated from the same underlying data.
    Networks."* For four outcomes — MCAS Grades 3–8, MCAS Grade 10 (ELA), Dropout
    Rate, and Education Budget Share (the share of the municipal budget allocated to
    schools) — the pipeline:
-   - runs **greedy forward feature selection** with leave-one-out cross-validation
-     across every MA district, to find a feature set that demonstrably improves
-     out-of-sample prediction (no fixed feature list chosen in advance);
+   - runs **one RBP model per outcome over a curated, tiered factor pool** —
+     Tier-3 *structural* traits (what a town **is**: income, poverty, enrollment)
+     find Saugus's genuine peer towns, and Tier-1/2 *actionable* levers (what a
+     town **does**: staffing, pay, budget shares) are the factors ranked. There is
+     **no in-model pruning** — faithful to Kritzman, every candidate is kept and
+     near-zero-importance factors are diversified away by the relevance weighting;
    - predicts Saugus's value as a relevance-weighted average of other districts; and
-   - reports **which features and which comparison towns drove that prediction** —
+   - reports **which factors and which comparison towns drove that prediction** —
      the model shows its work by design, instead of being a black box.
+
+   The actionable levers aren't hand-picked. They are the survivors of a separate
+   **statewide factor screen** that tested every plausible spending/staffing column
+   and derived ratio across all MA districts and kept only the most predictive —
+   scored by partial association with the outcome *net of the structural block*,
+   permutation-based false-discovery control, stability selection, and out-of-sample
+   lift. Redundant twins and wealth-proxies (e.g. raw per-pupil dollar levels, which
+   mostly proxy town size) were dropped in favor of normalized shares and ratios, one
+   clean lever per lever-type. See [Chosen Factors](#chosen-factors) for the final set.
 
 5. **Synthesis** (`analysis/saugus_synthesis.py`) — combines the trajectory study,
    municipal finance report, policy backtest, and factor portfolio into a single
@@ -100,11 +112,12 @@ Alternative to Neural Networks"* — see the module docstring for the full math
 (relevance, censoring, adjusted fit, and the reliability-weighted grid).
 
 `analysis/saugus_factor_analysis.py` runs RBP for four outcomes — MCAS Grades 3–8,
-MCAS Grade 10 (ELA), Dropout Rate, and Education Budget Share. For each outcome it:
-selects a lean feature set via greedy forward selection with leave-one-out (LOO)
-validation across all MA districts, predicts Saugus's value, and identifies the
-most/least relevant comparison towns and the per-feature importance driving the
-prediction.
+MCAS Grade 10 (ELA), Dropout Rate, and Education Budget Share. For each outcome it
+runs a single RBP model over the full curated factor pool (10 Tier-3 structural +
+Tier-1/2 actionable levers — see [Chosen Factors](#chosen-factors)), with **no
+in-model pruning**, then predicts Saugus's value, validates it leave-one-out (LOO)
+across all MA districts, and identifies the most/least relevant comparison towns and
+the per-factor importance driving the prediction.
 
 ```bash
 source .venv/bin/activate
@@ -114,9 +127,9 @@ python analysis/saugus_factor_analysis.py --regen-pdf  # rebuild the PDF from ca
 ```
 
 Output:
-- `Reports/saugus_factor_analysis.pdf` — selection history, importance exhibits,
+- `Reports/saugus_factor_analysis.pdf` — factor definitions, importance exhibits,
   Saugus prediction, most/least relevant towns, per-model summary
-- `Reports/saugus_factor_analysis_results.csv` — machine-readable feature importances
+- `Reports/saugus_factor_analysis_results.csv` — machine-readable factor importances
 - `Reports/saugus_factor_analysis_cache.pkl` — cached results (used by `--regen-pdf`)
 
 ### Narrative Synthesis (Two Audiences)
@@ -157,6 +170,56 @@ Nothing is hardcoded. Re-running after a data update automatically reflects all 
 | `saugus_spending_comparison.py` | Per-pupil spending vs. the statewide distribution and vs. the Mahalanobis peer group, nominal and inflation-adjusted. | `Reports/saugus_spending_vs_peers.pdf` |
 | `data_integrity.py` | Data-quality checks across every multi-source/stitched table (e.g. the Chapter 70 FY2007–2022 / FY2023–2026 seam). | `Reports/data_integrity_checks.pdf` + console summary |
 | `data_consistency_tests.py` | Statistical consistency tests across the dataset. | `Reports/data_consistency_tests.pdf` |
+
+---
+
+## Chosen Factors
+
+The flagship RBP model sees two kinds of factors. **Tier-3 structural** traits are
+what a town *is* — they are used only to match Saugus to genuinely comparable peer
+towns, then hidden, because a town cannot vote to change its own demographics.
+**Tier-1/2 actionable** levers are what a town *does* — these are the factors the
+report actually ranks. (Each of the four models uses all 10 structural traits plus
+the actionable levers that don't compete with its own outcome, so a given model runs
+on 18 factors.)
+
+### Tier-3 — Structural (peer-matching only, not recommendations)
+
+| Factor | What it is |
+|---|---|
+| `median_hh_income` | Median household income |
+| `equalized_income` | Equalized property valuation per capita (property wealth) |
+| `low_income_pct` | Share of students who are low-income |
+| `pct_bachelors_plus` | Share of adults with a bachelor's degree or higher |
+| `pct_owner_occupied` | Share of owner-occupied housing |
+| `ell_pct` | English-language-learner share |
+| `sped_pct` | Special-education share |
+| `total_enrollment` | District enrollment (size) |
+| `crime_rate` | Violent crime rate per 100k |
+| `health_ins_per_capita` | Municipal employee health-insurance spend per resident (wealth/workforce proxy) |
+
+### Tier-1/2 — Actionable levers (the factors ranked)
+
+These 9 are the best of everything tested — the survivors of the statewide factor
+screen described under [About](#about-this-project), reduced to the most predictive,
+non-redundant set (one clean lever per lever-type, no wealth-proxies). Two are raw
+columns; seven are normalized ratios computed from public data.
+
+| Factor | Tier | What it is |
+|---|---|---|
+| `ed_budget_share` | 1 (votable) | Education's share of the total municipal budget |
+| `spend_vs_required_nss` | 1 (votable) | Net school spending vs. the Chapter 70 required minimum ("fund-more" effort) |
+| `fixed_costs_pct` | 1 (votable) | Fixed costs (pensions/benefits/debt) as a share of the municipal budget — crowd-out |
+| `chronic_absenteeism_pct` | 2 (managed) | Share of students missing ≥10% of school days |
+| `avg_teacher_salary` | 2 (managed) | Average teacher salary (pay level / competitiveness) |
+| `teachers_per_100_students` | 2 (managed) | Teacher staffing density (class size) |
+| `teachers_per_lowincome` | 2 (managed) | Teachers per low-income student (staffing relative to need) |
+| `instructional_share` | 2 (managed) | Share of the school dollar reaching the classroom vs. overhead |
+| `teacher_share_of_spend` | 2 (managed) | Share of the school dollar going specifically to teacher pay |
+
+The derived actionable ratios are built by `analysis/actionable_levers.py`; the
+factor definitions and their formulas also appear on a dedicated page inside
+`Reports/saugus_factor_analysis.pdf`.
 
 ---
 
@@ -280,8 +343,9 @@ Schools/
 ├── data_loader.py              # Annual data update orchestrator ← START HERE
 │
 ├── analysis/
-│   ├── saugus_factor_analysis.py      # ★ Flagship: RBP factor selection & Saugus prediction (4 outcome models)
+│   ├── saugus_factor_analysis.py      # ★ Flagship: RBP over the tiered factor pool + Saugus prediction (4 outcome models)
 │   ├── rbp.py                         # Reference implementation: Czasonis/Kritzman/Turkington (2024) RBP
+│   ├── actionable_levers.py           # Builds the derived Tier-1/2 lever ratios; scores each lever's marginal lift
 │   ├── saugus_synthesis.py            # Two-audience narrative report (--parent for community brief)
 │   ├── municipal_finance_report.py    # Municipal finance report generator (PDF)
 │   ├── policy_backtest.py             # Two-way fixed-effects panel regression (16 outcomes)
@@ -496,8 +560,9 @@ drop out of the comparison pool naturally.
 
 The flagship RBP factor analysis (`analysis/saugus_factor_analysis.py`) does not
 use this fixed peer group — relevance to Saugus is instead computed directly by
-the RBP algorithm itself, per outcome, from whichever features survive feature
-selection (see [Quick Start](#quick-start--generating-reports)).
+the RBP algorithm itself, per outcome, over the curated tiered factor pool, where
+the Tier-3 structural traits do the peer-matching (see
+[Chosen Factors](#chosen-factors)).
 
 ---
 
