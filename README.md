@@ -49,7 +49,7 @@ and a plain-language community brief generated from the same underlying data.
    schools) — the pipeline:
    - runs **one RBP model per outcome over a curated, tiered factor pool** —
      Tier-3 *structural* traits (what a town **is**: income, poverty, enrollment)
-     find Saugus's genuine peer towns, and Tier-1/2 *actionable* levers (what a
+     find Saugus's genuine peer towns, and Tier-1/2 *actionable* factors (what a
      town **does**: staffing, pay, budget shares) are the factors ranked. There is
      **no in-model pruning** — faithful to Kritzman, every candidate is kept and
      near-zero-importance factors are diversified away by the relevance weighting;
@@ -57,14 +57,14 @@ and a plain-language community brief generated from the same underlying data.
    - reports **which factors and which comparison towns drove that prediction** —
      the model shows its work by design, instead of being a black box.
 
-   The actionable levers aren't hand-picked. They are the survivors of a separate
+   The actionable factors aren't hand-picked. They are the survivors of a separate
    **statewide factor screen** that tested every plausible spending/staffing column
    and derived ratio across all MA districts and kept only the most predictive —
    scored by partial association with the outcome *net of the structural block*,
    permutation-based false-discovery control, stability selection, and out-of-sample
    lift. Redundant twins and wealth-proxies (e.g. raw per-pupil dollar levels, which
    mostly proxy town size) were dropped in favor of normalized shares and ratios, one
-   clean lever per lever-type. See [Chosen Factors](#chosen-factors) for the final set.
+   clean factor per factor-type. See [Chosen Factors](#chosen-factors) for the final set.
 
 5. **Synthesis** (`analysis/saugus_synthesis.py`) — combines the trajectory study,
    municipal finance report, policy backtest, and factor portfolio into a single
@@ -114,7 +114,7 @@ Alternative to Neural Networks"* — see the module docstring for the full math
 `analysis/saugus_factor_analysis.py` runs RBP for four outcomes — MCAS Grades 3–8,
 MCAS Grade 10 (ELA), Dropout Rate, and Education Budget Share. For each outcome it
 runs a single RBP model over the full curated factor pool (10 Tier-3 structural +
-Tier-1/2 actionable levers — see [Chosen Factors](#chosen-factors)), with **no
+Tier-1/2 actionable factors — see [Chosen Factors](#chosen-factors)), with **no
 in-model pruning**, then predicts Saugus's value, validates it leave-one-out (LOO)
 across all MA districts, and identifies the most/least relevant comparison towns and
 the per-factor importance driving the prediction.
@@ -175,12 +175,20 @@ Nothing is hardcoded. Re-running after a data update automatically reflects all 
 
 ## Chosen Factors
 
+**What is a factor?** A factor is a single measurable quantity per district that the
+model can use as a predictor. It is either a **raw column** straight from the data
+(e.g. `chronic_absenteeism_pct`, `avg_teacher_salary`) or a **calculated ratio/share**
+derived from several columns and normalized so a big town and a small town are
+comparable (e.g. `instructional_share` = classroom spending ÷ total in-district
+spending). Normalizing is what keeps a factor from simply proxying town size or wealth.
+Every factor carries a **tier** that fixes how the model may use it (see below).
+
 The flagship RBP model sees two kinds of factors. **Tier-3 structural** traits are
 what a town *is* — they are used only to match Saugus to genuinely comparable peer
 towns, then hidden, because a town cannot vote to change its own demographics.
-**Tier-1/2 actionable** levers are what a town *does* — these are the factors the
+**Tier-1/2 actionable** factors are what a town *does* — these are the factors the
 report actually ranks. (Each of the four models uses all 10 structural traits plus
-the actionable levers that don't compete with its own outcome, so a given model runs
+the actionable factors that don't compete with its own outcome, so a given model runs
 on 18 factors.)
 
 ### Tier-3 — Structural (peer-matching only, not recommendations)
@@ -198,11 +206,11 @@ on 18 factors.)
 | `crime_rate` | Violent crime rate per 100k |
 | `health_ins_per_capita` | Municipal employee health-insurance spend per resident (wealth/workforce proxy) |
 
-### Tier-1/2 — Actionable levers (the factors ranked)
+### Tier-1/2 — Actionable (the factors ranked)
 
 These 9 are the best of everything tested — the survivors of the statewide factor
 screen described under [About](#about-this-project), reduced to the most predictive,
-non-redundant set (one clean lever per lever-type, no wealth-proxies). Two are raw
+non-redundant set (one clean factor per factor-type, no wealth-proxies). Two are raw
 columns; seven are normalized ratios computed from public data.
 
 | Factor | Tier | What it is |

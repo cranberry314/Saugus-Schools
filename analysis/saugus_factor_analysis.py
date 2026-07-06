@@ -3399,6 +3399,25 @@ PRE_SPECIFIED_POOL = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# What is a "factor"?
+# ─────────────────────────────────────────────────────────────────────────────
+# A factor is a single measurable quantity per district that the model can use
+# as a predictor.  It is either:
+#   • a RAW column straight from the data (e.g. chronic_absenteeism_pct,
+#     avg_teacher_salary), or
+#   • a CALCULATED ratio/share derived from several columns and normalized so a
+#     big town and a small town are comparable (e.g. instructional_share =
+#     classroom spending ÷ total in-district spending).  Normalizing is what
+#     keeps a factor from just proxying town size or wealth.
+#
+# Every factor carries a TIER that fixes how the model may use it:
+#   • Tier 1 — directly votable (Town Meeting / ballot)      ┐ "actionable":
+#   • Tier 2 — policy / management (administration decides)  ┘  what a town DOES
+#   • Tier 3 — structural: what a community IS (income, poverty, size).  Used
+#     ONLY to match Saugus to comparable peer towns, never ranked as a lever —
+#     a town cannot vote to change who it is.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # Tiered "actionable factor" candidate pool  (USE_ACTIONABLE_POOL)
 # ─────────────────────────────────────────────────────────────────────────────
 # RBP is tier-blind — it treats every column identically — so we impose the
