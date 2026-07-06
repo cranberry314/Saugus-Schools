@@ -34,3 +34,11 @@ Saugus School Information/
 School Summary 2018.docx
 Saugus.py
 TeacherSalary.py
+
+# Factor-selection study — internal working tools, not for publication.
+# (All outputs live under Reports/, already ignored above.)
+analysis/factor_selection_scratch.py
+analysis/factor_validation.py
+analysis/model_select_rbp.py
+analysis/test_new_ratios.py
+analysis/event_study.py

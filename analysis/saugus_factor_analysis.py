@@ -187,15 +187,30 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
         ppe_raw = q("""
             SELECT district_name, category, amount::float
             FROM per_pupil_expenditure WHERE school_year = :yr
-              AND category IN ('Total In-District Expenditures', 'Teachers')
+              AND category IN ('Total In-District Expenditures', 'Teachers',
+                               'Other Teaching Services',
+                               'Instructional Materials, Equipment and Technology',
+                               'Instructional Leadership')
         """, yr=school_year)
         ppe = (ppe_raw
                .pivot_table(index="district_name", columns="category",
                             values="amount", aggfunc="first")
-               .rename(columns={"Total In-District Expenditures": "nss_per_pupil",
-                                 "Teachers": "teacher_spending_per_pupil"})
                .reset_index())
         ppe.columns.name = None
+        # instructional_share: share of in-district spending that reaches the
+        # CLASSROOM (teachers + other teaching + materials + instructional
+        # leadership) ÷ total in-district.  An allocation lever the cross-sectional
+        # factor screen validated (partial ρ ≈ +0.21 on MCAS 3–8, net of structure).
+        _instr = (ppe.get("Teachers", 0.0)
+                  + ppe.get("Other Teaching Services", 0.0)
+                  + ppe.get("Instructional Materials, Equipment and Technology", 0.0)
+                  + ppe.get("Instructional Leadership", 0.0))
+        ppe["instructional_share"] = (_instr /
+            ppe["Total In-District Expenditures"].replace(0, np.nan))
+        ppe = (ppe.rename(columns={"Total In-District Expenditures": "nss_per_pupil",
+                                    "Teachers": "teacher_spending_per_pupil"})
+                  [["district_name", "nss_per_pupil", "teacher_spending_per_pupil",
+                    "instructional_share"]])
 
         ch70 = q("""
             SELECT district_name,
@@ -816,9 +831,32 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
         "Saugus analyzed as the prediction task; importance flags where it is most distinctive among actionable factors — a prediction-sharpening measure, not a causal driver",
         "Leave-one-out LOO r validates the predictions across all MA districts",
     ]
-    for i, line in enumerate(lines):
-        ax.text(0.1, 0.63 - i * 0.065, line, ha="left", va="center",
-                fontsize=9.5, color=_BL, transform=ax.transAxes)
+    # Wrap each bullet so long lines never run off the right edge; hang the
+    # continuation under the text (not the marker).
+    y_cursor = 0.65
+    for line in lines:
+        segs = textwrap.wrap(line, width=104)
+        for k, seg in enumerate(segs):
+            ax.text(0.08, y_cursor, ("•  " if k == 0 else "     ") + seg,
+                    ha="left", va="center", fontsize=9.3, color=_BL,
+                    transform=ax.transAxes)
+            y_cursor -= 0.030
+        y_cursor -= 0.010   # gap between bullets
+
+    # Clarify what the per-model factor count is made of: the structural traits
+    # are IN the model (they build the peer match) but hidden from the action
+    # tables because a town can't change them.  Counts are read from the models
+    # so they can never drift from the tables below.
+    _cands0 = models[0].get("all_candidates", models[0]["features"]) if models else []
+    _n_struct = sum(1 for f in _cands0 if f in STRUCTURAL_FEATURES)
+    _note = (f"Each model uses {len(_cands0)} factors, of which {_n_struct} are Tier-3 "
+             f"structural traits (income, poverty, enrollment …).  These {_n_struct} are "
+             f"needed to match Saugus to genuine peer towns, but are then hidden — a town "
+             f"cannot change who it is — so only the Tier-1 & 2 factors it can act on are "
+             f"ranked and shown in this report.")
+    ax.text(0.5, 0.395, textwrap.fill(_note, width=118),
+            ha="center", va="top", fontsize=8, style="italic", color=_BL,
+            transform=ax.transAxes, linespacing=1.35)
 
     # Summary box — sits below the bullet lines with a clear gap
     box_x0, box_w = 0.02, 0.96
@@ -868,13 +906,15 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
             ax.text(xpos, 0.115, f"Typical error ± {mae:.1f} pp",
                     ha="center", fontsize=8.5, color=_GREY, transform=ax.transAxes)
 
-    ax.text(0.5, 0.065,
-            "LOO r = leave-one-out correlation of predicted vs. actual (range −1 to +1; "
+    expl = ("LOO r = leave-one-out correlation of predicted vs. actual (range −1 to +1; "
             "noise below ≈ 0.15 at this sample size).  R² = 1 − SSE/SST, the out-of-sample "
             "share of town-to-town variance explained (≤ r² because RBP's weighted averages "
-            "compress toward the mean).  Typical error = mean absolute error, in percentage points.",
-            ha="center", va="center", fontsize=6.8, color=_GREY, style="italic",
-            transform=ax.transAxes)
+            "compress toward the mean).  Typical error = mean absolute error, in percentage points.")
+    ey = 0.062
+    for seg in textwrap.wrap(expl, width=120):
+        ax.text(0.5, ey, seg, ha="center", va="center", fontsize=6.8,
+                color=_GREY, style="italic", transform=ax.transAxes)
+        ey -= 0.018
 
     _gen_date = datetime.date.today().strftime("%B %Y")
     _footer(fig,
@@ -927,6 +967,73 @@ def page_tiers_explained(pdf):
 
     _footer(fig, "Tiers 1 & 2 = actionable factors (what this report ranks).  "
             "Tier 3 = structural controls (the peer-matching basis, not recommendations).")
+    _save(pdf, fig)
+
+
+def page_factor_definitions(pdf):
+    """Every actionable factor: exact calculation, data source, and what it looks
+    for.  So a skeptic can reproduce each number from public MA data."""
+    fig, ax = _paper_fig(); ax.axis("off")
+    _header(fig, "Factor Definitions — What Each Lever Is and How It's Built",
+            "The 9 Tier-1/2 factors this report ranks.  2 are raw columns; 7 are calculated "
+            "ratios.  All source data is public: DESE (education feeds) and DLS Schedule A "
+            "(municipal finance).")
+
+    # (name, tier_color, formula+source line, plain-language purpose)
+    T1, T2 = [
+        ("ed_budget_share",
+         "= municipal education ÷ total municipal spending × 100      · DLS Schedule A",
+         "Share of the whole TOWN budget voted to schools — the core allocation choice."),
+        ("spend_vs_required_nss",
+         "= net school spending/pupil ÷ Chapter-70 required NSS/pupil   · DESE per-pupil + Chapter 70",
+         "Spending above the state-required minimum — the town's discretionary 'fund-more' effort."),
+        ("fixed_costs_pct",
+         "= municipal fixed costs ÷ total municipal spending × 100     · DLS Schedule A",
+         "Budget locked in pensions/benefits/debt — the crowd-out that squeezes schools."),
+    ], [
+        ("chronic_absenteeism_pct",
+         "= raw column (no calculation)                               · DESE attendance",
+         "Student engagement — % of students missing ≥10% of school days."),
+        ("avg_teacher_salary",
+         "= raw column (no calculation)                               · DESE staffing",
+         "Teacher pay LEVEL — competitiveness for talent."),
+        ("instructional_share",
+         "= (Teachers + Other Teaching + Materials + Instr. Leadership) ÷ Total In-District · DESE per-pupil",
+         "How much of the school dollar reaches the CLASSROOM vs. overhead."),
+        ("teacher_share_of_spend",
+         "= Teachers (per-pupil) ÷ Total In-District (per-pupil)       · DESE per-pupil",
+         "The slice of the school dollar going specifically to teacher pay."),
+        ("teachers_per_100_students",
+         "= teacher FTE ÷ enrollment × 100                            · DESE staffing + enrollment",
+         "Staffing density / class size — teachers per 100 students."),
+        ("teachers_per_lowincome",
+         "= teachers-per-100-students ÷ low-income %                   · DESE staffing + enrollment + demographics",
+         "Staffing RELATIVE TO NEED — teachers per unit of low-income enrollment."),
+    ]
+
+    def block(y, groups):
+        for name, formula, purpose in groups:
+            ax.text(0.045, y, name, fontsize=9.2, fontweight="bold",
+                    color=_BL, transform=ax.transAxes, va="top", family="monospace")
+            ax.text(0.045, y - 0.021, "  " + formula, fontsize=7.2, color=_GREY,
+                    transform=ax.transAxes, va="top", family="monospace")
+            ax.text(0.045, y - 0.040, "  → " + purpose, fontsize=8.0, color=_BLUE,
+                    style="italic", transform=ax.transAxes, va="top")
+            y -= 0.066
+        return y
+
+    y = 0.83
+    ax.text(0.04, y, "TIER 1 — Directly votable (Town Meeting / ballot)",
+            fontsize=10.5, fontweight="bold", color=_GREEN, transform=ax.transAxes, va="top")
+    y = block(y - 0.032, T1)
+    y -= 0.012
+    ax.text(0.04, y, "TIER 2 — Policy / management (administration decides)",
+            fontsize=10.5, fontweight="bold", color=_BLUE, transform=ax.transAxes, va="top")
+    block(y - 0.032, T2)
+
+    _footer(fig, "Every factor is reproducible from public MA data (DESE per-pupil expenditure, "
+            "staffing, enrollment, attendance, demographics, Chapter 70; DLS Schedule A municipal "
+            "finance).  Ratios normalize for town size so a big town and a small town are comparable.")
     _save(pdf, fig)
 
 
@@ -1906,9 +2013,11 @@ def page_budget_and_staffing(pdf, engine, results: list[dict],
     _header(fig, f"Budget Allocation & Teacher Density — {_n_years}-Year Trajectory "
                  f"(FY{_span_yrs[0]}–{_span_yrs[-1]})" if _span_yrs else
                  "Budget Allocation & Teacher Density — Trajectory",
-            "Source: MA DLS Schedule A (budget) · MA DESE Staffing (teachers) · "
-            f"Peer comparison: median of {len(PEER_TOWNS)} demographically similar MA towns "
-            f"(standardized-Mahalanobis d_M ≤ {DEMO_SIM_THRESHOLD:g}σ on 6 demographic features)")
+            "Source: MA DLS Schedule A (budget) & DESE Staffing (teachers)  ·  "
+            f"Peers: median of {len(PEER_TOWNS)} demographically similar MA towns "
+            f"(Mahalanobis ≤ {DEMO_SIM_THRESHOLD:g}σ; see note below)")
+    # Drop the subplots so their two-line titles clear the header subtitle.
+    fig.subplots_adjust(top=0.84)
 
     # ── Left: budget share ────────────────────────────────────────────────
     common_yrs_b = sorted(set(bud_saugus.index) & set(bud_peers.index))
@@ -2656,7 +2765,7 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     # synthesis page's "Peer median" for the same set, so the numbers agree.
     n_compare = min(2, len(oa_names))
     col_names = (["Factor", "Saugus"] +
-                 [_shorten(n, 14) for n in oa_names[:n_compare]] +
+                 [_shorten(n, 11) for n in oa_names[:n_compare]] +
                  ["Peer med", "Imp."])
     rows = []
     for feat in feats_ordered[:15]:
@@ -2668,7 +2777,10 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         peer_med = (float(feat_df.loc[oa_names, feat].median())
                     if feat in feat_df.columns else float("nan"))
         imp_val = float(imp.get(feat, 0))
-        rows.append([_shorten(_feat_meta(feat)[0], 38), _fmt(sv)] + oa_vals
+        # Wrap the factor label onto (at most) two lines so it fits the column
+        # instead of overflowing into the Saugus value cell.
+        _flabel = "\n".join(textwrap.wrap(_feat_meta(feat)[0], width=22)[:2])
+        rows.append([_flabel, _fmt(sv)] + oa_vals
                     + [_fmt(peer_med), f"{imp_val:+.3f}"])
 
     # ── Left: factor comparison table ──────────────────────────────────────────
@@ -2687,9 +2799,9 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         # Columns: Factor | Saugus | town... | Peer med | Imp.
         n_cols = len(used_cols)
         n_town_cols = n_cols - 4          # subtract Factor, Saugus, Peer med, Imp
-        feat_w   = 0.46
-        saugus_w = 0.09
-        town_w   = 0.11
+        feat_w   = 0.40
+        saugus_w = 0.10
+        town_w   = 0.13
         peer_w   = 0.12
         imp_w    = max(0.05, 1.0 - feat_w - saugus_w - n_town_cols * town_w - peer_w)
         explicit_w = ([feat_w, saugus_w] + [town_w] * n_town_cols + [peer_w, imp_w])
@@ -2700,7 +2812,10 @@ def page_what_overachievers_did(pdf, label: str, target: str,
             if col_idx == 0 and row_idx > 0:           # left-align factor labels
                 cell.set_text_props(ha="left")
             if row_idx == 0:
-                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
+                # Smaller header font so town names ("Leominster") fit their
+                # columns instead of colliding with neighbours.
+                cell.set_facecolor(_BLUE)
+                cell.set_text_props(color="white", fontsize=5.8)
             elif col_idx == 1 and row_idx > 0:         # Saugus column
                 cell.set_facecolor("#FFF8E1")
             elif col_idx == peer_col and row_idx > 0:  # Peer median column
@@ -3075,8 +3190,9 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     ax_l.text(0.0, 0.50, "Actionable Factors Where Saugus Stands Out", ha="left", va="top",
               fontsize=11, fontweight="bold", color=_BLUE, transform=ax_l.transAxes)
     ax_l.text(0.0, 0.45,
-              "Ranked by RBP importance — where Saugus is most distinctive, Saugus vs. the "
-              "statewide median.",
+              textwrap.fill(
+                  "Ranked by RBP importance — where Saugus is most distinctive, "
+                  "Saugus vs. the statewide median.", width=82),
               ha="left", va="top", fontsize=8, color=_GREY,
               transform=ax_l.transAxes, linespacing=1.3)
 
@@ -3086,7 +3202,7 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     if driver_rows:
         tbl = ax_l.table(cellText=driver_rows,
                           colLabels=["Factor", "Saugus", "MA median", "Importance"],
-                          bbox=[0.0, 0.155, 1.0, 0.27], cellLoc="center")
+                          bbox=[0.0, 0.15, 1.0, 0.26], cellLoc="center")
         tbl.auto_set_font_size(False); tbl.set_fontsize(8)
         col_w = [0.55, 0.15, 0.15, 0.15]
         for (r_, c_), cell in tbl.get_celld().items():
@@ -3308,17 +3424,22 @@ STRUCTURAL_FEATURES = {
 # effort/intensity ratios the factor screen (actionable_levers.py) validated as
 # carrying signal where the raw levels did not.
 ACTIONABLE_FACTORS = {
-    # raw factors already in load_features
-    "chronic_absenteeism_pct",    # attendance policy (dominant on dropout)
-    "teachers_per_100_students",  # staffing density
-    "nss_per_pupil",              # spending level
-    "res_tax_rate",               # revenue / override
-    "ed_budget_share",            # Town Meeting allocation
+    # ── The 9 best Tier-1/2 levers, chosen by the cross-sectional factor screen
+    #    (lag-0, net of the structural block, FDR-validated; one clean lever per
+    #    lever-TYPE, no redundant twins, no wealth-proxies).  Superseded the older
+    #    pool: dropped nss_per_pupil (raw level → redundant with spend_vs_required),
+    #    res_tax_rate (borderline), nss_per_eqv (negative = poverty proxy, not a
+    #    lever); added instructional_share and avg_teacher_salary. ──
+    # straight-up factors from load_features
+    "chronic_absenteeism_pct",    # attendance / engagement
+    "teachers_per_100_students",  # class size / staffing density
+    "avg_teacher_salary",         # teacher pay LEVEL
+    "instructional_share",        # share of the school dollar reaching the classroom
+    "ed_budget_share",            # Town Meeting allocation to schools
     "fixed_costs_pct",            # pensions/benefits/health (crowd-out)
     # derived effort/intensity (added by add_actionable_factors)
     "teachers_per_lowincome",     # staffing RELATIVE TO need
-    "nss_per_eqv",                # spending RELATIVE TO property wealth
-    "spend_vs_required_nss",      # effort above the Ch70 legal minimum
+    "spend_vs_required_nss",      # spending above the Ch70 legal minimum (fund-more vote)
     "teacher_share_of_spend",     # share of the school dollar reaching teachers
 }
 
@@ -3669,6 +3790,7 @@ def _build_actionable_report(pdf, results, df_raw, engine):
 
     page_title(pdf, results, analysis_year=_fy)
     page_tiers_explained(pdf)
+    page_factor_definitions(pdf)
     page_method_explainer(pdf)
     page_combined_summary(pdf, results)
     for r in results:
