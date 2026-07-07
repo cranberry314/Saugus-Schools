@@ -1941,15 +1941,27 @@ def _comparable_overperformers(loo_df: pd.DataFrame, target: str) -> pd.DataFram
     return _comparable_peers(loo_df, target, "better")
 
 
-def _comparable_underperformers(loo_df: pd.DataFrame, target: str) -> pd.DataFrame:
-    """Comparable peers that did WORSE than Saugus (see _comparable_peers)."""
-    return _comparable_peers(loo_df, target, "worse")
+def _find_underachievers(loo_df: pd.DataFrame, target: str,
+                         n: int = 6) -> pd.DataFrame:
+    """
+    Return the top-N districts by negative residual (performing worse than predicted).
+    For dropout, 'underachievers' are districts with higher-than-predicted dropout.
+    """
+    df = loo_df.dropna(subset=["residual"]).copy()
+    # Dropout: higher is worse, so rank by raw positive residual
+    if "dropout" in target.lower():
+        df["_rank_resid"] = df["residual"]
+    else:
+        df["_rank_resid"] = -df["residual"]   # most negative gap first
+    df = df[df.index != "Saugus"]
+    return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
 
 
 def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
-    """Scatter: actual vs predicted — labels ONLY Saugus's comparable peers (the
-    same prediction-matched set as the previous page): green did better, red did
-    worse.  All other MA districts are plotted in grey but not labeled."""
+    """Scatter: actual vs predicted across ALL MA districts (the model-fit /
+    where-Saugus-sits view) — the biggest statewide over-performers (green) and
+    under-performers (red) are labeled; Saugus starred.  Peer-town comparisons
+    live in the tables on the surrounding pages."""
     fig, ax = _paper_fig()
     fig.subplots_adjust(top=0.85)   # keep ax title clear of the header subtitle
     loo = analysis["loo_df"].dropna(subset=["actual", "predicted"])
@@ -1959,23 +1971,13 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     pred = loo["predicted"] * (100 if is_fraction else 1)
     resid = act - pred
 
-    # Highlight ONLY Saugus's comparable peers — the same prediction-matched set
-    # the preceding "What This Means" page is built from (single source of truth
-    # via _comparable_peers), computed live here so any change flows to both.
-    # Dissimilar outliers (e.g. Newton) are excluded by construction.  The full
-    # comparable set is coloured; only the closest peers (the set is sorted by
-    # proximity to Saugus's prediction) are labeled, so a large set stays legible.
-    overachievers_full  = _comparable_overperformers(loo, target)
-    underachievers_full = _comparable_underperformers(loo, target)
-    LABEL_CAP = 10
-    overachievers  = overachievers_full.head(LABEL_CAP)   # labeled subset
-    underachievers = underachievers_full.head(LABEL_CAP)
-    oa_names = set(overachievers_full.index)              # coloured = full set
-    ua_names = set(underachievers_full.index)
-
-    def _peer_lab(verb: str, labeled: int, full: int) -> str:
-        return (f"Comparable peers — {verb} (n={full})" if labeled >= full
-                else f"Comparable peers — {verb} ({labeled} of {full} labeled)")
+    # Statewide view: label the biggest over- and under-performers across ALL MA
+    # districts.  This page is the model-fit / where-Saugus-sits picture; the
+    # peer-town comparison is handled by the tables on the surrounding pages.
+    overachievers  = _find_overachievers(loo, target, n=8)
+    underachievers = _find_underachievers(loo, target, n=5)
+    oa_names = set(overachievers.index)
+    ua_names = set(underachievers.index)
 
     # All districts — grey
     mask_oa = loo.index.isin(oa_names)
@@ -1986,7 +1988,7 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     # Overachievers — green
     ax.scatter(pred[mask_oa], act[mask_oa],
                color=_GREEN, alpha=0.85, s=60, zorder=4,
-               label=_peer_lab("did better", len(overachievers), len(oa_names)))
+               label=f"Top over-performers (n={len(oa_names)})")
     for idx in overachievers.index:
         if idx in pred.index:
             ax.annotate(str(idx),
@@ -1997,7 +1999,7 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     # Underachievers — red
     ax.scatter(pred[mask_ua], act[mask_ua],
                color=_RED, alpha=0.80, s=55, zorder=4,
-               label=_peer_lab("did worse", len(underachievers), len(ua_names)))
+               label=f"Top under-performers (n={len(ua_names)})")
     for idx in underachievers.index:
         if idx in pred.index:
             ax.annotate(str(idx),
@@ -2020,19 +2022,17 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
 
     r = float(np.corrcoef(act, pred)[0, 1])
-    ax.set_title(f"Saugus's Comparable Peers — {label}  (LOO r = {r:.3f})", fontsize=10)
+    ax.set_title(f"Actual vs Predicted — {label}  (LOO r = {r:.3f})", fontsize=10)
     ax.set_xlabel("RBP-predicted value"); ax.set_ylabel("Actual value")
     ax.legend(fontsize=8); ax.grid(alpha=0.2)
 
     saugus_resid = float(resid.get("Saugus", float("nan")))
     unit = "pp" if (act.median() < 200) else " pts"
-    _header(fig, f"Saugus's Comparable Peers: {label}",
+    _header(fig, f"Over- and Under-Performers: {label}",
             f"Saugus gap: {saugus_resid:+.1f}{unit}  ·  Gold star = Saugus  ·  "
-            f"Green = comparable peers that did better  ·  Red = comparable peers that did worse")
-    _footer(fig, "Coloured points are Saugus's comparable peers — the same prediction-matched set the preceding "
-            "“What This Means” page is built from (predicted within ±1 SE of Saugus's own prediction, so "
-            "wealthy/large outliers like Newton are excluded); the closest peers are labeled.  "
-            "Residual = actual − predicted; grey = all other MA districts.")
+            f"Green = statewide over-performers  ·  Red = statewide under-performers")
+    _footer(fig, "All MA districts shown; the biggest statewide over-/under-performers are labeled.  "
+            "Residual = actual − predicted.  Positive = performing better than demographics suggest.")
     _save(pdf, fig)
 
 
@@ -3094,12 +3094,17 @@ def _build_actionable_report(pdf, results, df_raw, engine):
             page_what_overachievers_did(pdf, r["label"], r["target"],
                                         r["saugus"], df_raw,
                                         r.get("lean_features", r["features"]))
-    _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
-    _ridge_stats = (compute_ridge_validation(
-        df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
-        if _mcas_r else None)
-    page_budget_and_staffing(pdf, engine, results, df_raw, _ridge_stats)
-    page_fixed_costs(pdf, engine, _fy)   # snapshot pinned to the cross-section year
+    # ── Temporarily hidden (re-enable by uncommenting) ───────────────────────
+    # "Budget Allocation & Teacher Density" and "Fixed Costs: Sources, Scale, and
+    # OPEB Prefunding" pages are hidden for now at the user's request.  The Ridge
+    # cross-check is only consumed by the budget/staffing page, so it is skipped
+    # too while that page is hidden.
+    # _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
+    # _ridge_stats = (compute_ridge_validation(
+    #     df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
+    #     if _mcas_r else None)
+    # page_budget_and_staffing(pdf, engine, results, df_raw, _ridge_stats)
+    # page_fixed_costs(pdf, engine, _fy)   # snapshot pinned to the cross-section year
     page_optimum_profile(pdf, results, df_raw)
 
 
