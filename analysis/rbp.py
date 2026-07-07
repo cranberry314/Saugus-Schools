@@ -33,7 +33,7 @@ Entry point
     result.most_relevant   # DataFrame: top-N observations by weight
     result.least_relevant  # DataFrame: bottom-N observations by weight
 
-All equations reference the Kritzman (2024) paper directly.
+All equations reference the 2024 paper directly.
 
 Math summary
 ------------
