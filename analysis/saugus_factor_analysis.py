@@ -68,6 +68,7 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import get_engine
 from analysis.rbp import rbp, rbp_loo
+from db import queries as Q
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -141,57 +142,18 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
             return pd.read_sql(text(sql), conn, params=params or None)
 
         # ── Outcomes ──────────────────────────────────────────────────────
-        mcas = q("""
-            SELECT org_code, district_name,
-                   AVG(meeting_exceeding_pct::float) AS avg_mcas
-            FROM mcas_results
-            WHERE school_year = :yr
-              AND student_group = 'All Students'
-              AND grade = 'ALL (03-08)'
-              AND subject IN ('ELA', 'MATH')
-              AND org_code LIKE '%0000'
-            GROUP BY org_code, district_name
-        """, yr=school_year)
+        mcas = q(Q.FA_MCAS_3_8, yr=school_year)
 
-        post = q("""
-            SELECT DISTINCT ON (district_name)
-                   district_name, attending_pct::float AS attending_pct
-            FROM district_postsecondary
-            WHERE school_year <= :yr
-            ORDER BY district_name, school_year DESC
-        """, yr=school_year)
+        post = q(Q.FA_POSTSECONDARY, yr=school_year)
 
-        drop = q("""
-            SELECT DISTINCT ON (district_name)
-                   district_name, dropout_pct::float AS dropout_pct
-            FROM district_dropout
-            WHERE school_year <= :yr
-            ORDER BY district_name, school_year DESC
-        """, yr=school_year)
+        drop = q(Q.FA_DROPOUT, yr=school_year)
 
         # ── DESE school features ───────────────────────────────────────────
-        demog = q("""
-            SELECT district_name,
-                   high_needs_pct::float, ell_pct::float,
-                   low_income_pct::float, sped_pct::float
-            FROM district_selected_populations WHERE school_year = :yr
-        """, yr=school_year)
+        demog = q(Q.FA_SELECTED_POP, yr=school_year)
 
-        attend = q("""
-            SELECT district_name, chronic_absenteeism_pct::float
-            FROM attendance
-            WHERE school_year = :yr AND student_group = 'All'
-              AND school_name IS NULL
-        """, yr=school_year)
+        attend = q(Q.FA_ATTENDANCE, yr=school_year)
 
-        ppe_raw = q("""
-            SELECT district_name, category, amount::float
-            FROM per_pupil_expenditure WHERE school_year = :yr
-              AND category IN ('Total In-District Expenditures', 'Teachers',
-                               'Other Teaching Services',
-                               'Instructional Materials, Equipment and Technology',
-                               'Instructional Leadership')
-        """, yr=school_year)
+        ppe_raw = q(Q.FA_PPE_INSTRUCTIONAL, yr=school_year)
         ppe = (ppe_raw
                .pivot_table(index="district_name", columns="category",
                             values="amount", aggfunc="first")
@@ -212,20 +174,9 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
                   [["district_name", "nss_per_pupil", "teacher_spending_per_pupil",
                     "instructional_share"]])
 
-        ch70 = q("""
-            SELECT district_name,
-                   chapter70_aid_per_pupil::float  AS ch70_per_pupil,
-                   (foundation_budget::float /
-                    NULLIF(foundation_enrollment::float, 0)) AS foundation_budget_pp
-            FROM district_chapter70 WHERE fiscal_year = :yr
-        """, yr=fy)
+        ch70 = q(Q.FA_CHAPTER70, yr=fy)
 
-        staff_raw = q("""
-            SELECT district_name, category, fte::float, avg_salary::float
-            FROM staffing WHERE school_year = :yr
-              AND category IN ('teacher_fte', 'teachers_per_100_fte',
-                               'teacher_avg_salary')
-        """, yr=school_year)
+        staff_raw = q(Q.FA_STAFFING, yr=school_year)
         staff_fte  = (staff_raw[staff_raw.category == "teacher_fte"]
                       [["district_name","fte"]].rename(columns={"fte":"teacher_fte"}))
         staff_r100 = (staff_raw[staff_raw.category == "teachers_per_100_fte"]
@@ -234,57 +185,16 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
                       [["district_name","avg_salary"]]
                       .rename(columns={"avg_salary":"avg_teacher_salary"}))
 
-        enrol = q("""
-            SELECT district_name, total::float AS total_enrollment
-            FROM enrollment
-            WHERE school_year = :yr AND grade = 'Total' AND school_name IS NULL
-        """, yr=school_year)
+        enrol = q(Q.FA_ENROLLMENT, yr=school_year)
 
-        grad = q("""
-            SELECT DISTINCT ON (district_name)
-                   district_name,
-                   four_year_grad_pct::float AS four_yr_grad_pct,
-                   five_year_grad_pct::float AS five_yr_grad_pct
-            FROM graduation_rates
-            WHERE school_year <= :yr AND student_group = 'All Students'
-              AND org_code LIKE '%%0000'
-            ORDER BY district_name, school_year DESC
-        """, yr=school_year)
+        grad = q(Q.FA_GRADUATION, yr=school_year)
 
-        sat = q("""
-            SELECT DISTINCT ON (district_name)
-                   district_name,
-                   mean_ebrw::float AS sat_ebrw,
-                   mean_math::float  AS sat_math
-            FROM district_sat_scores
-            WHERE school_year <= :yr
-            ORDER BY district_name, school_year DESC
-        """, yr=school_year)
+        sat = q(Q.FA_SAT, yr=school_year)
 
-        mcas10 = q("""
-            SELECT district_name,
-                   AVG(CASE WHEN subject='ELA'  THEN meeting_exceeding_pct::float END) AS mcas10_ela,
-                   AVG(CASE WHEN subject='MATH' THEN meeting_exceeding_pct::float END) AS mcas10_math
-            FROM mcas_results
-            WHERE school_year = :yr AND grade = '10'
-              AND student_group = 'All Students'
-              AND org_code LIKE '%0000'
-            GROUP BY district_name
-        """, yr=school_year)
+        mcas10 = q(Q.FA_MCAS_10, yr=school_year)
 
         # ── ACS demographics ───────────────────────────────────────────────
-        acs = q("""
-            SELECT DISTINCT ON (municipality)
-                   municipality,
-                   total_population::float,
-                   median_hh_income::float,
-                   pct_bachelors_plus::float,
-                   pct_owner_occupied::float,
-                   poverty_pct::float        AS acs_poverty_pct,
-                   pct_65_plus::float
-            FROM municipal_census_acs
-            ORDER BY municipality, acs_year DESC
-        """)
+        acs = q(Q.FA_ACS)
         acs["municipality"] = (acs["municipality"]
                                .str.replace(r"\s+Town$", "", regex=True).str.strip())
 
@@ -293,94 +203,28 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
         #  — are produced canonically by the budget_share query near the end of
         #  this loader.  An earlier mexp query computing duplicate *_pct_budget
         #  columns was dead and has been removed.)
-        mrev = q("""
-            SELECT municipality, fiscal_year,
-                   taxes::float            AS muni_tax_rev,
-                   total_revenues::float   AS muni_total_rev
-            FROM municipal_revenues
-            WHERE fiscal_year = :yr
-        """, yr=fy)
+        mrev = q(Q.FA_MUNI_REVENUES, yr=fy)
         mrev["tax_pct_rev"] = (mrev.muni_tax_rev / mrev.muni_total_rev * 100).where(mrev.muni_total_rev > 0)
 
-        assessed = q("""
-            SELECT municipality, fiscal_year,
-                   commercial_av::float                                      AS commercial_av,
-                   res_av::float                                             AS res_av,
-                   (commercial_av::float + industrial_av::float)             AS ci_av,
-                   total_av::float                                           AS total_av
-            FROM municipal_assessed_values
-            WHERE fiscal_year = :yr
-        """, yr=fy)
+        assessed = q(Q.FA_ASSESSED, yr=fy)
         assessed["commercial_av_share"] = (assessed.ci_av / assessed.total_av * 100).where(assessed.total_av > 0)
 
-        tax_rates = q("""
-            SELECT municipality, fiscal_year,
-                   residential::float AS res_tax_rate,
-                   commercial::float  AS com_tax_rate
-            FROM municipal_tax_rates WHERE fiscal_year = :yr
-        """, yr=fy)
+        tax_rates = q(Q.FA_TAX_RATES, yr=fy)
 
-        gf_exp = q("""
-            SELECT DISTINCT ON (municipality)
-                   municipality,
-                   gf_expenditure_per_capita::float AS gf_exp_per_capita
-            FROM municipal_gf_expenditures
-            WHERE fiscal_year <= :yr
-            ORDER BY municipality, fiscal_year DESC
-        """, yr=fy)
+        gf_exp = q(Q.FA_GF_EXP, yr=fy)
 
-        crime = q("""
-            SELECT jurisdiction_name AS municipality,
-                   AVG(crime_rate_per_100k::float) AS crime_rate,
-                   AVG(violent_crimes::float / NULLIF(population::float, 0) * 100000)
-                       AS violent_rate
-            FROM municipal_crime
-            WHERE year BETWEEN :yr_lo AND :yr_hi
-            GROUP BY jurisdiction_name
-        """, yr_lo=fy-4, yr_hi=fy)
+        crime = q(Q.FA_CRIME, yr_lo=fy-4, yr_hi=fy)
 
-        new_growth = q("""
-            SELECT DISTINCT ON (municipality)
-                   municipality,
-                   (total_new_growth_value::float /
-                    NULLIF(total_av::float, 0) * 100) AS new_growth_pct_av
-            FROM municipal_new_growth ng
-            JOIN municipal_assessed_values av
-              USING (municipality, fiscal_year)
-            WHERE ng.fiscal_year <= :yr
-            ORDER BY municipality, ng.fiscal_year DESC
-        """, yr=fy)
+        new_growth = q(Q.FA_NEW_GROWTH, yr=fy)
 
-        income_eq = q("""
-            SELECT DISTINCT ON (municipality)
-                   municipality,
-                   dor_income::float AS equalized_income
-            FROM municipal_income_eqv
-            WHERE fiscal_year <= :yr
-            ORDER BY municipality, fiscal_year DESC
-        """, yr=fy)
+        income_eq = q(Q.FA_INCOME_EQV, yr=fy)
 
-        county_health = q("""
-            SELECT county_name,
-                   AVG(pct_fair_poor_health::float)        AS health_pct_fair_poor,
-                   AVG(avg_mentally_unhealthy_days::float) AS health_mental_days
-            FROM county_health_rankings
-            WHERE ranking_year >= :yr_lo
-            GROUP BY county_name
-        """, yr_lo=fy-3)
+        county_health = q(Q.FA_COUNTY_HEALTH, yr_lo=fy-3)
 
-        county_unemp = q("""
-            SELECT county_name,
-                   AVG(unemployment_rate::float) AS county_unemployment
-            FROM county_unemployment
-            WHERE year >= :yr_lo
-            GROUP BY county_name
-        """, yr_lo=fy-3)
+        county_unemp = q(Q.FA_COUNTY_UNEMP, yr_lo=fy-3)
 
         # Map district → county using districts table
-        dist_county = q("""
-            SELECT name AS district_name, county FROM districts WHERE county IS NOT NULL
-        """)
+        dist_county = q(Q.FA_DISTRICT_COUNTY)
 
     # ─── Merge everything ───────────────────────────────────────────────────
     df = mcas.copy()
@@ -435,16 +279,7 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
     # ed_budget_share is the target; the others are the competing line items
     # that mechanically explain why education's share is what it is.
     with engine.connect() as conn:
-        budget_share = q("""
-            SELECT municipality AS district_name,
-                   ROUND(100.0 * education       / NULLIF(total_expenditures,0), 2) AS ed_budget_share,
-                   ROUND(100.0 * fixed_costs     / NULLIF(total_expenditures,0), 2) AS fixed_costs_pct,
-                   ROUND(100.0 * debt_service    / NULLIF(total_expenditures,0), 2) AS debt_service_pct,
-                   ROUND(100.0 * public_safety   / NULLIF(total_expenditures,0), 2) AS public_safety_pct,
-                   ROUND(100.0 * public_works    / NULLIF(total_expenditures,0), 2) AS public_works_pct
-            FROM municipal_expenditures
-            WHERE fiscal_year = :yr
-        """, yr=fy)
+        budget_share = q(Q.FA_BUDGET_SHARE, yr=fy)
     df = df.merge(budget_share, on="district_name", how="left")
 
     # Stamp the year this cross-section was built for, so downstream point-in-time
