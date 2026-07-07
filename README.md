@@ -159,10 +159,6 @@ Nothing is hardcoded. Re-running after a data update automatically reflects all 
 | Script | What it does | Output |
 |---|---|---|
 | `peer_trajectory_study.py` | Finds MA towns demographically similar to Saugus circa 2012, ranks them by improvement on a composite quality-of-life score by 2023, and case-studies the biggest "risers" vs. "stagnators." | `Reports/saugus_peer_improvement_trajectories.pdf` |
-| `factor_portfolio.py` | Quant-investing-style analysis: sorts MA towns into quartiles by each policy input (level and YoY change) and compares 15 outcomes between the top and bottom quartiles ("long/short alpha"). | `Reports/town_factor_quartile_portfolio.pdf` |
-| `ma_town_health.py` | Broad health check across ~350 MA towns — educational outcomes, fiscal health, and community vitality, with 5- and 10-year backtests. | `Reports/ma_town_health_analysis.pdf` |
-| `peer_analysis_comprehensive.py` | Full Mahalanobis peer analysis using all Tier 1–3 demographic/fiscal variables, with plain-language explanations. | `Reports/saugus_peer_analysis_comprehensive.xlsx` + `.pdf` |
-| `saugus_spending_comparison.py` | Per-pupil spending vs. the statewide distribution and vs. the Mahalanobis peer group, nominal and inflation-adjusted. | `Reports/saugus_spending_vs_peers.pdf` |
 | `data_integrity.py` | Data-quality checks across every multi-source/stitched table (e.g. the Chapter 70 FY2007–2022 / FY2023–2026 seam). | `Reports/data_integrity_checks.pdf` + console summary |
 | `data_consistency_tests.py` | Statistical consistency tests across the dataset. | `Reports/data_consistency_tests.pdf` |
 
@@ -211,18 +207,18 @@ columns; seven are normalized ratios computed from public data.
 | Factor | Tier | What it is |
 |---|---|---|
 | `ed_budget_share` | 1 (votable) | Education's share of the total municipal budget |
-| `spend_vs_required_nss` | 1 (votable) | Net school spending vs. the Chapter 70 required minimum ("fund-more" effort) |
+| `spend_vs_required` | 1 (votable) | In-district per-pupil spending vs. the Chapter 70 required minimum ("fund-more" effort) |
 | `fixed_costs_pct` | 1 (votable) | Fixed costs (pensions/benefits/debt) as a share of the municipal budget — crowd-out |
 | `chronic_absenteeism_pct` | 2 (managed) | Share of students missing ≥10% of school days |
 | `avg_teacher_salary` | 2 (managed) | Average teacher salary (pay level / competitiveness) |
 | `teachers_per_100_students` | 2 (managed) | Teacher staffing density (class size) |
 | `teachers_per_lowincome` | 2 (managed) | Teachers per low-income student (staffing relative to need) |
 | `instructional_share` | 2 (managed) | Share of the school dollar reaching the classroom vs. overhead |
-| `teacher_share_of_spend` | 2 (managed) | Share of the school dollar going specifically to teacher pay |
+| `teacher_pay_share` | 2 (managed) | Share of the school dollar going specifically to teacher pay |
 
-The derived actionable ratios are built by `analysis/actionable_factors.py`; the
-factor definitions and their formulas also appear on a dedicated page inside
-`Reports/saugus_factor_analysis.pdf`.
+The derived actionable ratios are built by `add_actionable_factors()` in
+`analysis/saugus_factor_analysis.py`; the factor definitions and their formulas
+also appear on a dedicated page inside `Reports/saugus_factor_analysis.pdf`.
 
 ---
 
@@ -348,16 +344,10 @@ Schools/
 ├── analysis/
 │   ├── saugus_factor_analysis.py      # ★ Flagship: RBP over the tiered factor pool + Saugus prediction (4 outcome models)
 │   ├── rbp.py                         # Reference implementation: Czasonis/Kritzman/Turkington (2024) RBP
-│   ├── actionable_factors.py          # Builds the derived Tier-1/2 factor ratios; scores each factor's marginal lift
 │   ├── saugus_synthesis.py            # Two-audience narrative report (--parent for community brief)
 │   ├── municipal_finance_report.py    # Municipal finance report generator (PDF)
-│   ├── factor_portfolio.py            # Quartile long/short factor-portfolio analysis
-│   ├── panel.py                       # Shared town×year panel builder + 16-outcome taxonomy (used by factor_portfolio)
 │   ├── peer_trajectory_study.py       # "What makes towns succeed" trajectory study
-│   ├── ma_town_health.py              # MA town health report (~350 towns)
-│   ├── peers.py                       # Shared Mahalanobis peer-distance kernel
-│   ├── peer_analysis_comprehensive.py # Comprehensive Mahalanobis peer analysis (Excel + PDF)
-│   ├── saugus_spending_comparison.py  # Per-pupil spending vs. state & peer distributions
+│   ├── inflation.py                   # Shared CPI deflation helper (nominal → real $)
 │   ├── data_integrity.py              # Data quality checks across all stitched tables
 │   └── data_consistency_tests.py      # Statistical consistency tests
 │
