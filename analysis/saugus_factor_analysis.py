@@ -25,11 +25,6 @@ For each model (see _run_one_model):
     A couple of check seeds confirm the top-ranked drivers are not a
     Monte-Carlo artifact of the sparse grid.
 
-  Step 1b — Univariate LOO r per candidate (diagnostic only):
-    Single-feature leave-one-out correlation, shown beside Exhibit 5 to reveal
-    whether a feature predicts alone, only in combination, or is redundant.
-    Not used to drop anything.
-
   Step 2 — Saugus RBP + LOO validation on the FULL candidate set:
     The single RBP run predicts Saugus (excluded from its own training set — no
     leakage) and, leave-one-out across all MA districts, yields the validation
@@ -289,49 +284,8 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
     return df
 
 
-def get_candidate_features(df: pd.DataFrame,
-                            outcome_cols: list[str],
-                            min_coverage: float = MIN_COVERAGE) -> list[str]:
-    """
-    Return feature names that:
-      - Are not outcome variables
-      - Are not id columns
-      - Have at least min_coverage non-NaN values
-    """
-    skip = set(outcome_cols) | {"org_code", "district_name",
-                                  "fiscal_year", "school_year"}
-    N = len(df)
-    return [c for c in df.columns
-            if c not in skip
-            and df[c].notna().sum() / N >= min_coverage]
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 2.  Greedy random forward selection
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _loo_score(df: pd.DataFrame, features: list[str],
-               target: str, n_random_cells: int) -> float:
-    """
-    Leave-one-out Pearson correlation between RBP predictions and actuals.
-    Higher = better.  Returns NaN if not enough data.
-    """
-    sub = df[features + [target]].dropna().copy()
-    if len(sub) < 10 or len(features) == 0:
-        return float("nan")
-
-    X   = sub[features]
-    y   = sub[target]
-    ldf = rbp_loo(X, y, features, n_random_cells=n_random_cells, verbose=True)
-
-    valid = ldf.dropna(subset=["predicted"])
-    if len(valid) < 5:
-        return float("nan")
-    return float(np.corrcoef(valid["actual"], valid["predicted"])[0, 1])
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4.  Saugus-specific RBP analysis
+# 2.  Saugus-specific RBP analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Outcomes where a LOWER value is the better result, so a NEGATIVE LOO residual
@@ -596,7 +550,7 @@ def compute_ridge_validation(df: pd.DataFrame,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5.  Paper-format PDF
+# 3.  Paper-format PDF
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PAGE_W = 11.0
@@ -943,97 +897,6 @@ def page_method_explainer(pdf):
     _save(pdf, fig)
 
 
-def page_saugus_analysis(pdf, label: str, target: str, analysis: dict):
-    """Exhibit 4 + 5 equivalent: most/least relevant towns + variable importance."""
-    fig, axes = _paper_fig(1, 2)
-    # left: room for long y-axis feature names (e.g. teachers_per_100_students)
-    # top: keep "Variable Importance (Exhibit 5)" axes title clear of the header subtitle
-    fig.subplots_adjust(left=0.155, top=0.85)
-    is_pct_unit = analysis["actual_pct"] < 200   # SAT scores are 400–1600
-    unit = "pp" if is_pct_unit else " pts"
-    _header(fig,
-            f"Saugus RBP Analysis: {label}",
-            f"Prediction task = Saugus  ·  "
-            f"Predicted: {analysis['pred_pct']:.1f}{unit}  "
-            f"Actual: {analysis['actual_pct']:.1f}{unit}  "
-            f"vs Expected: {(analysis['gap_pp'] if _higher_is_better(target) else -analysis['gap_pp']):+.1f}{unit} "
-            f"(+ better)  "
-            f"(Fit: {analysis['result'].fit:.4f})")
-
-    ax_l, ax_r = axes
-    result = analysis["result"]
-
-    # ── Left: variable importance (Exhibit 5) ───────────────────────────────
-    # Use the canonical all-candidate importance (Step 1), restricted to the
-    # lean features actually used here, so this chart and the p.4 all-candidate
-    # chart are sub-rankings of one Series and agree on the top driver.
-    lean_feats = analysis.get("features", list(result.variable_importance.index))
-    imp = (_display_importance(analysis)
-           .reindex(lean_feats).dropna().sort_values(ascending=False))
-    feats  = imp.index.tolist()
-    values = imp.values.tolist()
-    colors = [_GREEN if v > 0 else _RED for v in values]
-
-    y_pos = range(len(feats))
-    ax_l.barh(list(y_pos), values, color=colors, alpha=0.8, height=0.6)
-    ax_l.set_yticks(list(y_pos))
-    ax_l.set_yticklabels([f[:35] for f in feats], fontsize=8)
-    ax_l.axvline(0, color=_BL, lw=0.8)
-    ax_l.set_xlabel("Variable importance\n(avg fit with feature − avg fit without)")
-    ax_l.set_title("Variable Importance (Exhibit 5)")
-    ax_l.grid(axis="x", alpha=0.3)
-
-    # ── Right: most/least relevant observations (Exhibit 4) ─────────────────
-    ax_r.axis("off")
-    top = result.most_relevant
-    bot = result.least_relevant
-
-    top_rows = [[str(idx)[:20], f"{row['weight']:.4f}", f"{row['__y__']:.2f}"]
-                for idx, row in top.iterrows()]
-    bot_rows = [[str(idx)[:20], f"{row['weight']:.4f}", f"{row['__y__']:.2f}"]
-                for idx, row in bot.iterrows()]
-
-    col_labels = ["Town", "Weight", target[:12]]
-
-    ax_r.text(0.5, 0.97, "Most Relevant Towns (highest weight)",
-              ha="center", va="top", fontsize=9, fontweight="bold", color=_GREEN,
-              transform=ax_r.transAxes)
-    top_tbl = ax_r.table(cellText=top_rows, colLabels=col_labels,
-                          bbox=[0.02, 0.53, 0.96, 0.40])
-    ax_r.text(0.5, 0.50, "Least Relevant Towns (lowest weight)",
-              ha="center", va="top", fontsize=9, fontweight="bold", color=_RED,
-              transform=ax_r.transAxes)
-    bot_tbl = ax_r.table(cellText=bot_rows, colLabels=col_labels,
-                          bbox=[0.02, 0.04, 0.96, 0.40])
-
-    for tbl, bg, t_rows in [(top_tbl, "#E8F8E8", top_rows),
-                             (bot_tbl, "#FFE8E8", bot_rows)]:
-        tbl.auto_set_font_size(False); tbl.set_fontsize(8.5)
-        all_text = [col_labels] + t_rows
-        char_w = [max(len(str(r[c])) for r in all_text if c < len(r))
-                  for c in range(len(col_labels))]
-        total_c = max(sum(char_w), 1)
-        for (row, col), cell in tbl.get_celld().items():
-            if col < len(char_w):
-                cell.set_width(char_w[col] / total_c)
-            if row == 0:
-                cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-            else:
-                cell.set_facecolor(bg if row % 2 else "white")
-            cell.set_edgecolor("#CCCCCC")
-
-    n_outperform = analysis.get("n_outperform", analysis.get("n_above", 0))
-    n_ranked     = analysis.get("n_ranked", analysis.get("n_total", 0))
-    rank         = analysis.get("rank", n_outperform + 1)
-    _footer(fig,
-            f"RBP analysis — Grid: {result.grid_cells_used} cells.  "
-            f"Trained on {result.n_obs} peer districts (Saugus excluded); "
-            f"ranked among {n_ranked} including Saugus.  "
-            f"{n_outperform} districts outperform Saugus vs. their own prediction "
-            f"(Saugus ranks {rank} of {n_ranked}).")
-    _save(pdf, fig)
-
-
 def page_combined_summary(pdf, results: list[dict]):
     """
     Single page combining all four models:
@@ -1187,245 +1050,6 @@ def page_combined_summary(pdf, results: list[dict]):
             "Cell colour: green = positive importance, red = NEGATIVE importance — the factor adds "
             "noise rather than signal for that outcome (Kritzman fn. 12; expected, not an error) — "
             "white = not a candidate in that model (—).")
-    _save(pdf, fig)
-
-
-def page_candidate_pool(pdf):
-    """
-    Two-panel page explaining the pre-specified feature pool:
-      Left  — table of KEPT features with concept grouping
-      Right — table of DROPPED features with the kept substitute and correlation
-    """
-    fig, axes = _paper_fig(1, 2)
-    ax_l, ax_r = axes
-    _header(fig,
-            "Pre-Specified Candidate Pool — Feature Reduction",
-            "Features selected on domain grounds before running RBP.  "
-            "Reduces K/N ratio from ~0.19 to ~0.09 (target ≈ 0.085).")
-
-    ax_l.axis("off")
-    ax_r.axis("off")
-
-    # ── Left: kept features ──────────────────────────────────────────────────
-    kept_rows = [
-        # [group, feature, description]
-        ["Poverty",      "low_income_pct",            "% low-income students"],
-        ["Wealth",       "median_hh_income",           "Median household income"],
-        ["Wealth",       "equalized_income",           "Equalized property value/capita"],
-        ["Human capital","pct_bachelors_plus",         "% adults with bachelor's+"],
-        ["Housing",      "pct_owner_occupied",         "% owner-occupied homes"],
-        ["Community",    "crime_rate",                 "Crime incidents per capita"],
-        ["Community",    "res_tax_rate",               "Residential tax rate"],
-        ["Engagement",   "chron_absenteeism_pct",      "% chronically absent"],
-        ["Demographics", "ell_pct",                    "% English language learners"],
-        ["Demographics", "sped_pct",                   "% special education students"],
-        ["Size",         "total_enrollment",            "District enrollment"],
-        ["Staffing",     "teachers/100_students",       "Teachers per 100 students"],
-        ["Staffing",     "avg_teacher_salary",         "Average teacher salary"],
-        ["Spending",     "in_district_ppe",              "In-district spending/pupil"],
-    ]
-    ax_l.text(0.5, 0.97, f"Kept — {len(kept_rows)} pure predictors",
-              ha="center", va="top", fontsize=9, fontweight="bold",
-              color=_BLUE, transform=ax_l.transAxes)
-    tbl_l = ax_l.table(
-        cellText=kept_rows,
-        colLabels=["Group", "Feature", "Measures"],
-        bbox=[0.0, 0.02, 1.0, 0.90])
-    tbl_l.auto_set_font_size(False); tbl_l.set_fontsize(6.5)
-    # Explicit proportional widths: Group=21%, Feature=37%, Measures=42%
-    col_w_l = [0.21, 0.37, 0.42]
-    for (row, col), cell in tbl_l.get_celld().items():
-        if col < len(col_w_l):
-            cell.set_width(col_w_l[col])
-    group_colors = {
-        "Poverty": "#FFF3CD", "Wealth": "#FFF3CD", "Human capital": "#FFF3CD",
-        "Housing": "#E8F4FD", "Community": "#E8F4FD",
-        "Engagement": "#E8F8E8", "Demographics": "#E8F8E8",
-        "Size": "#F5EEF8", "Staffing": "#F5EEF8", "Spending": "#F5EEF8",
-    }
-    for (row, col), cell in tbl_l.get_celld().items():
-        if row == 0:
-            cell.set_facecolor(_BLUE); cell.set_text_props(color="white")
-        else:
-            cell.set_facecolor(group_colors.get(kept_rows[row-1][0], "white"))
-        cell.set_edgecolor("#CCCCCC")
-
-    # ── Right: dropped features ──────────────────────────────────────────────
-    dropped_rows = [
-        ["high_needs_pct",           "low_income_pct",      "r=+0.981 — near-duplicate"],
-        ["acs_poverty_pct",          "low_income_pct",      "r=+0.87  — redundant poverty"],
-        ["foundation_budget_pp",     "in_district_ppe",       "r=+0.92  — redundant spending"],
-        ["ch70_per_pupil",           "equalized_income",    "r≈−0.87  — inverse wealth proxy"],
-        ["teacher_fte",              "total_enrollment",    "r=+0.994 — linear with enroll"],
-        ["total_population",         "total_enrollment",    "r=+0.953 — size proxy"],
-        ["teachers_per_100_fte",     "t_per_100_students",  "r=+0.872 — duplicate ratio"],
-        ["teacher_spending_pp",      "in_district_ppe",       "r≈+0.85  — redundant spending"],
-        ["gf_exp_per_capita",        "res_tax_rate",        "r≈+0.75  — redundant municipal"],
-        ["pct_65_plus",              "—",                   "Weak signal, not actionable"],
-        ["com_tax_rate",             "res_tax_rate",        "r≈+0.65  — commercial tax dup"],
-        ["mcas10_math",              "mcas10_ela",          "r=+0.90  — one grade-10 measure"],
-    ]
-    ax_r.text(0.5, 0.97, f"Dropped — {len(dropped_rows)} redundant/problematic features",
-              ha="center", va="top", fontsize=9, fontweight="bold",
-              color=_RED, transform=ax_r.transAxes)
-    tbl_r = ax_r.table(
-        cellText=dropped_rows,
-        colLabels=["Dropped", "Kept instead", "Reason"],
-        bbox=[0.0, 0.02, 1.0, 0.90])
-    tbl_r.auto_set_font_size(False); tbl_r.set_fontsize(6.5)
-    # Explicit proportional widths: Dropped=29%, Kept instead=28%, Reason=43%
-    col_w_r = [0.29, 0.28, 0.43]
-    for (row, col), cell in tbl_r.get_celld().items():
-        if col < len(col_w_r):
-            cell.set_width(col_w_r[col])
-    for (row, col), cell in tbl_r.get_celld().items():
-        if row == 0:
-            cell.set_facecolor(_RED); cell.set_text_props(color="white")
-        else:
-            cell.set_facecolor("#FFF5F5" if row % 2 else "white")
-        cell.set_edgecolor("#CCCCCC")
-
-    _footer(fig,
-            "Correlation threshold for deduplication: |r| > 0.87.  "
-            "Cross-outcome features (avg_mcas, mcas10_ela, dropout_pct, attending_pct) "
-            "handled separately per model via exclusion rules.")
-    _save(pdf, fig)
-
-
-def page_correlation_matrix(pdf, df_raw: pd.DataFrame):
-    """
-    Heatmap of Pearson correlations between all candidate features,
-    hierarchically clustered to reveal redundancy groups.
-    """
-    import seaborn as sns
-    from scipy.cluster.hierarchy import linkage, dendrogram
-    from scipy.spatial.distance import squareform
-
-    # All features that appear in any model's pool
-    all_cols = list(PRE_SPECIFIED_POOL | OUTCOME_VARS)
-    avail = [c for c in all_cols if c in df_raw.columns]
-    sub = df_raw[avail].apply(pd.to_numeric, errors='coerce')
-    corr = sub.corr(method='pearson')
-    # Drop features with no pairwise overlap with any other feature.
-    # The diagonal is always 1.0, so "off-diagonal non-NaN > 0" means
-    # the feature has at least one correlation with another feature.
-    has_peers = (corr.notna().sum(axis=1) - 1) > 0  # subtract the diagonal 1.0
-    corr = corr.loc[has_peers, has_peers]
-
-    # Hierarchical clustering by absolute correlation distance.
-    # NaNs in corr (features with no overlap) → treat as uncorrelated (dist=1).
-    corr_filled = corr.fillna(0)
-    dist_full = (1 - corr_filled.abs()).clip(lower=0).values.copy()
-    np.fill_diagonal(dist_full, 0)
-    dist_full = (dist_full + dist_full.T) / 2  # exact symmetry
-    n = dist_full.shape[0]
-    condensed = dist_full[np.triu_indices(n, k=1)]
-    link = linkage(condensed, method='average')
-    order = dendrogram(link, no_plot=True)['leaves']
-    ordered = corr.iloc[order, order]
-
-    fig, ax = plt.subplots(figsize=(_PAGE_W, _PAGE_H))
-    fig.patch.set_facecolor("white")
-
-    sns.heatmap(ordered, cmap='RdBu_r', center=0, vmin=-1, vmax=1,
-                annot=True, fmt='.2f', annot_kws={'size': 5.5},
-                linewidths=0.2, ax=ax, cbar_kws={'shrink': 0.45},
-                square=True)
-    ax.set_title(
-        "Feature Correlation Matrix — All Candidates (hierarchically clustered)\n"
-        "Features ordered by |correlation| — dark red/blue clusters = high redundancy",
-        fontsize=10, pad=10)
-    ax.tick_params(axis='x', rotation=45, labelsize=7)
-    ax.tick_params(axis='y', rotation=0,  labelsize=7)
-
-    fig.text(0.5, 0.01,
-             "Pearson r.  Hierarchical average-linkage clustering on |1−r| distance.  "
-             "Features with |r| > 0.87 collapsed to one representative in the candidate pool.",
-             ha="center", va="bottom", fontsize=7, color=_GREY, style="italic")
-    plt.tight_layout(rect=[0, 0.03, 1, 1])
-    _save(pdf, fig)
-
-
-# UNUSED / LEGACY — an earlier whole-report synthesis page.  It shares the name
-# `page_synthesis` with the live per-model synthesis defined later in this file,
-# which shadows it at import time; this version is never called.  Renamed so the
-# name collision can't mislead a future reader into editing the wrong function.
-def _legacy_page_synthesis_combined(pdf, results: list[dict]):
-    """
-    Narrative synthesis page: what the three models together actually say
-    about Saugus, and what that means for policy.
-    """
-    fig, ax = _paper_fig()
-    ax.axis("off")
-    _header(fig, "What the Three Models Together Actually Say",
-            "A synthesis of MCAS grades 3–8, Dropout Rate, and MCAS grade 10 ELA results")
-
-    # Pull the model gaps (dynamic — always matches the regenerated run)
-    model_data = {r["label"]: r for r in results}
-    gaps = {}
-    for r in results:
-        s = r.get("saugus")
-        if s:
-            gaps[r["label"]] = s["gap_pp"]
-
-    def _gap(label: str) -> str:
-        """Signed gap in pp for a model label, e.g. '+6.7pp'. 'n/a' if missing."""
-        g = gaps.get(label)
-        return f"{g:+.1f}pp" if g is not None else "n/a"
-
-    def _feature_importance(label: str, feature: str):
-        """(importance, multiple-vs-next-highest) for a feature in a model,
-        pulled from that model's Exhibit-5 importance.  (None, None) if absent."""
-        fi = model_data.get(label, {}).get("full_importance")
-        if fi is None or feature not in fi.index:
-            return None, None
-        val = float(fi[feature])
-        ranked = fi.sort_values(ascending=False)
-        nxt = ranked.iloc[1] if len(ranked) > 1 else None
-        mult = (val / float(nxt)) if (nxt and float(nxt) != 0) else None
-        return val, mult
-
-    _abs_imp, _abs_mult = _feature_importance("Dropout Rate", "chronic_absenteeism_pct")
-    _abs_imp_s  = f"+{_abs_imp:.2f}" if _abs_imp is not None else "n/a"
-    _abs_mult_s = f"~{_abs_mult:.1f}×" if _abs_mult is not None else "the largest"
-
-    y = 0.82
-    def _section(title, color, lines):
-        nonlocal y
-        ax.text(0.07, y, title, ha="left", va="top", fontsize=11,
-                fontweight="bold", color=color, transform=ax.transAxes)
-        y -= 0.04
-        for line in lines:
-            ax.text(0.09, y, line, ha="left", va="top", fontsize=9.5,
-                    color=_BL, transform=ax.transAxes, wrap=True)
-            y -= 0.038
-        y -= 0.01
-
-    _section("Finding 1 — The schools are not failing academically.", _BLUE, [
-        f"MCAS grades 3–8:  {_gap('MCAS Grades 3–8')} above demographic prediction  (clear overperformance)",
-        f"MCAS grade 10 ELA:  {_gap('MCAS Grade 10 (ELA)')} above prediction  (well above target)",
-        "On the mandatory universal test — taken by every student to graduate — Saugus",
-        "performs well above what demographics predict.  There is no academic",
-        "underperformance signal in the standardised test results.",
-    ])
-
-    _section("Finding 2 — The problem is retention and engagement, not instruction.", _RED, [
-        f"Dropout rate: {_gap('Dropout Rate')} vs prediction — close to expectation (slightly fewer than predicted).",
-        "Chronic absenteeism: 31.2% — 11pp above Rockland (nearest demographic peer).",
-        f"Absenteeism is the strongest single feature in the Dropout model (importance {_abs_imp_s},",
-        f"{_abs_mult_s} the next).  Students who stay and sit the test perform fine.  The question is",
-        "who is disengaging before they get there.",
-    ])
-
-    _section("Finding 3 — Saugus has the fiscal capacity to act.", _GREEN, [
-        "Saugus property wealth ($1.17B) is 1.9× Rockland's ($626M).",
-        "Rockland spends $3,788 more per pupil per year at a higher tax rate (14.1 vs 10.7).",
-        "Saugus is the wealthier town choosing to spend less on its schools.",
-        "A 1-mill increase on $1.17B assessed value raises ~$1.2M/year.",
-    ])
-
-    _footer(fig, "All gaps are leave-one-out RBP residuals: actual − predicted, controlling for demographics.  "
-            "Positive = above demographic expectation.  Negative = below.")
     _save(pdf, fig)
 
 
@@ -2245,133 +1869,6 @@ def page_fixed_costs(pdf, engine, fiscal_year: int) -> None:
     _save(pdf, fig)
 
 
-def page_importance_selection(pdf, label: str, all_candidates: list[str],
-                              full_importance: pd.Series,
-                              lean_features: list[str],
-                              univariate_loo: dict | None = None,
-                              n_random: int | None = None,
-                              top3_stable: bool | None = None):
-    """
-    Exhibit 5 view over ALL candidate features, plus a univariate-LOO comparison.
-
-    Left  — horizontal bar chart: variable importance for every candidate.
-             Kritzman fn. 12 reads the scores: green = positive (helps),
-             grey ≈ 0 (benign, diversified away), red < 0 (harmful).  Per fn. 12
-             ALL candidates are kept for the prediction — importance here is a
-             descriptive diagnostic, not a selection filter.
-    Right — scatter: Exhibit 5 importance (y) vs univariate LOO r (x).
-             Quadrants reveal whether the two metrics agree.
-             Agreement = feature is independently AND combinatorially useful.
-             High LOO / low importance = redundant with other features.
-             Low LOO / high importance = interaction effect, only helps in combo.
-    """
-    fig, axes = _paper_fig(1, 2)
-    ax_l, ax_r = axes
-    # Descriptive importance sign counts — nothing is pruned; all candidates are
-    # used for the prediction (Kritzman fn. 12).
-    _imp_all = full_importance.reindex(all_candidates).fillna(0)
-    pos_set = {f for f in all_candidates if float(_imp_all.get(f, 0)) > 0}
-    n_pos = len(pos_set)
-    n_neg = int((_imp_all < -0.01).sum())
-    n_zero = len(all_candidates) - n_pos - n_neg
-
-    _nr = f"n_random={n_random}" if n_random else "single dense grid"
-    _stab = "" if top3_stable is None else (
-        "  ·  top-3 seed-stable" if top3_stable else "  ·  top-3 NOT seed-stable")
-    _header(fig, f"Variable Importance (Exhibit 5): {label}",
-            f"{len(all_candidates)} candidates, all used for prediction  ·  {_nr}{_stab}  ·  "
-            f"{n_pos} help (imp>0)  ·  {n_zero} benign (≈0)  ·  {n_neg} harmful (imp<0)")
-
-    # ── Left: importance bar chart for all candidates ────────────────────────
-    imp_vals   = _imp_all
-    imp_sorted = imp_vals.sort_values()
-
-    feats  = imp_sorted.index.tolist()
-    values = imp_sorted.values.tolist()
-    colors = [_GREEN if v > 0 else (_RED if v < -0.01 else _GREY) for v in values]
-
-    y_pos = range(len(feats))
-    ax_l.barh(list(y_pos), values, color=colors, alpha=0.8, height=0.7)
-    ax_l.set_yticks(list(y_pos))
-    ax_l.set_yticklabels(feats, fontsize=7.5)
-    ax_l.axvline(0, color=_BL, lw=1.0)
-    ax_l.set_xlabel("Variable importance  (avg fit with feature − avg fit without)")
-    ax_l.set_title("All Candidates — Variable Importance (all retained)\n"
-                   "Green = helps (>0)  ·  Grey ≈ 0 benign  ·  Red < 0 harmful",
-                   fontsize=9)
-    ax_l.grid(axis="x", alpha=0.25)
-
-    for bar, (feat, val) in zip(ax_l.patches, zip(feats, values)):
-        if feat in pos_set:
-            ax_l.text(val + 0.005 if val >= 0 else val - 0.005,
-                      bar.get_y() + bar.get_height()/2,
-                      f"{val:+.3f}", va="center",
-                      fontsize=6.5, color=_GREEN, fontweight="bold",
-                      ha="left" if val >= 0 else "right")
-
-    pos_p = mpatches.Patch(color=_GREEN, alpha=0.8, label=f"Helps, imp>0 ({n_pos})")
-    zero_p = mpatches.Patch(color=_GREY,  alpha=0.6, label=f"Benign, imp≈0 ({n_zero})")
-    neg_p = mpatches.Patch(color=_RED,   alpha=0.8, label=f"Harmful, imp<0 ({n_neg})")
-    ax_l.legend(handles=[pos_p, zero_p, neg_p], loc="lower right", fontsize=7.5,
-                title="All retained for prediction")
-
-    # ── Right: scatter — Exhibit 5 importance vs univariate LOO r ───────────
-    if univariate_loo:
-        valid_feats = [f for f in all_candidates
-                       if f in univariate_loo and not np.isnan(univariate_loo[f])]
-        x_vals = [univariate_loo[f] for f in valid_feats]
-        y_vals = [float(full_importance.get(f, 0)) for f in valid_feats]
-        pt_colors = [_GREEN if f in pos_set else _GREY for f in valid_feats]
-
-        ax_r.scatter(x_vals, y_vals, c=pt_colors, alpha=0.7, s=55, zorder=3)
-        ax_r.axhline(0, color=_GREY, lw=0.8, ls="--", alpha=0.6)
-        ax_r.axvline(0, color=_GREY, lw=0.8, ls="--", alpha=0.6)
-
-        # Label positive-importance features (or those near the axes — interesting cases)
-        for feat, xv, yv in zip(valid_feats, x_vals, y_vals):
-            if feat in pos_set or abs(xv) > 0.3 or abs(yv) > 0.05:
-                ax_r.annotate(feat[:22], (xv, yv),
-                              textcoords="offset points", xytext=(3, 2),
-                              fontsize=5.5, color=_BL, alpha=0.8)
-
-        ax_r.set_xlabel("Univariate LOO r\n(single-feature leave-one-out correlation)",
-                        fontsize=8)
-        ax_r.set_ylabel("Exhibit 5 importance\n(multivariate, relative to all candidates)",
-                        fontsize=8)
-        ax_r.set_title("Do the two metrics agree?\n"
-                       "Upper-right = strong both ways  ·  "
-                       "Upper-left = combo effect only", fontsize=8)
-        ax_r.grid(alpha=0.2)
-
-        # Quadrant labels
-        xlim = ax_r.get_xlim(); ylim = ax_r.get_ylim()
-        ax_r.text(xlim[1]*0.98, ylim[1]*0.98,
-                  "High LOO\nHigh imp\n(robust)",
-                  ha="right", va="top", fontsize=6, color=_GREEN, alpha=0.6)
-        ax_r.text(xlim[0]*0.98 if xlim[0] < 0 else 0,
-                  ylim[1]*0.98,
-                  "Low LOO\nHigh imp\n(interaction)",
-                  ha="left", va="top", fontsize=6, color=_GOLD, alpha=0.6)
-        ax_r.text(xlim[1]*0.98, ylim[0]*0.98 if ylim[0] < 0 else 0,
-                  "High LOO\nLow imp\n(redundant)",
-                  ha="right", va="bottom", fontsize=6, color=_GREY, alpha=0.6)
-    else:
-        ax_r.axis("off")
-        ax_r.text(0.5, 0.5, "Univariate LOO data not available",
-                  ha="center", va="center", fontsize=9, color=_GREY,
-                  transform=ax_r.transAxes)
-
-    _footer(fig,
-            "Variable importance: avg adjusted fit of grid cells containing feature − "
-            "avg fit of cells without it.  Univariate LOO r: single-feature "
-            "leave-one-out correlation.  "
-            "One RBP run per outcome on all candidates — importance is descriptive, "
-            "no feature is dropped (Kritzman fn. 12), so this chart and the Saugus "
-            "Exhibit-5 chart list the same features.")
-    plt.tight_layout(rect=[0, 0.04, 1, 0.88])
-    _save(pdf, fig)
-
-
 def _find_overachievers(loo_df: pd.DataFrame, target: str,
                         n: int = 8) -> pd.DataFrame:
     """
@@ -2833,9 +2330,9 @@ SYNTHESIS_QUALITATIVE: dict[str, dict[str, str]] = {
         "close": "Note: the grade 3–8 academic base is an outcome, not an actionable factor, so it is "
                  "excluded from this model — part of the over-performance shown here "
                  "reflects that omitted prior strength rather than a grade-10 effect.",
-        "action": "Among the actionable factors, chronic absenteeism and teacher staffing "
-                 "are the most visible — Saugus clears this bar despite lagging peers on "
-                 "both.",
+        "action": "Among the actionable factors, chronic absenteeism is the clearest, with "
+                 "teacher pay next — Saugus clears this bar even while trailing comparable "
+                 "towns on attendance.",
     },
     "Education Budget Share": {
         "noun":  "education budget share",
@@ -3118,52 +2615,8 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     _save(pdf, fig)
 
 
-def page_scatter_all(pdf, all_analyses: list[dict]):
-    """One page showing actual vs predicted for all three models."""
-    fig, axes = _paper_fig(1, 3)
-    _header(fig, "Actual vs. Predicted: All Three Models",
-            "Each dot = one MA district.  Saugus highlighted in gold.")
-
-    for ax, analysis in zip(axes, all_analyses):
-        loo = analysis["loo_df"].dropna(subset=["actual","predicted"])
-        if loo.empty:
-            ax.text(0.5, 0.5, "No data", ha="center"); continue
-
-        act = loo["actual"]
-        pred = loo["predicted"]
-        # Scale 0–1 fractions to percentage points (shared rule)
-        if _on_fraction_scale(act):
-            act  = act * 100
-            pred = pred * 100
-
-        ax.scatter(pred, act, alpha=0.35, s=18, color=_BLUE)
-        lo = min(pred.min(), act.min()) - 2
-        hi = max(pred.max(), act.max()) + 2
-        ax.plot([lo, hi], [lo, hi], color=_GREY, lw=1, ls=":", alpha=0.6)
-        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
-
-        if SAUGUS in loo.index:
-            sx = float(loo.loc[SAUGUS, "predicted"])
-            sy = float(loo.loc[SAUGUS, "actual"])
-            if act.median() < 2.0 or True:  # already scaled
-                sx_p = sx * 100 if loo["predicted"].median() < 2.0 else sx
-                sy_p = sy * 100 if loo["actual"].median() < 2.0 else sy
-            ax.scatter([sx_p], [sy_p], color=_GOLD, s=120, zorder=5, marker="*")
-            ax.annotate("Saugus", xy=(sx_p, sy_p), xytext=(sx_p+1, sy_p-3),
-                        fontsize=7, color=_GOLD, fontweight="bold")
-
-        r = float(np.corrcoef(act, pred)[0, 1])
-        ax.set_title(f"{analysis['label']}\nLOO r = {r:.3f}", fontsize=9)
-        ax.set_xlabel("Predicted"); ax.set_ylabel("Actual")
-        ax.grid(alpha=0.2)
-
-    plt.tight_layout(rect=[0, 0.05, 1, 0.90])
-    _footer(fig, "Leave-one-out predictions — each district excluded from its own prediction.")
-    _save(pdf, fig)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 6.  Main orchestration
+# 4.  Main orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Always exclude: true artifacts with no predictive validity in any model.
@@ -3198,7 +2651,7 @@ OUTCOME_VARS = {
 # ~0.19 to ~0.09 (matching the paper's 14/165 ≈ 0.085 ratio) and making
 # the covariance matrix well-conditioned.
 #
-# Dropped features and why (see page_candidate_pool in the PDF):
+# Dropped features and why:
 #   high_needs_pct        r=+0.981 with low_income_pct  → near-duplicate
 #   acs_poverty_pct       r=+0.87  with low_income_pct  → redundant poverty
 #   foundation_budget_pp  r=+0.92  with in_district_ppe   → redundant spending
@@ -3296,11 +2749,6 @@ ACTIONABLE_FACTORS = {
     "spend_vs_required",      # spending above the Ch70 legal minimum (fund-more vote)
     "teacher_pay_share",     # share of the school dollar reaching teachers
 }
-
-
-def _is_structural(feat: str) -> bool:
-    """A Tier-3 structural trait — used for peer-matching, NOT an actionable factor."""
-    return USE_ACTIONABLE_POOL and feat in STRUCTURAL_FEATURES
 
 
 def _display_features(features) -> list:
@@ -3467,8 +2915,6 @@ def _run_one_model(args: tuple) -> dict:
                 dropped (fn. 12: ≈0-importance features are diversified away and
                 do no harm).  A couple of check seeds confirm the top-3 is not a
                 Monte-Carlo artifact.
-      Step 1b — Univariate LOO r per candidate (diagnostic only; not used to
-                prune).
       Step 2  — NO PRUNING.  The full candidate set is used for prediction,
                 ordered by |importance| for display purposes only.
       Step 3  — Saugus RBP prediction + leave-one-out LOO r across all MA
@@ -3534,33 +2980,6 @@ def _run_one_model(args: tuple) -> dict:
         _p(f"  Full model failed: {e}")
         return {}
 
-    # ── Step 1b: Univariate LOO r for every candidate (diagnostic only) ────────
-    # Run single-feature RBP LOO for each candidate.  K=1 grids are tiny
-    # (the full power set is just one cell), so this step is fast regardless
-    # of n_random_cells.  Results are NOT used to drop features — they are
-    # shown alongside Exhibit 5 importance to let you see whether the two
-    # metrics agree.
-    #   Agreement: feature ranks high on both → independently predictive AND
-    #              useful in the multivariate context.
-    #   Disagreement (high LOO r, low importance): feature predicts well alone
-    #              but is made redundant by others in the full model.
-    #   Disagreement (low LOO r, high importance): feature only helps in
-    #              combination — a genuine interaction captured by RBP.
-    _p(f"Step 1b: Univariate LOO r for {len(candidates)} candidates")
-    # A single-feature (K=1) grid has only a handful of possible cells, so its
-    # result is identical for any n_random above that — but a large n_random
-    # makes rbp._build_grid spin up to n_random*1000 attempts hunting for unique
-    # cells that don't exist, which is pathologically slow at n_random=3000.
-    # Cap it: the univariate diagnostic is unchanged, the spin is gone.
-    uni_n_random = min(n_random_cells, 50)
-    univariate_loo: dict[str, float] = {}
-    for feat in candidates:
-        univariate_loo[feat] = _loo_score(df_raw, [feat], target, uni_n_random)
-    ulo_summary = sorted(univariate_loo.items(), key=lambda x: x[1]
-                         if not np.isnan(x[1]) else -999, reverse=True)
-    for feat, score in ulo_summary[:5]:
-        _p(f"  top: {feat} = {score:+.4f}")
-
     # ── Step 2: NO pruning — faithful to Kritzman ──────────────────────────
     # The paper makes ONE RBP run using all variables; importance (Exhibit 5) is
     # a transparency diagnostic, and fn. 12 notes that ≈0-importance variables
@@ -3603,7 +3022,6 @@ def _run_one_model(args: tuple) -> dict:
         "full_importance":  full_importance,
         "importance_top3_stable": imp_stats["top3_stable"],
         "n_random_cells":   n_random_cells,
-        "univariate_loo":   univariate_loo,
         # No prune: the feature set used for prediction IS the candidate set.
         # 'lean_features'/'features' kept as keys for PDF backward-compat, now
         # equal to all candidates (ordered by |importance| for display).
@@ -3621,15 +3039,15 @@ def _build_actionable_report(pdf, results, df_raw, engine):
       1. Title
       2. How to read it (the three factor tiers)
       3. Combined standings across the four outcomes
-      4. Per outcome: "What This Means" (actionable drivers) + what the
-         over-performing peers do differently
+      4. Per outcome: "What This Means" (actionable drivers), the actual-vs-
+         predicted scatter, and what the over-performing peers do differently
       5. Fiscal factors: budget/staffing trajectory + fixed-cost breakdown
       6. Optimum profile (what over-performers look like on actionable factors)
 
-    Intentionally OMITTED (methodology / structural — not actionable):
-      page_candidate_pool, page_correlation_matrix, page_importance_selection,
-      page_saugus_analysis, page_overachievers_scatter, page_scatter_all.
-      They remain defined and are one line away if ever needed.
+    Earlier methodology / structural-exploration pages (candidate pool,
+    correlation matrix, standalone importance-selection and all-models scatter)
+    were removed to keep this the lean actionable view; the RBP-native Exhibit 5
+    importance now lives inline on each "What This Means" page.
     """
     # Display order: the two MCAS outcomes together, then budget share, then dropout.
     _ORDER = ["MCAS Grades 3–8", "MCAS Grade 10 (ELA)",
