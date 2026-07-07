@@ -62,7 +62,7 @@ FACTORS = [
     "chronic_absenteeism_pct",    # Tier 2 — attendance policy
     "teachers_per_100_students",  # Tier 2 — staffing
     "avg_teacher_salary",         # Tier 2 — pay / retention
-    "nss_per_pupil",              # Tier 1 — above-foundation spending level
+    "in_district_ppe",              # Tier 1 — above-foundation spending level
     "res_tax_rate",               # Tier 1 — tax rate / override
     "ed_budget_share",            # Tier 1 — Town Meeting allocation
     "debt_service_pct",           # Tier 1 (partial) — borrowing
@@ -75,14 +75,14 @@ FACTORS = [
 # Mostly wealth-normalized or per-unit ratios: they ask "how hard is this town
 # trying, given what it has," which a raw level can't capture.  (label, kind)
 DERIVED_INFO: dict[str, tuple[str, str]] = {
-    "spend_vs_foundation":         ("NSS/pupil ÷ foundation budget/pupil",  "rate"),
-    "spend_vs_required_nss":       ("NSS/pupil ÷ Ch70 required NSS/pupil",   "rate"),
-    "nss_per_income":              ("NSS/pupil ÷ income per capita",         "rate"),
-    "nss_per_eqv":                 ("NSS/pupil ÷ property wealth/capita",    "rate"),
+    "spend_vs_foundation":         ("in-district PPE/pupil ÷ foundation budget/pupil",  "rate"),
+    "spend_vs_required":       ("in-district PPE/pupil ÷ Ch70 required NSS/pupil",   "rate"),
+    "nss_per_income":              ("in-district PPE/pupil ÷ income per capita",         "rate"),
+    "nss_per_eqv":                 ("in-district PPE/pupil ÷ property wealth/capita",    "rate"),
     "teacher_density_per_homeval": ("Teachers/100 ÷ (home value/100k)",      "rate"),
     "teacher_pay_vs_income":       ("Teacher salary ÷ median HH income",     "rate"),
     "teacher_pay_vs_homeval":      ("Teacher salary ÷ home value",           "rate"),
-    "teacher_share_of_spend":      ("Teacher $/pupil ÷ NSS/pupil",           "rate"),
+    "teacher_pay_share":      ("Teacher $/pupil ÷ in-district PPE/pupil",           "rate"),
     "reserves_pct":                ("Reserves (free cash+stab) ÷ budget",    "pct"),
     "free_cash_pct":               ("Free cash ÷ operating budget",          "pct"),
     "health_ins_per_employee":     ("Health insurance ÷ employees",          "dollar"),
@@ -148,14 +148,14 @@ def build_derived(df: pd.DataFrame, engine) -> tuple[pd.DataFrame, list[str]]:
         b = b.replace(0, np.nan)
         return a / b
 
-    d["spend_vs_foundation"]         = safe(d["nss_per_pupil"], d["foundation_budget_pp"])
-    d["spend_vs_required_nss"]       = safe(d["nss_per_pupil"], d["req_nss_pp"])
-    d["nss_per_income"]              = safe(d["nss_per_pupil"], d["income_per_capita"])
-    d["nss_per_eqv"]                 = safe(d["nss_per_pupil"], d["eqv_per_capita"])
+    d["spend_vs_foundation"]         = safe(d["in_district_ppe"], d["foundation_budget_pp"])
+    d["spend_vs_required"]       = safe(d["in_district_ppe"], d["req_nss_pp"])
+    d["nss_per_income"]              = safe(d["in_district_ppe"], d["income_per_capita"])
+    d["nss_per_eqv"]                 = safe(d["in_district_ppe"], d["eqv_per_capita"])
     d["teacher_density_per_homeval"] = safe(d["teachers_per_100_students"], d["zhvi"] / 1e5)
     d["teacher_pay_vs_income"]       = safe(d["avg_teacher_salary"], d["median_hh_income"])
     d["teacher_pay_vs_homeval"]      = safe(d["avg_teacher_salary"], d["zhvi"])
-    d["teacher_share_of_spend"]      = safe(d["teacher_spending_per_pupil"], d["nss_per_pupil"])
+    d["teacher_pay_share"]      = safe(d["teacher_spending_per_pupil"], d["in_district_ppe"])
     d["reserves_pct"]                = safe(d["cert_free_cash"].fillna(0) + d["stab_bal"].fillna(0), d["fc_budget"]) * 100
     d["free_cash_pct"]               = safe(d["cert_free_cash"], d["fc_budget"]) * 100
     d["health_ins_per_employee"]     = safe(d["health_ins"], d["total_employees"])

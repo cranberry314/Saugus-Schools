@@ -169,9 +169,9 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
                   + ppe.get("Instructional Leadership", 0.0))
         ppe["instructional_share"] = (_instr /
             ppe["Total In-District Expenditures"].replace(0, np.nan))
-        ppe = (ppe.rename(columns={"Total In-District Expenditures": "nss_per_pupil",
+        ppe = (ppe.rename(columns={"Total In-District Expenditures": "in_district_ppe",
                                     "Teachers": "teacher_spending_per_pupil"})
-                  [["district_name", "nss_per_pupil", "teacher_spending_per_pupil",
+                  [["district_name", "in_district_ppe", "teacher_spending_per_pupil",
                     "instructional_share"]])
 
         ch70 = q(Q.FA_CHAPTER70, yr=fy)
@@ -819,8 +819,8 @@ def page_factor_definitions(pdf):
         ("ed_budget_share",
          "= municipal education ÷ total municipal spending × 100      · DLS Schedule A",
          "Share of the whole TOWN budget voted to schools — the core allocation choice."),
-        ("spend_vs_required_nss",
-         "= net school spending/pupil ÷ Chapter-70 required NSS/pupil   · DESE per-pupil + Chapter 70",
+        ("spend_vs_required",
+         "= in-district spending/pupil ÷ Chapter-70 required NSS/pupil   · DESE per-pupil + Chapter 70",
          "Spending above the state-required minimum — the town's discretionary 'fund-more' effort."),
         ("fixed_costs_pct",
          "= municipal fixed costs ÷ total municipal spending × 100     · DLS Schedule A",
@@ -835,7 +835,7 @@ def page_factor_definitions(pdf):
         ("instructional_share",
          "= (Teachers + Other Teaching + Materials + Instr. Leadership) ÷ Total In-District · DESE per-pupil",
          "How much of the school dollar reaches the CLASSROOM vs. overhead."),
-        ("teacher_share_of_spend",
+        ("teacher_pay_share",
          "= Teachers (per-pupil) ÷ Total In-District (per-pupil)       · DESE per-pupil",
          "The slice of the school dollar going specifically to teacher pay."),
         ("teachers_per_100_students",
@@ -1222,7 +1222,7 @@ def page_candidate_pool(pdf):
         ["Size",         "total_enrollment",            "District enrollment"],
         ["Staffing",     "teachers/100_students",       "Teachers per 100 students"],
         ["Staffing",     "avg_teacher_salary",         "Average teacher salary"],
-        ["Spending",     "nss_per_pupil",              "Net school spending/pupil"],
+        ["Spending",     "in_district_ppe",              "In-district spending/pupil"],
     ]
     ax_l.text(0.5, 0.97, f"Kept — {len(kept_rows)} pure predictors",
               ha="center", va="top", fontsize=9, fontweight="bold",
@@ -1254,12 +1254,12 @@ def page_candidate_pool(pdf):
     dropped_rows = [
         ["high_needs_pct",           "low_income_pct",      "r=+0.981 — near-duplicate"],
         ["acs_poverty_pct",          "low_income_pct",      "r=+0.87  — redundant poverty"],
-        ["foundation_budget_pp",     "nss_per_pupil",       "r=+0.92  — redundant spending"],
+        ["foundation_budget_pp",     "in_district_ppe",       "r=+0.92  — redundant spending"],
         ["ch70_per_pupil",           "equalized_income",    "r≈−0.87  — inverse wealth proxy"],
         ["teacher_fte",              "total_enrollment",    "r=+0.994 — linear with enroll"],
         ["total_population",         "total_enrollment",    "r=+0.953 — size proxy"],
         ["teachers_per_100_fte",     "t_per_100_students",  "r=+0.872 — duplicate ratio"],
-        ["teacher_spending_pp",      "nss_per_pupil",       "r≈+0.85  — redundant spending"],
+        ["teacher_spending_pp",      "in_district_ppe",       "r≈+0.85  — redundant spending"],
         ["gf_exp_per_capita",        "res_tax_rate",        "r≈+0.75  — redundant municipal"],
         ["pct_65_plus",              "—",                   "Weak signal, not actionable"],
         ["com_tax_rate",             "res_tax_rate",        "r≈+0.65  — commercial tax dup"],
@@ -1602,9 +1602,9 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
         ("chronic_absenteeism_pct",   "Chronic absenteeism (%)",         "%", False),
         ("teachers_per_100_students", "Teachers / 100 students",         "",  True),
         ("teachers_per_lowincome",    "Teachers per low-income student",  "",  True),
-        ("spend_vs_required_nss",     "Spending vs Ch70 minimum (×)",     "",  True),
+        ("spend_vs_required",     "Spending vs Ch70 minimum (×)",     "",  True),
         ("nss_per_eqv",               "School spending vs. property wealth", "", True),
-        ("teacher_share_of_spend",    "Teacher share of school $",        "",  True),
+        ("teacher_pay_share",    "Teacher share of school $",        "",  True),
     ]
 
     # ── Helper: build a comparison grid ─────────────────────────────────────
@@ -2742,7 +2742,7 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
     "total_enrollment":          ("Total district enrollment",                     "count"),
     "teachers_per_100_students": ("Teachers per 100 students",                     "rate"),
     "avg_teacher_salary":        ("Average teacher salary",                        "dollar"),
-    "nss_per_pupil":              ("Net school spending per pupil",                "dollar"),
+    "in_district_ppe":              ("In-district spending per pupil",                "dollar"),
     "debt_service_pct":          ("Debt service share of town budget",             "pct"),
     "fixed_costs_pct":           ("Fixed costs (mostly health ins.)", "pct"),
     "public_safety_pct":         ("Police & fire share of town budget",            "pct"),
@@ -2754,8 +2754,8 @@ FEATURE_INFO: dict[str, tuple[str, str]] = {
     # Derived actionable "effort / intensity" factors (see add_actionable_factors)
     "teachers_per_lowincome":    ("Teachers per low-income student",               "rate"),
     "nss_per_eqv":               ("School spend vs. property wealth",              "rate"),
-    "spend_vs_required_nss":     ("Spending vs Ch70 required minimum",             "rate"),
-    "teacher_share_of_spend":    ("Teacher share of school spending",              "rate"),
+    "spend_vs_required":     ("Spending vs Ch70 required minimum",             "rate"),
+    "teacher_pay_share":    ("Teacher share of school spending",              "rate"),
     "health_ins_per_capita":     ("Health insurance $ per resident",               "dollar"),
 }
 
@@ -3201,12 +3201,12 @@ OUTCOME_VARS = {
 # Dropped features and why (see page_candidate_pool in the PDF):
 #   high_needs_pct        r=+0.981 with low_income_pct  → near-duplicate
 #   acs_poverty_pct       r=+0.87  with low_income_pct  → redundant poverty
-#   foundation_budget_pp  r=+0.92  with nss_per_pupil   → redundant spending
+#   foundation_budget_pp  r=+0.92  with in_district_ppe   → redundant spending
 #   ch70_per_pupil        r≈-0.87  with equalized_income → inverse wealth proxy
 #   teacher_fte           r=+0.994 with total_enrollment → linear function
 #   total_population      r=+0.953 with total_enrollment → size proxy
 #   teachers_per_100_fte  r=+0.872 with teachers_per_100_students → duplicate
-#   teacher_spending_pp   r≈+0.85  with nss_per_pupil   → redundant spending
+#   teacher_spending_pp   r≈+0.85  with in_district_ppe   → redundant spending
 #   gf_exp_per_capita     r≈+0.75  with res_tax_rate     → redundant municipal
 #   pct_65_plus           weak signal, no clear school policy factor
 #   com_tax_rate          r≈+0.65  with res_tax_rate     → redundant tax
@@ -3230,7 +3230,7 @@ PRE_SPECIFIED_POOL = {
     "teachers_per_100_students", # Staffing ratio (drop fte version r=0.872)
     "avg_teacher_salary",        # Teacher compensation
     # School spending
-    "nss_per_pupil",             # Net school spending per pupil
+    "in_district_ppe",             # In-district spending per pupil
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3281,7 +3281,7 @@ ACTIONABLE_FACTORS = {
     # ── The 9 best Tier-1/2 levers, chosen by the cross-sectional factor screen
     #    (lag-0, net of the structural block, FDR-validated; one clean lever per
     #    lever-TYPE, no redundant twins, no wealth-proxies).  Superseded the older
-    #    pool: dropped nss_per_pupil (raw level → redundant with spend_vs_required),
+    #    pool: dropped in_district_ppe (raw level → redundant with spend_vs_required),
     #    res_tax_rate (borderline), nss_per_eqv (negative = poverty proxy, not a
     #    lever); added instructional_share and avg_teacher_salary. ──
     # straight-up factors from load_features
@@ -3293,8 +3293,8 @@ ACTIONABLE_FACTORS = {
     "fixed_costs_pct",            # pensions/benefits/health (crowd-out)
     # derived effort/intensity (added by add_actionable_factors)
     "teachers_per_lowincome",     # staffing RELATIVE TO need
-    "spend_vs_required_nss",      # spending above the Ch70 legal minimum (fund-more vote)
-    "teacher_share_of_spend",     # share of the school dollar reaching teachers
+    "spend_vs_required",      # spending above the Ch70 legal minimum (fund-more vote)
+    "teacher_pay_share",     # share of the school dollar reaching teachers
 }
 
 
@@ -3322,9 +3322,9 @@ def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
     tiered pool.  Two are pure df_raw ratios (no join); three need one extra
     column each from the wider DB (latest non-null per municipality):
         teachers_per_lowincome = teachers/100 ÷ low-income %        (need vs staffing)
-        teacher_share_of_spend = teacher $/pupil ÷ NSS/pupil        (classroom share)
-        nss_per_eqv            = NSS/pupil ÷ property wealth/capita  (effort vs wealth)
-        spend_vs_required_nss  = NSS/pupil ÷ Ch70 required NSS/pupil (effort vs floor)
+        teacher_pay_share = teacher $/pupil ÷ in-district PPE/pupil        (classroom share)
+        nss_per_eqv            = in-district PPE/pupil ÷ property wealth/capita  (effort vs wealth)
+        spend_vs_required  = in-district PPE/pupil ÷ Ch70 required NSS/pupil (effort vs floor)
         health_ins_per_capita  = health insurance ÷ population       (cost drag)
     """
     from sqlalchemy import text as _text
@@ -3353,9 +3353,9 @@ def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
         return a / b.replace(0, np.nan)
 
     d["teachers_per_lowincome"] = _safe(d["teachers_per_100_students"], d["low_income_pct"])
-    d["teacher_share_of_spend"] = _safe(d["teacher_spending_per_pupil"], d["nss_per_pupil"])
-    d["nss_per_eqv"]            = _safe(d["nss_per_pupil"], d["eqv_per_capita"])
-    d["spend_vs_required_nss"]  = _safe(d["nss_per_pupil"], d["req_nss_pp"])
+    d["teacher_pay_share"] = _safe(d["teacher_spending_per_pupil"], d["in_district_ppe"])
+    d["nss_per_eqv"]            = _safe(d["in_district_ppe"], d["eqv_per_capita"])
+    d["spend_vs_required"]  = _safe(d["in_district_ppe"], d["req_nss_pp"])
     d["health_ins_per_capita"]  = _safe(d["health_ins"], d["muni_pop"])
     return d.drop(columns=["_k", "eqv_per_capita", "muni_pop", "req_nss_pp", "health_ins"],
                   errors="ignore")
