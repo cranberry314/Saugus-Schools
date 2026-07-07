@@ -66,7 +66,7 @@ This is me trying to understand the strengths and weaknesses in the Saugus schoo
    clean factor per factor-type. See [Chosen Factors](#chosen-factors) for the final set.
 
 5. **Synthesis** (`analysis/saugus_synthesis.py`) — combines the trajectory study,
-   municipal finance report, policy backtest, and factor portfolio into a single
+   municipal finance report, and factor portfolio into a single
    narrative, generated in two modes from the same underlying data: a technical
    version with full methodology and regression detail, and a `--parent`
    community-brief version that omits the methodology slides for general readers.
@@ -125,15 +125,17 @@ python analysis/saugus_factor_analysis.py --regen-pdf  # rebuild the PDF from ca
 ```
 
 Output:
-- `Reports/saugus_factor_analysis.pdf` — factor definitions, importance exhibits,
-  Saugus prediction, most/least relevant towns, per-model summary
+- `Reports/saugus_factor_analysis.pdf` — factor definitions, a combined per-model
+  standings summary, and per-outcome "What This Means" pages (RBP importance-ranked
+  actionable factors, the actual-vs-predicted scatter, and how comparable
+  better-performing towns differ), plus the budget/staffing and fixed-cost pages
 - `Reports/saugus_factor_analysis_results.csv` — machine-readable factor importances
 - `Reports/saugus_factor_analysis_cache.pkl` — cached results (used by `--regen-pdf`)
 
 ### Narrative Synthesis (Two Audiences)
 
 `analysis/saugus_synthesis.py` combines the trajectory study, municipal finance
-report, policy backtest, and factor portfolio into one readable narrative, generated
+report, and factor portfolio into one readable narrative, generated
 in two modes from the same data:
 
 ```bash
