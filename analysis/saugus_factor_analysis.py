@@ -1362,13 +1362,12 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
         _BLUE)
 
     _sig = f"{DEMO_SIM_THRESHOLD:g}σ"
+    # Single-line title (parallel to the top grid) so it never wraps into the
+    # table header; the matching-variable list lives in the Mahalanobis footnote.
     _make_grid(
         ax_bot, sim_pool,
-        textwrap.fill(
-            f"Demographically Similar Overachievers  —  {len(sim_pool)} of those towns within "
-            f"{_sig} Mahalanobis distance of Saugus on income, property wealth, "
-            f"poverty, size, education & ELL",
-            width=100),
+        f"Demographically Similar Overachievers  —  the {len(sim_pool)} within "
+        f"{_sig} Mahalanobis distance of Saugus",
         _GREEN)
 
     _maha_note = (
@@ -1886,23 +1885,30 @@ def _find_overachievers(loo_df: pd.DataFrame, target: str,
     return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
 
 
-def _comparable_overperformers(loo_df: pd.DataFrame, target: str) -> pd.DataFrame:
+def _comparable_peers(loo_df: pd.DataFrame, target: str,
+                      direction: str = "better") -> pd.DataFrame:
     """
-    Towns the model predicted SIMILARLY to Saugus but whose ACTUAL outcome was
-    better — the most genuinely comparable peers to learn from.  ("A town the
-    model expected to score like Saugus, but that actually did better.")
+    Towns the model predicted SIMILARLY to Saugus whose ACTUAL outcome was
+    `direction` than Saugus's — the genuinely comparable peers to learn from.
+    ("A town the model expected to score like Saugus, but that actually did
+    better/worse.")
 
-    Selection: among towns that beat Saugus's actual value (direction-aware —
-    higher for academics, lower for dropout), keep those whose predicted value
-    sits within one prediction standard error of Saugus's predicted value —
-    i.e. towns statistically indistinguishable from Saugus in expectation.
+    direction="better" → comparable OVER-performers; "worse" → comparable
+    UNDER-performers.  Direction is outcome-aware: for dropout, lower is better.
+
+    Selection: among towns on the requested side of Saugus's actual value, keep
+    those whose predicted value sits within one prediction standard error of
+    Saugus's predicted value — i.e. towns statistically indistinguishable from
+    Saugus in expectation (this is what excludes wealthy/large outliers such as
+    Newton, whose predicted value is far from Saugus's).
 
     The tolerance is the model's leave-one-out prediction standard error
     (RMSE of the LOO residuals), a genuine statistical quantity rather than a
     hardcoded count: a town within ±1 SE of Saugus's prediction is inside the
     model's ~68% prediction band for Saugus.  The peer-set size is therefore
-    data-driven and identical for every page that calls this.  A small floor
-    (nearest 3) guards against a degenerate empty set.
+    data-driven and identical for every page that calls this — the synthesis
+    peer table and the actual-vs-predicted scatter always name the same towns.
+    A small floor (nearest 3) guards against a degenerate empty set.
     """
     df = loo_df.dropna(subset=["actual", "predicted"]).copy()
     if SAUGUS not in df.index:
@@ -1917,35 +1923,33 @@ def _comparable_overperformers(loo_df: pd.DataFrame, target: str) -> pd.DataFram
     tol = float(np.sqrt((resid ** 2).mean())) if resid.notna().any() else 0.0
 
     df = df[df.index != SAUGUS]
-    better = (df[df["actual"] > s_act] if _higher_is_better(target)
-              else df[df["actual"] < s_act])
-    if better.empty:
-        better = df
-    better = better.assign(_d=(better["predicted"] - s_pred).abs())
-    near = better[better["_d"] <= tol].sort_values("_d")
+    # "better side" of Saugus's actual is higher for academics, lower for dropout;
+    # the requested `direction` flips that.
+    better_side = _higher_is_better(target) == (direction == "better")
+    sel = df[df["actual"] > s_act] if better_side else df[df["actual"] < s_act]
+    if sel.empty:
+        sel = df
+    sel = sel.assign(_d=(sel["predicted"] - s_pred).abs())
+    near = sel[sel["_d"] <= tol].sort_values("_d")
     if len(near) < 3:                      # floor for a usable median
-        near = better.sort_values("_d").head(3)
+        near = sel.sort_values("_d").head(3)
     return near.drop(columns=["_d"])
 
 
-def _find_underachievers(loo_df: pd.DataFrame, target: str,
-                         n: int = 6) -> pd.DataFrame:
-    """
-    Return the top-N districts by negative residual (performing worse than predicted).
-    For dropout, 'underachievers' are districts with higher-than-predicted dropout.
-    """
-    df = loo_df.dropna(subset=["residual"]).copy()
-    # Dropout: higher is worse, so rank by raw positive residual
-    if "dropout" in target.lower():
-        df["_rank_resid"] = df["residual"]
-    else:
-        df["_rank_resid"] = -df["residual"]   # most negative gap first
-    df = df[df.index != "Saugus"]
-    return df.nlargest(n, "_rank_resid").drop(columns=["_rank_resid"])
+def _comparable_overperformers(loo_df: pd.DataFrame, target: str) -> pd.DataFrame:
+    """Comparable peers that did BETTER than Saugus (see _comparable_peers)."""
+    return _comparable_peers(loo_df, target, "better")
+
+
+def _comparable_underperformers(loo_df: pd.DataFrame, target: str) -> pd.DataFrame:
+    """Comparable peers that did WORSE than Saugus (see _comparable_peers)."""
+    return _comparable_peers(loo_df, target, "worse")
 
 
 def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
-    """Scatter: actual vs predicted — overachievers (green) and underachievers (red) highlighted."""
+    """Scatter: actual vs predicted — labels ONLY Saugus's comparable peers (the
+    same prediction-matched set as the previous page): green did better, red did
+    worse.  All other MA districts are plotted in grey but not labeled."""
     fig, ax = _paper_fig()
     fig.subplots_adjust(top=0.85)   # keep ax title clear of the header subtitle
     loo = analysis["loo_df"].dropna(subset=["actual", "predicted"])
@@ -1955,10 +1959,23 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     pred = loo["predicted"] * (100 if is_fraction else 1)
     resid = act - pred
 
-    overachievers  = _find_overachievers(loo, target, n=8)
-    underachievers = _find_underachievers(loo, target, n=5)
-    oa_names = set(overachievers.index)
-    ua_names = set(underachievers.index)
+    # Highlight ONLY Saugus's comparable peers — the same prediction-matched set
+    # the preceding "What This Means" page is built from (single source of truth
+    # via _comparable_peers), computed live here so any change flows to both.
+    # Dissimilar outliers (e.g. Newton) are excluded by construction.  The full
+    # comparable set is coloured; only the closest peers (the set is sorted by
+    # proximity to Saugus's prediction) are labeled, so a large set stays legible.
+    overachievers_full  = _comparable_overperformers(loo, target)
+    underachievers_full = _comparable_underperformers(loo, target)
+    LABEL_CAP = 10
+    overachievers  = overachievers_full.head(LABEL_CAP)   # labeled subset
+    underachievers = underachievers_full.head(LABEL_CAP)
+    oa_names = set(overachievers_full.index)              # coloured = full set
+    ua_names = set(underachievers_full.index)
+
+    def _peer_lab(verb: str, labeled: int, full: int) -> str:
+        return (f"Comparable peers — {verb} (n={full})" if labeled >= full
+                else f"Comparable peers — {verb} ({labeled} of {full} labeled)")
 
     # All districts — grey
     mask_oa = loo.index.isin(oa_names)
@@ -1969,7 +1986,7 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     # Overachievers — green
     ax.scatter(pred[mask_oa], act[mask_oa],
                color=_GREEN, alpha=0.85, s=60, zorder=4,
-               label=f"Top over-performers (n={len(oa_names)})")
+               label=_peer_lab("did better", len(overachievers), len(oa_names)))
     for idx in overachievers.index:
         if idx in pred.index:
             ax.annotate(str(idx),
@@ -1980,7 +1997,7 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     # Underachievers — red
     ax.scatter(pred[mask_ua], act[mask_ua],
                color=_RED, alpha=0.80, s=55, zorder=4,
-               label=f"Top under-performers (n={len(ua_names)})")
+               label=_peer_lab("did worse", len(underachievers), len(ua_names)))
     for idx in underachievers.index:
         if idx in pred.index:
             ax.annotate(str(idx),
@@ -2003,16 +2020,19 @@ def page_overachievers_scatter(pdf, label: str, target: str, analysis: dict):
     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
 
     r = float(np.corrcoef(act, pred)[0, 1])
-    ax.set_title(f"Actual vs Predicted — {label}  (LOO r = {r:.3f})", fontsize=10)
+    ax.set_title(f"Saugus's Comparable Peers — {label}  (LOO r = {r:.3f})", fontsize=10)
     ax.set_xlabel("RBP-predicted value"); ax.set_ylabel("Actual value")
     ax.legend(fontsize=8); ax.grid(alpha=0.2)
 
     saugus_resid = float(resid.get("Saugus", float("nan")))
     unit = "pp" if (act.median() < 200) else " pts"
-    _header(fig, f"Over- and Under-Performers: {label}",
-            f"Saugus gap: {saugus_resid:+.1f}{unit}  ·  "
-            f"Gold star = Saugus  ·  Green = over-performers  ·  Red = under-performers")
-    _footer(fig, "Residual = actual − predicted.  Positive = performing better than demographics suggest.")
+    _header(fig, f"Saugus's Comparable Peers: {label}",
+            f"Saugus gap: {saugus_resid:+.1f}{unit}  ·  Gold star = Saugus  ·  "
+            f"Green = comparable peers that did better  ·  Red = comparable peers that did worse")
+    _footer(fig, "Coloured points are Saugus's comparable peers — the same prediction-matched set the preceding "
+            "“What This Means” page is built from (predicted within ±1 SE of Saugus's own prediction, so "
+            "wealthy/large outliers like Newton are excluded); the closest peers are labeled.  "
+            "Residual = actual − predicted; grey = all other MA districts.")
     _save(pdf, fig)
 
 
