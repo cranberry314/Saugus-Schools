@@ -627,7 +627,7 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
     lines = [
         "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
         "One RBP run per outcome over the full candidate pool — no in-model pruning (faithful to Kritzman)",
-        "The one discretionary step is which factors enter and how they tier: Tier 3 (structural) matches Saugus to peers; Tiers 1 & 2 (actionable) are ranked",
+        "All curated factors enter one tier-blind RBP run (no pruning); Tier-1 & 2 actionable factors are ranked and shown, Tier-3 structural traits stay in the model but are hidden (a town can't change who it is)",
         "Saugus analyzed as the prediction task; importance flags where it is most distinctive among actionable factors — a prediction-sharpening measure, not a causal driver",
         "Leave-one-out LOO r validates the predictions across all MA districts",
     ]
@@ -643,17 +643,15 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
             y_cursor -= 0.030
         y_cursor -= 0.010   # gap between bullets
 
-    # Clarify what the per-model factor count is made of: the structural traits
-    # are IN the model (they build the peer match) but hidden from the action
-    # tables because a town can't change them.  Counts are read from the models
-    # so they can never drift from the tables below.
+    # RBP is tier-blind: all factors drive the prediction and Exhibit-5 importance
+    # alike; the structural traits are simply hidden from the ACTION tables because
+    # a town can't change them.  Counts are read from the models so they can never
+    # drift from the tables below.
     _cands0 = models[0].get("all_candidates", models[0]["features"]) if models else []
     _n_struct = sum(1 for f in _cands0 if f in STRUCTURAL_FEATURES)
-    _note = (f"Each model uses {len(_cands0)} factors, of which {_n_struct} are Tier-3 "
-             f"structural traits (income, poverty, enrollment …).  These {_n_struct} are "
-             f"needed to match Saugus to genuine peer towns, but are then hidden — a town "
-             f"cannot change who it is — so only the Tier-1 & 2 factors it can act on are "
-             f"ranked and shown in this report.")
+    _note = (f"Each model runs one RBP over {len(_cands0)} factors ({_n_struct} of them Tier-3 structural, "
+             f"kept in the model but hidden from the action tables).  The demographically-comparable peer "
+             f"towns in later exhibits come from a separate structural-only Mahalanobis match.")
     ax.text(0.5, 0.395, textwrap.fill(_note, width=118),
             ha="center", va="top", fontsize=8, style="italic", color=_BL,
             transform=ax.transAxes, linespacing=1.35)
@@ -2810,10 +2808,18 @@ def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
     d = df.copy()
     d["_k"] = d["district_name"].str.lower().str.strip()
 
+    # Pin external joins to the cross-section year: take each town's latest row
+    # AT OR BEFORE the analysis year, never future years, so a derived ratio can't
+    # blend an FY2024 numerator with an FY2026/27 denominator (e.g. spend_vs_required
+    # = FY2024 PPE ÷ required-NSS must divide by the FY2024 required-NSS).
+    ay = df.attrs.get("analysis_fiscal_year")
     def latest(table, namecol, cols, notnull=None):
-        nn = f"WHERE {notnull} IS NOT NULL" if notnull else ""
+        conds = []
+        if notnull:        conds.append(f"{notnull} IS NOT NULL")
+        if ay is not None: conds.append(f"fiscal_year <= {int(ay)}")
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
         sql = (f"SELECT DISTINCT ON (lower({namecol})) lower({namecol}) AS _k, "
-               + ", ".join(cols) + f" FROM {table} {nn} "
+               + ", ".join(cols) + f" FROM {table} {where} "
                f"ORDER BY lower({namecol}), fiscal_year DESC")
         with engine.connect() as c:
             return pd.read_sql(_text(sql), c)
