@@ -126,9 +126,10 @@ python analysis/saugus_factor_analysis.py --regen-pdf  # rebuild the PDF from ca
 
 Output:
 - `Reports/saugus_factor_analysis.pdf` — factor definitions, a combined per-model
-  standings summary, and per-outcome "What This Means" pages (RBP importance-ranked
+  standings summary, per-outcome "What This Means" pages (RBP importance-ranked
   actionable factors, the actual-vs-predicted scatter, and how comparable
-  better-performing towns differ), plus the budget/staffing and fixed-cost pages
+  better-performing towns differ), and the optimum-profile page.  (The
+  budget/staffing and fixed-cost pages are temporarily disabled in the build.)
 - `Reports/saugus_factor_analysis_results.csv` — machine-readable factor importances
 - `Reports/saugus_factor_analysis_cache.pkl` — cached results (used by `--regen-pdf`)
 
