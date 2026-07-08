@@ -1,5 +1,5 @@
 """
-Do NOT Modify
+Do Not Modify
 
 Relevance-Based Prediction (RBP)
 =================================
@@ -212,23 +212,24 @@ def _adjusted_fit(w: np.ndarray, y: np.ndarray, K: int,
     fit_sq = _corr(w, y) ** 2                               # Eq 13
 
     # Eq 14: asymmetry = ½(ρ(w+, y) − ρ(w−, y))²
-    # w+ = weights formed from the retained (δ=1) set
-    # w- = weights formed from the complementary censored (δ=0) set
-    # Each is Eq 1 re-evaluated on its own subsample, NOT the composite weights
-    # masked to zero — the paper specifies "the weights formed from the retained
-    # observations," using each subsample's own 1/n baseline, λ², and r̄_sub.
+    # w+ = the cell's Eq-1 weights (relevance retained, δ);  w- = Eq-1 weights with
+    # the censoring flipped (the complementary set retained, 1−δ).  Both are
+    # full-sample weight vectors sharing the 1/N baseline, so ρ(·, y) is taken over
+    # all N observations — the retained-vs-censored contrast Eq 14 measures.  We
+    # read Eq 14's "weights formed from the retained observations" as this
+    # δ-weighting, not a recomputed 1/n subsample weighting.
     #
     # Degenerate case: at threshold 0 nothing is censored, so the complementary
-    # (δ=0) set is empty.  _prediction_weights then returns uniform weights whose
+    # (1−δ) set is empty.  _prediction_weights then returns uniform weights whose
     # ρ with y is 0, which would make asym = ½·ρ(w+)² > 0 — a spurious asymmetry
     # for every linear cell.  Eq 14 presupposes a non-degenerate complement, so
     # when fewer than 2 observations are censored the asymmetry is undefined and
-    # contributes 0.  (The retained side is the input w itself: w == w+.)
+    # contributes 0.
     n_censored = int(len(delta) - delta.sum())
     if n_censored < 2:
         asym = 0.0
     else:
-        rho_plus  = _corr(w, y)                # w IS the retained-set weights (= w+)
+        rho_plus  = _corr(w, y)                # w = the cell's Eq-1 weights = w+
         w_minus   = _prediction_weights(r, 1.0 - delta)
         rho_minus = _corr(w_minus, y)
         asym = 0.5 * (rho_plus - rho_minus) ** 2           # Eq 14
