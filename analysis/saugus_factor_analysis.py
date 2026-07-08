@@ -613,6 +613,17 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
                 ha="center", va="center", fontsize=9.5, style="italic", color=_GREY,
                 transform=ax.transAxes)
 
+    # Provenance line: when the report was generated and the last data year it
+    # uses — both read live so they can never drift from the actual run.
+    _today = datetime.date.today()
+    _run_date = f"{_today:%B} {_today.day}, {_today.year}"
+    _meta = f"Report run: {_run_date}"
+    if analysis_year is not None:
+        _meta += f"      ·      Final year of data utilized: FY{analysis_year}"
+    ax.text(0.5, 0.715, _meta,
+            ha="center", va="center", fontsize=9.5, color=_BLUE, fontweight="bold",
+            transform=ax.transAxes)
+
     lines = [
         "Four outcomes: MCAS grades 3–8, Dropout Rate, MCAS grade 10 ELA, Education Budget Share",
         "One RBP run per outcome over the full candidate pool — no in-model pruning (faithful to Kritzman)",
