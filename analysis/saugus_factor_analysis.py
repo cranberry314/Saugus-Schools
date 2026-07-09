@@ -11,6 +11,9 @@ Four models are built independently:
   3. MCAS Grade 10 (ELA) — high school academic readiness
   4. Education Budget Share — share of municipal budget allocated to schools
 
+To find the models and factors search: Factor Models
+All factor calculations are in analysis/factors.py, which is imported below.
+
 Faithful to Kritzman: ONE RBP run per outcome, on ALL candidate variables.
 Variable importance (Exhibit 5) is read off that run as a transparency
 diagnostic — it is NOT used to select or prune variables.  Footnote 12 is the
@@ -649,7 +652,7 @@ def page_title(pdf, models: list[dict], analysis_year: int | None = None):
     # a town can't change them.  Counts are read from the models so they can never
     # drift from the tables below.
     _cands0 = models[0].get("all_candidates", models[0]["features"]) if models else []
-    _n_struct = sum(1 for f in _cands0 if f in STRUCTURAL_FEATURES)
+    _n_struct = sum(1 for f in _cands0 if F.is_structural(f))
     _note = (f"Each model runs one RBP over {len(_cands0)} factors ({_n_struct} of them Tier-3 structural, "
              f"kept in the model but hidden from the action tables).  The demographically-comparable peer "
              f"towns in later exhibits come from a separate structural-only Mahalanobis match.")
@@ -2636,73 +2639,6 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
 # 4.  Main orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Always exclude: true artifacts with no predictive validity in any model.
-#   fiscal_year — data-availability proxy, not a school system input.
-ALWAYS_EXCLUDE = {
-    "fiscal_year",
-    "org_code",
-    "district_name",
-}
-
-# Outcome variables — can only appear as predictors in OTHER models, never
-# their own.  Listed here so the candidate filter can handle them separately
-# from the pre-specified pool of pure predictors.
-OUTCOME_VARS = {
-    "avg_mcas", "mcas10_ela", "mcas10_math",
-    "sat_ebrw", "sat_math", "sat_combined",
-    "attending_pct", "dropout_pct",
-    "four_yr_grad_pct", "five_yr_grad_pct",
-    # Schedule A budget line-item shares — outcomes of fiscal policy.
-    # Available as predictors in models that don't exclude them.
-    "ed_budget_share",      # target for the budget share model
-    "fixed_costs_pct",      # pensions / employee benefits share
-    "debt_service_pct",     # debt service share
-    "public_safety_pct",    # police + fire share
-    "public_works_pct",     # DPW / infrastructure share
-}
-
-# Pre-specified pool of PURE PREDICTOR features — chosen on domain grounds
-# before running RBP, following Kritzman (2024) Exhibit 1.
-#
-# Reduces K from ~32 candidates to ~14-17 per model, bringing K/N from
-# ~0.19 to ~0.09 (matching the paper's 14/165 ≈ 0.085 ratio) and making
-# the covariance matrix well-conditioned.
-#
-# Dropped features and why:
-#   high_needs_pct        r=+0.981 with low_income_pct  → near-duplicate
-#   acs_poverty_pct       r=+0.87  with low_income_pct  → redundant poverty
-#   foundation_budget_pp  r=+0.92  with in_district_ppe   → redundant spending
-#   ch70_per_pupil        r≈-0.87  with equalized_income → inverse wealth proxy
-#   teacher_fte           r=+0.994 with total_enrollment → linear function
-#   total_population      r=+0.953 with total_enrollment → size proxy
-#   teachers_per_100_fte  r=+0.872 with teachers_per_100_students → duplicate
-#   teacher_spending_pp   r≈+0.85  with in_district_ppe   → redundant spending
-#   gf_exp_per_capita     r≈+0.75  with res_tax_rate     → redundant municipal
-#   pct_65_plus           weak signal, no clear school policy factor
-#   com_tax_rate          r≈+0.65  with res_tax_rate     → redundant tax
-PRE_SPECIFIED_POOL = {
-    # Poverty & wealth (three distinct angles)
-    "low_income_pct",            # % low-income students
-    "median_hh_income",          # Household income
-    "equalized_income",          # Property wealth per capita
-    # Human capital
-    "pct_bachelors_plus",        # % adults with bachelor's degree or higher
-    # Housing & community
-    "pct_owner_occupied",        # % owner-occupied housing (stability)
-    "crime_rate",                # Crime incidents per capita
-    "res_tax_rate",              # Residential tax rate (local fiscal effort)
-    # Demographics & engagement
-    "chronic_absenteeism_pct",   # % chronically absent (strongest cross-model)
-    "ell_pct",                   # % English language learners
-    "sped_pct",                  # % special education students
-    # District structure
-    "total_enrollment",          # District size (drop teacher_fte r=0.994)
-    "teachers_per_100_students", # Staffing ratio (drop fte version r=0.872)
-    "avg_teacher_salary",        # Teacher compensation
-    # School spending
-    "in_district_ppe",             # In-district spending per pupil
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # What is a "factor"?
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2723,57 +2659,24 @@ PRE_SPECIFIED_POOL = {
 #     a town cannot vote to change who it is.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# Tiered "actionable factor" candidate pool  (USE_ACTIONABLE_POOL)
-# ─────────────────────────────────────────────────────────────────────────────
 # RBP is tier-blind — it treats every column identically — so we impose the
 # Tier 3 (structural) vs Tier 1/2 (actionable) distinction by CHOOSING which
-# columns enter the run.  With this pool the RBP relevance still matches Saugus
-# to structurally-similar towns (the demographic features dominate the
-# covariance), but the Exhibit-5 importance now scores the factors Saugus can
-# actually change — answering "given towns like us, which controllable thing
-# moves the outcome," instead of mixing in demographics it cannot act on.
-USE_ACTIONABLE_POOL = True
-
-# ── This report's explicit factor selection ──────────────────────────────────
-# Every factor is DEFINED once in the library (analysis/factors.py).  Here we just
-# SELECT which ones this report uses, by reference, grouped by tier — so the pool
-# is explicit and readable, but each factor's tier/formula/provenance lives in one
-# place and can't drift.  To change the pool, edit these lists (and, for a brand-new
-# factor, define it once in factors.py first).
-
-# Tier 3 — structural: what a community IS.  Used ONLY to place Saugus among
-# comparable towns (peer context); never ranked as a lever.
-TIER3_STRUCTURAL = [
-    F.low_income_pct, F.median_hh_income, F.equalized_income, F.pct_bachelors_plus,
-    F.pct_owner_occupied, F.ell_pct, F.sped_pct, F.total_enrollment, F.crime_rate,
-    F.health_ins_per_capita,
-]
-# Tier 1 — votable: what the town chooses to fund (Town Meeting / ballot).
-TIER1_VOTABLE = [
-    F.ed_budget_share, F.spend_vs_required, F.fixed_costs_pct,
-]
-# Tier 2 — managed: day-to-day school operations (administration decides).
-TIER2_MANAGED = [
-    F.chronic_absenteeism_pct, F.teachers_per_100_students, F.avg_teacher_salary,
-    F.instructional_share, F.teachers_per_lowincome, F.teacher_pay_share,
-]
-
-# Name-sets the rest of the module works with (RBP is tier-blind; these are the
-# columns we let into each run).  Derived from the selection above.
-STRUCTURAL_FEATURES = F.names(TIER3_STRUCTURAL)
-ACTIONABLE_FACTORS  = F.names(TIER1_VOTABLE + TIER2_MANAGED)
+# columns enter each run.  Every factor is DEFINED once in the library
+# (analysis/factors.py); each REPORT then selects its own factors explicitly in the
+# MODELS section below, so this module keeps no shared pool.  Structural traits
+# still match Saugus to comparable towns (they dominate the RBP covariance); the
+# Exhibit-5 importance is read only for the Tier-1/2 levers a town can change.
+# The tier of any factor is available at runtime via factors.tier_of / is_structural.
 
 
 def _display_features(features) -> list:
     """
-    Features to SHOW as drivers/factors in the narrative tables.  In actionable
-    mode the Tier-3 structural traits define Saugus's peer group and are used
-    for matching only — they are hidden from the 'what to do' tables so the
-    report surfaces what the town can actually change.  Order is preserved.
+    Features to SHOW as drivers/factors in the narrative tables.  Tier-3 structural
+    traits define Saugus's peer group and are used for matching only — they are
+    hidden from the 'what to do' tables (tier read live from the factor library) so
+    the report surfaces what the town can actually change.  Order is preserved.
     """
-    if not USE_ACTIONABLE_POOL:
-        return list(features)
-    factors = [f for f in features if f in ACTIONABLE_FACTORS]
+    factors = [f for f in features if F.is_actionable(f)]
     return factors or list(features)
 
 
@@ -2825,97 +2728,144 @@ def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
                   errors="ignore")
 
 
-# NOTE on also_exclude: these sets are written for BOTH pool modes.  In the
-# default actionable-pool mode (USE_ACTIONABLE_POOL=True) the candidate set is
-# already restricted to STRUCTURAL_FEATURES | ACTIONABLE_FACTORS, so the
-# outcome-variable entries below (mcas10_*, sat_*, grad/dropout/attending) are
-# inert there — they were never candidates.  They bite only in legacy mode,
-# where outcome vars CAN enter.  The entries that bite in BOTH modes are the
-# competing fiscal ratios (fixed_costs_pct, debt_service_pct, …).  Each run logs
-# the realized candidate set and live-vs-inert exclusions (see _run_one_model).
-MODELS = [
-    {
-        "label":        "MCAS Grades 3–8",
-        "target":       "avg_mcas",
-        "target_pct":   True,
-        "desc":         "% students meeting/exceeding (ELA + Math, grades 3–8)",
-        # Grade 10 MCAS and SAT are circular (same academic quality, different
-        # cohort/instrument).  dropout_pct and attending_pct are causal signals.
-        # (Outcome-var entries here are inert in actionable mode — see note above;
-        # the live exclusions are the four fiscal ratios.)
-        "also_exclude": {"mcas10_ela", "mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined",
-                         "fixed_costs_pct", "debt_service_pct",
-                         "public_safety_pct", "public_works_pct"},
-    },
-    # Postsecondary removed: Saugus is +9.8pp above prediction — healthy, not
-    # a problem area.  Analysis focuses on outcomes where Saugus is deficient.
-    {
-        "label":        "Dropout Rate",
-        "target":       "dropout_pct",
-        "target_pct":   False,
-        "desc":         "% students dropping out of high school",
-        # avg_mcas and mcas10_ela are causal (academic struggle → disengagement).
-        # attending_pct is causal (fewer dropouts → more college goers).
-        # mcas10_math excluded: collinear with mcas10_ela (r=0.90).
-        # SAT excluded: ceiling effect, collinear with wealth predictors.
-        # Graduation rates are circular (inverse of dropout).
-        "also_exclude": {"four_yr_grad_pct", "five_yr_grad_pct",
-                         "mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined",
-                         "fixed_costs_pct", "debt_service_pct",
-                         "public_safety_pct", "public_works_pct"},
-    },
-    {
-        "label":        "MCAS Grade 10 (ELA)",
-        "target":       "mcas10_ela",
-        "target_pct":   True,
-        "desc":         "% grade 10 students meeting/exceeding on MCAS ELA",
-        # Why MCAS10 instead of SAT:
-        #   - MCAS10 is mandatory for ALL students to graduate — no self-selection.
-        #     SAT is voluntary; students not planning on college often skip it.
-        #   - SAT has a private-prep ceiling (~1200) from tutoring spend,
-        #     not school quality. MCAS10 has neither distortion.
-        # Exclusions (circular academic measures): mcas10_math (same cohort/session,
-        # r=0.90) and the SAT variables.  NOTE: in the default actionable pool every
-        # outcome variable — avg_mcas, dropout_pct, attending_pct included — is out
-        # of pool already, so avg_mcas is NOT a feature in this model (the report
-        # correctly shows grade 3–8 excluded).  The academic reasoning here only
-        # bites in legacy non-actionable mode.
-        "also_exclude": {"mcas10_math",
-                         "sat_ebrw", "sat_math", "sat_combined",
-                         "fixed_costs_pct", "debt_service_pct",
-                         "public_safety_pct", "public_works_pct"},
-    },
-    {
-        "label":        "Education Budget Share",
-        "target":       "ed_budget_share",
-        "target_pct":   True,
-        "desc":         "Education as % of total municipal expenditure (MA DLS Schedule A)",
-        # Build the factor from financial statement components — same logic as
-        # computing EPS from the income statement rather than predicting it.
-        # Candidates = demographic features (PRE_SPECIFIED_POOL) + competing
-        # budget line items (fiscal ratios from Schedule A).
-        # School outcome variables excluded: dropout, MCAS, SAT are downstream
-        # of budget decisions, not upstream.  Fiscal ratios ARE upstream —
-        # they mechanically determine what share is left for education.
-        "also_exclude": {
-            "avg_mcas", "mcas10_ela", "mcas10_math",
-            "sat_ebrw", "sat_math", "sat_combined",
-            "attending_pct", "dropout_pct",
-            "four_yr_grad_pct", "five_yr_grad_pct",
-        },
-        # Of the competing budget-share line items, only fixed_costs_pct is in
-        # ACTIONABLE_FACTORS, so it is the SINGLE competing share that actually
-        # enters this model.  debt_service_pct / public_safety_pct / public_works_pct
-        # are not in the pool and never become candidates (see the realized-
-        # candidate log each run prints).
-    },
-    # SAT removed: scores above ~1200 driven by private prep, not school quality.
-    # Self-selection: students not going to college don't take it.
-    # Joint model collapsed — all features showed negative importance due to
-    # severe wealth collinearity.
-]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                    Factor Models: MCAS, Dropout, SAT, Grad Rate, Budget Share
+# ─────────────────────────────────────────────────────────────────────────────
+
+MODEL_MCAS_3_8 = {
+    "label":  "MCAS Grades 3–8",
+    "target": "avg_mcas",          # PREDICT: % of grades 3–8 meeting/exceeding (ELA+Math)
+    "target_pct": True,
+    "desc":   "% students meeting/exceeding (ELA + Math, grades 3–8)",
+    "factors": [
+        # ── Tier 1 — votable (Town Meeting / ballot) ──────────────────────────
+        F.ed_budget_share,             # Town Meeting allocation to schools
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
+        # ── Tier 2 — managed (administration) ─────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context; never ranked) ──────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+MODEL_DROPOUT = {
+    "label":  "Dropout Rate",
+    "target": "dropout_pct",       # PREDICT: % of students dropping out of high school
+    "target_pct": False,
+    "desc":   "% students dropping out of high school",
+    "factors": [
+        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        F.ed_budget_share,             # Town Meeting allocation to schools
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        #   fixed_costs_pct omitted: municipal crowd-out, not a dropout lever
+        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement (leading dropout signal)
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+MODEL_MCAS_10 = {
+    "label":  "MCAS Grade 10 (ELA)",
+    "target": "mcas10_ela",        # PREDICT: % of grade-10 students meeting/exceeding on MCAS ELA
+    "target_pct": True,
+    "desc":   "% grade 10 students meeting/exceeding on MCAS ELA",
+    # (MCAS10 over SAT: mandatory for all → no self-selection, and no private-prep ceiling.)
+    "factors": [
+        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        F.ed_budget_share,             # Town Meeting allocation to schools
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
+        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+MODEL_ED_SHARE = {
+    "label":  "Education Budget Share",
+    "target": "ed_budget_share",   # PREDICT: education as % of total municipal budget
+    "target_pct": True,
+    "desc":   "Education as % of total municipal expenditure (MA DLS Schedule A)",
+    # ed_budget_share is the TARGET here, so it is not a factor.  fixed_costs_pct IS
+    # included — a competing budget line is a legitimate (upstream) predictor of what
+    # share is left for schools.  Academic outcomes are downstream of the budget, so
+    # they are not used.
+    "factors": [
+        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        F.fixed_costs_pct,             # pensions/benefits/health — crowds out the school share
+        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+# Postsecondary + SAT reports removed: Saugus is +9.8pp above prediction on
+# college-going (healthy, not a problem area), and SAT scores >~1200 reflect
+# private prep, not school quality.
+MODELS = [MODEL_MCAS_3_8, MODEL_DROPOUT, MODEL_MCAS_10, MODEL_ED_SHARE]
 
 
 def _run_one_model(args: tuple) -> dict:
@@ -2946,48 +2896,31 @@ def _run_one_model(args: tuple) -> dict:
     _p(f"Starting  (target={target!r})")
     engine = get_engine()
     df_raw = load_features(engine)
-    if USE_ACTIONABLE_POOL:
-        df_raw = add_actionable_factors(df_raw, engine)   # derived effort/intensity factors
+    df_raw = add_actionable_factors(df_raw, engine)   # derived effort/intensity factors
 
-    exclude = ALWAYS_EXCLUDE | {target} | model.get("also_exclude", set())
-
-    if USE_ACTIONABLE_POOL:
-        # Tiered pool: Tier-3 structural features (the peer match) + Tier-1/2
-        # actionable factors (importance-scored).  RBP stays tier-blind; the tier
-        # roles are imposed purely by which columns we let in.
-        allowed = STRUCTURAL_FEATURES | ACTIONABLE_FACTORS
-    else:
-        # Legacy pool: pre-specified pure predictors + allowed outcome vars.
-        allowed = PRE_SPECIFIED_POOL | (OUTCOME_VARS - exclude)
+    # This report's explicit factor list (MODELS above) IS the candidate set.  Keep
+    # only factors that are present and adequately populated, so a hand-edit can't
+    # silently break a run; the target is never a factor.  We iterate df columns so
+    # the candidate ORDER is stable (the RBP grid samples by position).
+    wanted = {(f.name if hasattr(f, "name") else f) for f in model["factors"]}
     candidates = [c for c in df_raw.columns
-                  if c not in exclude
-                  and c in allowed
+                  if c in wanted and c != target
                   and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
                   and df_raw[c].dtype.kind in "fiu"]
+    _dropped = sorted(wanted - set(candidates) - {target})
 
-    # Transparency / audit trail: in actionable-pool mode a candidate must be in
-    # STRUCTURAL_FEATURES | ACTIONABLE_FACTORS, so any also_exclude entry that is
-    # an outcome variable (mcas10_*, sat_*, grad/dropout/attending) is never a
-    # candidate to begin with — excluding it is inert.  Only entries that are
-    # actually in the pool (the competing fiscal ratios) bite.  Log both the
-    # realized candidate set and which exclusions were live vs. inert so the run
-    # is fully reproducible and the model dicts don't over-claim.
-    _live_excl  = sorted(model.get("also_exclude", set()) & set(allowed))
-    _inert_excl = sorted(model.get("also_exclude", set()) - set(allowed))
-    # Show the pool grouped by tier — tiers pulled live from the factor library
-    # (factors.tier_of), so this is a derived view, never a second list.
+    # Show the pool grouped by tier — tiers pulled live from the factor library.
     _by_tier = {1: [], 2: [], 3: [], None: []}
     for c in sorted(candidates):
         _by_tier[F.tier_of(c)].append(c)
     _p(f"Realized candidates ({len(candidates)}):")
-    _p(f"    Tier 3 structural (peer context): {_by_tier[3]}")
     _p(f"    Tier 1 votable (ranked):          {_by_tier[1]}")
     _p(f"    Tier 2 managed (ranked):          {_by_tier[2]}")
+    _p(f"    Tier 3 structural (peer context): {_by_tier[3]}")
     if _by_tier[None]:
         _p(f"    Uncatalogued:                     {_by_tier[None]}")
-    if model.get("also_exclude"):
-        _p(f"  also_exclude live (in pool, removed): {_live_excl or ['—']}")
-        _p(f"  also_exclude inert (not in pool anyway): {_inert_excl or ['—']}")
+    if _dropped:
+        _p(f"  dropped (missing / <{MIN_COVERAGE:.0%} coverage / non-numeric): {_dropped}")
 
     # ── Step 1: Full RBP with all candidates (Kritzman Exhibit 5) ───────────
     # Variable importance directly reveals which features contribute to
@@ -3152,8 +3085,7 @@ def main(fast: bool = False, parallel: bool = False):
     print("\n[factor_analysis] Loading features for PDF generation...")
     engine = get_engine()
     df_raw = load_features(engine)
-    if USE_ACTIONABLE_POOL:
-        df_raw = add_actionable_factors(df_raw, engine)   # so pages resolve derived factors
+    df_raw = add_actionable_factors(df_raw, engine)   # so pages resolve derived factors
     print(f"  {len(df_raw)} districts, {len(df_raw.columns)} columns")
 
     # ── Write PDF (write to /tmp first, then copy to avoid network timeouts) ──
