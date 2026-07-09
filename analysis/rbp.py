@@ -65,8 +65,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
-from itertools import combinations
+from dataclasses import dataclass
 import random
 
 
@@ -553,7 +552,6 @@ def rbp_loo(X: pd.DataFrame, y: pd.Series, features: list[str],
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
     print("RBP self-test — synthetic data")
 
     rng = np.random.default_rng(42)
@@ -576,9 +574,9 @@ if __name__ == "__main__":
           f"Residual={y.iloc[0]-result.prediction:.3f}")
     print(f"  Composite fit: {result.fit:.4f}")
     print(f"  Grid cells used: {result.grid_cells_used}")
-    print(f"  Variable importance:")
+    print("  Variable importance:")
     for feat, imp in result.variable_importance.items():
         print(f"    {feat}: {imp:+.4f}")
-    print(f"  Most relevant observations:")
+    print("  Most relevant observations:")
     print(result.most_relevant[['weight', '__y__']].to_string())
     print("Self-test passed.")
