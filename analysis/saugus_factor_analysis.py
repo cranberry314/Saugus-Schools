@@ -82,8 +82,14 @@ MIN_COVERAGE   = 0.60   # feature must have data for ≥60 % of districts
 # Tier gating — the one application-layer decision layered on top of RBP
 # ─────────────────────────────────────────────────────────────────────────────
 # Every factor is defined once in the library (analysis/factors.py) and carries a
-# TIER: 1 = directly votable, 2 = policy/management (together "actionable" — what a
-# town DOES), 3 = structural (what a community IS: income, poverty, size).
+# TIER that fixes how a town can act on it:
+#   Tier 1 — directly votable (Town Meeting / ballot)
+#   Tier 2 — policy / management (administration decides)
+#   Tier 3 — structural: what a community IS (income, poverty, enrollment)
+#
+# Tier 1 & 2 are "actionable" — what a town DOES; a town can change them.
+# Tier 3 is what a community IS; it cannot be changed by local action, so it is
+# used for PEER MATCHING ONLY.
 #
 # RBP is tier-blind — it treats every column identically — so we impose the
 # actionable-vs-structural distinction by CHOOSING which columns enter each run:
@@ -131,18 +137,18 @@ MODEL_DROPOUT = {
     "target_pct": False,
     "desc":   "% students dropping out of high school",
     "factors": [
-        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        # ── Tier 1 — votable (Town Meeting / ballot) ──────────────────────────
         F.ed_budget_share,             # Town Meeting allocation to schools
         F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
         #   fixed_costs_pct omitted: municipal crowd-out, not a dropout lever
-        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        # ── Tier 2 — managed (administration) ─────────────────────────────────
         F.chronic_absenteeism_pct,     # attendance / engagement (leading dropout signal)
         F.teachers_per_100_students,   # class size / staffing density
         F.avg_teacher_salary,          # teacher pay level
         F.instructional_share,         # share of the school dollar reaching the classroom
         F.teachers_per_lowincome,      # staffing relative to need
         F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        # ── Tier 3 — structural (peer context; never ranked) ──────────────────
         F.low_income_pct,              # student poverty
         F.median_hh_income,            # household income
         F.equalized_income,            # property wealth per capita
@@ -163,18 +169,18 @@ MODEL_MCAS_10 = {
     "desc":   "% grade 10 students meeting/exceeding on MCAS ELA",
     # (MCAS10 over SAT: mandatory for all → no self-selection, and no private-prep ceiling.)
     "factors": [
-        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        # ── Tier 1 — votable (Town Meeting / ballot) ──────────────────────────
         F.ed_budget_share,             # Town Meeting allocation to schools
         F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
         #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
-        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        # ── Tier 2 — managed (administration) ─────────────────────────────────
         F.chronic_absenteeism_pct,     # attendance / engagement
         F.teachers_per_100_students,   # class size / staffing density
         F.avg_teacher_salary,          # teacher pay level
         F.instructional_share,         # share of the school dollar reaching the classroom
         F.teachers_per_lowincome,      # staffing relative to need
         F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        # ── Tier 3 — structural (peer context; never ranked) ──────────────────
         F.low_income_pct,              # student poverty
         F.median_hh_income,            # household income
         F.equalized_income,            # property wealth per capita
@@ -198,17 +204,17 @@ MODEL_ED_SHARE = {
     # share is left for schools.  Academic outcomes are downstream of the budget, so
     # they are not used.
     "factors": [
-        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        # ── Tier 1 — votable (Town Meeting / ballot) ──────────────────────────
         F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
         F.fixed_costs_pct,             # pensions/benefits/health — crowds out the school share
-        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        # ── Tier 2 — managed (administration) ─────────────────────────────────
         F.chronic_absenteeism_pct,     # attendance / engagement
         F.teachers_per_100_students,   # class size / staffing density
         F.avg_teacher_salary,          # teacher pay level
         F.instructional_share,         # share of the school dollar reaching the classroom
         F.teachers_per_lowincome,      # staffing relative to need
         F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        # ── Tier 3 — structural (peer context; never ranked) ──────────────────
         F.low_income_pct,              # student poverty
         F.median_hh_income,            # household income
         F.equalized_income,            # property wealth per capita
