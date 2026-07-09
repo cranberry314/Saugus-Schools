@@ -1,56 +1,41 @@
 """
-saugus_factor_analysis.py
-=========================
-Factor selection and Relevance-Based Prediction (RBP) analysis for Saugus schools.
+saugus_factor_analysis.py — Relevance-Based Prediction for Saugus schools
+=========================================================================
+A from-scratch application of Czasonis, Kritzman & Turkington (2024), "A Transparent
+Alternative to Neural Networks."  The RBP engine is analysis/rbp.py; every factor is
+defined in the library analysis/factors.py (imported as F).
 
-Implements Czasonis, Kritzman & Turkington (2024) RBP via analysis/rbp.py.
+Four self-contained reports, one RBP model each (see the MODEL_* definitions below).
+Each states its target outcome and the explicit list of factors it predicts from:
+    1. MCAS grades 3–8   2. Dropout rate   3. MCAS grade 10 (ELA)
+    4. Education budget share (the share of the municipal budget allocated to schools)
 
-Four models are built independently:
-  1. MCAS ELA+Math (grades 3–8) — academic outcomes
-  2. Dropout rate — high school completion
-  3. MCAS Grade 10 (ELA) — high school academic readiness
-  4. Education Budget Share — share of municipal budget allocated to schools
+Faithful to Kritzman: ONE RBP run per outcome over ALL of a report's factors, with no
+in-model pruning.  Exhibit-5 variable importance is read off that run as a transparency
+diagnostic only — footnote 12: ≈0-importance factors are "diversified away" by the
+relevance weighting, so they are kept, not dropped.
 
-To find the models and factors search: Factor Models
-All factor calculations are in analysis/factors.py, which is imported below.
+Per report (_run_one_model):
+    Step 1  Exhibit-5 importance over all factors (a few check seeds confirm the top-3
+            is not a Monte-Carlo artifact of the sparse grid).
+    Step 2  No pruning — the factor set used for prediction IS the candidate set.
+    Step 3  Predict Saugus (excluded from its own training set — no leakage) and
+            validate leave-one-out across all MA districts (Pearson r).
 
-Faithful to Kritzman: ONE RBP run per outcome, on ALL candidate variables.
-Variable importance (Exhibit 5) is read off that run as a transparency
-diagnostic — it is NOT used to select or prune variables.  Footnote 12 is the
-paper's reason this is safe: ≈0-importance variables are "diversified away" by
-the relevance-weighted averaging, so they do no harm and are kept.
-
-For each model (see _run_one_model):
-  Step 1 — Variable importance (Exhibit 5), descriptive only:
-    Run RBP with ALL candidate features and Saugus as the prediction task.
-    Per-feature importance measures each feature's marginal contribution to the
-    reliability of the *Saugus* prediction, given all other features at once.
-    A couple of check seeds confirm the top-ranked drivers are not a
-    Monte-Carlo artifact of the sparse grid.
-
-  Step 2 — Saugus RBP + LOO validation on the FULL candidate set:
-    The single RBP run predicts Saugus (excluded from its own training set — no
-    leakage) and, leave-one-out across all MA districts, yields the validation
-    Pearson r.  No pruning, no second run: the feature set used for prediction
-    is exactly the candidate set.  Outputs: predicted value, residual, gap,
-    rank, most/least relevant comparison towns, and Exhibit 5 importance.
-
-Output:  Reports/saugus_factor_analysis.pdf  (white-background paper format)
-         Reports/saugus_factor_analysis_results.csv  (machine-readable summary)
+Output:  Reports/saugus_factor_analysis.pdf  ·  saugus_factor_analysis_results.csv
 
 Run:
     source .venv/bin/activate
-    python analysis/saugus_factor_analysis.py
-    python analysis/saugus_factor_analysis.py --fast   # smaller random seed, fewer LOO
+    python analysis/saugus_factor_analysis.py              # full run
+    python analysis/saugus_factor_analysis.py --fast       # fewer grid cells, quick iteration
+    python analysis/saugus_factor_analysis.py --regen-pdf  # rebuild the PDF from cache
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
-import os
 import sys
-import random
 import textwrap
 import warnings
 from pathlib import Path
@@ -492,9 +477,8 @@ def _display_importance(analysis: dict) -> pd.Series:
     Returns the single canonical-seed (seed 42) all-candidate importance from
     Step 1 (attached to the analysis dict as 'display_importance').  It is NOT
     seed-averaged: saugus_importance reads one dense grid, and the check-seeds are
-    used only to test top-3 stability, never to average.  Every page — the
-    all-candidate chart (p.4), the lean Saugus chart (p.5), the synthesis drivers
-    table, and the combined summary — reads this SAME Series and cannot disagree
+    used only to test top-3 stability, never to average.  Every page reads this SAME
+    Series, so the synthesis drivers table and the combined summary cannot disagree
     on the top driver.  Falls back to the run's own importance only for older
     caches that predate this field.
     """
@@ -502,55 +486,6 @@ def _display_importance(analysis: dict) -> pd.Series:
     if imp is None:
         imp = analysis["result"].variable_importance
     return imp
-
-
-def compute_ridge_validation(df: pd.DataFrame,
-                             features: list[str],
-                             target: str,
-                             focus: str = "chronic_absenteeism_pct") -> dict | None:
-    """
-    Independent cross-check of the RBP Exhibit-5 finding by a different method:
-    a standardized Ridge regression on the SAME district panel.  Reports the
-    realized 5-fold CV R² and where `focus` (chronic absenteeism) ranks among
-    the standardized coefficients.  All figures are computed here so the page
-    note interpolates live numbers — nothing hardcoded.
-
-    Returns None (caller falls back to a qualified note) if sklearn is missing,
-    the panel is too small, or `focus` isn't among the predictors.
-    """
-    try:
-        from sklearn.linear_model import Ridge
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.model_selection import cross_val_score
-        from sklearn.pipeline import make_pipeline
-    except Exception:
-        return None
-
-    feats = [f for f in features if f in df.columns and f != target]
-    if focus not in feats:
-        return None
-    sub = df[feats + [target]].dropna()
-    if len(sub) < 30:
-        return None
-
-    X = sub[feats].values.astype(float)
-    y = sub[target].values.astype(float)
-    try:
-        r2 = float(np.mean(cross_val_score(
-            make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
-            X, y, cv=5, scoring="r2")))
-        Xs = StandardScaler().fit_transform(X)
-        ys = (y - y.mean()) / (y.std() or 1.0)
-        coefs = pd.Series(np.abs(Ridge(alpha=1.0).fit(Xs, ys).coef_),
-                          index=feats).sort_values(ascending=False)
-    except Exception:
-        return None
-
-    rank = list(coefs.index).index(focus) + 1
-    return {"n": int(len(sub)), "r2": r2, "focus": focus,
-            "focus_abs_beta": float(coefs[focus]),
-            "focus_rank": int(rank), "n_features": int(len(feats)),
-            "is_top": rank == 1}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -966,7 +901,6 @@ def page_combined_summary(pdf, results: list[dict]):
             if row == 0:
                 cell.set_facecolor(_BLUE); cell.set_text_props(color="white", fontsize=9.5)
             else:
-                gap_val = summary_rows[row-1][gap_col] if row <= len(summary_rows) else ""
                 if "over" in summary_rows[row-1][dir_col]:
                     bg = "#E8F8E8"
                 elif "under" in summary_rows[row-1][dir_col]:
@@ -1228,8 +1162,6 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
     df2          = _peers["df2"]
     saugus       = _peers["saugus"]
     oa_pool      = _peers["oa_pool"]
-    oa_counter   = _peers["oa_counter"]
-    model_oa_map = _peers["model_oa_map"]
 
     sim_pool = _peers["sim_pool"]
 
@@ -1396,488 +1328,6 @@ def page_optimum_profile(pdf, results: list[dict], df_raw: pd.DataFrame):
              linespacing=1.3)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.91])
-    _save(pdf, fig)
-
-
-def page_budget_and_staffing(pdf, engine, results: list[dict],
-                             df_raw: pd.DataFrame,
-                             ridge_stats: dict | None = None) -> None:
-    """
-    Two-panel page sourced directly from Schedule A and DESE staffing data:
-      Left  — Education's share of Saugus's total municipal budget over time
-               vs peer median (2010–2025)
-      Right — Teacher FTE per 1,000 students over time for Saugus
-               vs peer median (2009–2024)
-
-    These are longitudinal charts the RBP cross-section cannot show.
-    They answer WHY the teacher density gap exists: budget share has been
-    declining while peer towns held steady.
-
-    Peer set: ALL demographically similar MA towns (the standardized-Mahalanobis
-    screen in `_saugus_demo_peers`, sim_all) — not a hand-picked list, and not
-    restricted to overachievers.  A funding comparison must use an unbiased peer
-    set; filtering to better-performing towns would inflate the apparent gap.
-    The "who is similar" rule is the same one the Optimum Profile page uses.
-
-    The footnote carries an independent Ridge-regression cross-check whose
-    numbers (N, CV R², chronic-absenteeism rank/β) are computed live in
-    compute_ridge_validation and passed in via `ridge_stats`; if None, the note
-    falls back to a qualified statement with no specific figures.
-    """
-    from sqlalchemy import text as _text
-
-    # Peer towns are DERIVED from the shared peer source, never hardcoded.
-    PEER_TOWNS = _saugus_demo_peers(results, df_raw)["sim_all"]
-
-    with engine.connect() as conn:
-        # ── Budget share ──────────────────────────────────────────────────
-        budget = pd.read_sql(_text("""
-            SELECT municipality, fiscal_year,
-                   ROUND(100.0*education/NULLIF(total_expenditures,0),1) AS ed_pct
-            FROM municipal_expenditures
-            WHERE municipality = ANY(:towns)
-              -- Drop years with no reported education line (e.g. Saugus FY2000
-              -- has education=0 against a half-sized total) so the trajectory
-              -- does not start from a spurious 0%.
-              AND education > 0
-              AND total_expenditures > 0
-            ORDER BY municipality, fiscal_year
-        """), conn, params={"towns": ['Saugus'] + PEER_TOWNS})
-
-        # ── Teacher density ───────────────────────────────────────────────
-        staffing_q = pd.read_sql(_text("""
-            SELECT s.district_name, s.school_year, s.fte AS teacher_fte,
-                   e.total AS enrollment
-            FROM staffing s
-            JOIN (SELECT school_year, district_name,
-                         SUM(total) AS total
-                  FROM enrollment
-                  WHERE grade = 'Total'
-                  GROUP BY school_year, district_name) e
-              ON s.school_year = e.school_year
-             AND s.district_name = e.district_name
-            WHERE s.category = 'teacher_fte'
-              AND s.district_name = ANY(:towns)
-            ORDER BY s.district_name, s.school_year
-        """), conn, params={"towns": ['Saugus'] + PEER_TOWNS})
-
-    staffing_q['per_1k'] = (staffing_q['teacher_fte'] /
-                             staffing_q['enrollment'].replace(0, float('nan')) * 1000)
-
-    # ── Build peer medians ────────────────────────────────────────────────
-    def _peer_median(df, town_col, year_col, val_col, peers):
-        grp = df[df[town_col].isin(peers)].groupby(year_col)[val_col].median()
-        return grp
-
-    bud_saugus = budget[budget['municipality'] == 'Saugus'].set_index('fiscal_year')['ed_pct']
-    bud_peers  = _peer_median(budget, 'municipality', 'fiscal_year', 'ed_pct', PEER_TOWNS)
-
-    st_saugus  = staffing_q[staffing_q['district_name'] == 'Saugus'].set_index('school_year')['per_1k']
-    st_peers   = _peer_median(staffing_q, 'district_name', 'school_year', 'per_1k', PEER_TOWNS)
-
-    # ── Page ──────────────────────────────────────────────────────────────
-    # Span the title reports is derived from the data actually plotted, so it can
-    # never go stale as new years arrive.
-    _span_yrs = sorted(set(bud_saugus.index) | set(st_saugus.index))
-    _n_years  = (_span_yrs[-1] - _span_yrs[0] + 1) if _span_yrs else 0
-    fig, (ax_l, ax_r) = _paper_fig(1, 2)
-    _header(fig, f"Budget Allocation & Teacher Density — {_n_years}-Year Trajectory "
-                 f"(FY{_span_yrs[0]}–{_span_yrs[-1]})" if _span_yrs else
-                 "Budget Allocation & Teacher Density — Trajectory",
-            "Source: MA DLS Schedule A (budget) & DESE Staffing (teachers)  ·  "
-            f"Peers: median of {len(PEER_TOWNS)} demographically similar MA towns "
-            f"(Mahalanobis ≤ {DEMO_SIM_THRESHOLD:g}σ; see note below)")
-    # Drop the subplots so their two-line titles clear the header subtitle.
-    fig.subplots_adjust(top=0.84)
-
-    # ── Left: budget share ────────────────────────────────────────────────
-    common_yrs_b = sorted(set(bud_saugus.index) & set(bud_peers.index))
-    ax_l.plot(common_yrs_b, [bud_saugus.get(y, float('nan')) for y in common_yrs_b],
-              color=_GOLD, lw=2.5, marker='o', ms=5, label='Saugus', zorder=4)
-    ax_l.plot(common_yrs_b, [bud_peers.get(y, float('nan')) for y in common_yrs_b],
-              color=_BLUE, lw=2, ls='--', marker='s', ms=4, label='Peer median', zorder=3)
-
-    # Shade the gap
-    s_vals = [bud_saugus.get(y, float('nan')) for y in common_yrs_b]
-    p_vals = [bud_peers.get(y, float('nan')) for y in common_yrs_b]
-    ax_l.fill_between(common_yrs_b, s_vals, p_vals,
-                      where=[s < p for s, p in zip(s_vals, p_vals)],
-                      alpha=0.15, color=_RED, label='Saugus below peers')
-
-    # Annotate first and last year of the actual series (not fixed years)
-    if common_yrs_b:
-        _yb0, _yb1 = common_yrs_b[0], common_yrs_b[-1]
-        if not pd.isna(bud_saugus.get(_yb0, float('nan'))):
-            ax_l.annotate(f"{bud_saugus[_yb0]:.1f}%", (_yb0, bud_saugus[_yb0]),
-                          textcoords="offset points", xytext=(4, 4), fontsize=8, color=_GOLD)
-        if not pd.isna(bud_saugus.get(_yb1, float('nan'))):
-            ax_l.annotate(f"{bud_saugus[_yb1]:.1f}%", (_yb1, bud_saugus[_yb1]),
-                          textcoords="offset points", xytext=(-30, -12), fontsize=8, color=_GOLD)
-
-    ax_l.set_xlabel("Fiscal year")
-    ax_l.set_ylabel("Education as % of total municipal expenditure")
-    ax_l.set_title("Education Budget Share\n(Schedule A, general fund)", fontsize=9)
-    ax_l.legend(fontsize=8)
-    ax_l.grid(alpha=0.25)
-    ax_l.set_ylim(bottom=0)
-
-    # ── Right: teacher density ────────────────────────────────────────────
-    common_yrs_s = sorted(set(st_saugus.index) & set(st_peers.index))
-    ax_r.plot(common_yrs_s, [st_saugus.get(y, float('nan')) for y in common_yrs_s],
-              color=_GOLD, lw=2.5, marker='o', ms=5, label='Saugus', zorder=4)
-    ax_r.plot(common_yrs_s, [st_peers.get(y, float('nan')) for y in common_yrs_s],
-              color=_BLUE, lw=2, ls='--', marker='s', ms=4, label='Peer median', zorder=3)
-
-    # Shade gap
-    sv2 = [st_saugus.get(y, float('nan')) for y in common_yrs_s]
-    pv2 = [st_peers.get(y, float('nan')) for y in common_yrs_s]
-    ax_r.fill_between(common_yrs_s, sv2, pv2,
-                      where=[not (float('nan') in [s,p]) and s < p
-                             for s, p in zip(sv2, pv2)],
-                      alpha=0.15, color=_RED, label='Saugus below peers')
-
-    # Annotate first and last year for Saugus
-    first_yr = min(y for y in common_yrs_s if not pd.isna(st_saugus.get(y, float('nan'))))
-    last_yr  = max(y for y in common_yrs_s if not pd.isna(st_saugus.get(y, float('nan'))))
-    ax_r.annotate(f"{st_saugus[first_yr]:.1f}", (first_yr, st_saugus[first_yr]),
-                  textcoords="offset points", xytext=(4, 4), fontsize=8, color=_GOLD)
-    ax_r.annotate(f"{st_saugus[last_yr]:.1f}", (last_yr, st_saugus[last_yr]),
-                  textcoords="offset points", xytext=(-28, -12), fontsize=8, color=_GOLD)
-
-    ax_r.set_xlabel("School year")
-    ax_r.set_ylabel("Teacher FTE per 1,000 students")
-    ax_r.set_title("Teacher Density\n(DESE Staffing + Enrollment)", fontsize=9)
-    ax_r.legend(fontsize=8)
-    ax_r.grid(alpha=0.25)
-
-    # Ridge cross-validation note — numbers computed live (compute_ridge_validation)
-    _peer_note = (f"Peer set: median of {len(PEER_TOWNS)} demographically similar MA towns "
-                  f"within standardized-Mahalanobis d_M ≤ {DEMO_SIM_THRESHOLD:g}σ of Saugus on the "
-                  f"6 demographic features (median_hh_income, equalized_income, low_income_pct, "
-                  f"total_enrollment, pct_bachelors_plus, ell_pct). Same similarity rule as the "
-                  f"Optimum Profile page; peers derived, not hand-picked; all similar towns, not "
-                  f"only better-performing ones.")
-    if ridge_stats:
-        _focus_desc = _feat_meta(ridge_stats["focus"])[0].lower()
-        _rank_phrase = (f"the #1 of {ridge_stats['n_features']} standardized predictors"
-                        if ridge_stats["is_top"]
-                        else f"#{ridge_stats['focus_rank']} of "
-                             f"{ridge_stats['n_features']} standardized predictors")
-        # Branch on whether Ridge actually agrees with RBP.  When absenteeism
-        # ranks LOW in the linear model but HIGH in RBP, that is a divergence, not
-        # corroboration — and it is the paper's whole point (a linear coefficient
-        # and RBP's interaction-aware importance measure different things).
-        if ridge_stats["is_top"]:
-            _agreement = ("corroborating the RBP Exhibit 5 ranking by an independent "
-                          "linear method")
-        else:
-            _agreement = (
-                f"a divergence to read with care: a linear model assigns {_focus_desc} a "
-                f"small standardized coefficient while RBP's Exhibit 5 ranks it among the top "
-                f"factors.  Some of this is what RBP is built to catch — nonlinear / interaction "
-                f"effects a single linear coefficient misses — but some is mechanical: RBP "
-                f"importance is task-specific and is elevated for any feature on which the "
-                f"subject town is an outlier, and Saugus sits well into the upper tail of the "
-                f"statewide distribution on {_focus_desc}.  A high RBP rank therefore sharpens Saugus's "
-                f"prediction; on its own it is not evidence that {_focus_desc} is a uniquely "
-                f"powerful driver")
-        _validation = (
-            f"Independent cross-validation (computed in this run): standardized Ridge "
-            f"regression on {ridge_stats['n']} MA districts (5-fold CV R²="
-            f"{ridge_stats['r2']:.2f}) ranks {_focus_desc} {_rank_phrase} of MCAS 3–8 "
-            f"(|standardized β|={ridge_stats['focus_abs_beta']:.2f}) — {_agreement}."
-        )
-    else:
-        _validation = (
-            "Independent cross-validation: a standardized Ridge regression on the same "
-            "district panel cross-checks the RBP Exhibit 5 ranking (figures unavailable "
-            "in this run)."
-        )
-    # Two stacked paragraphs (validation, then peer-set) — pre-wrapped and joined
-    # with a carriage return so the block stays tidy and clear of the x-axis labels.
-    _note = (textwrap.fill(_validation, width=185) + "\n"
-             + textwrap.fill(_peer_note, width=185))
-    fig.text(0.5, 0.008, _note, ha="center", va="bottom", fontsize=6.0,
-             color=_GREY, style="italic", linespacing=1.3)
-
-    plt.tight_layout(rect=[0, 0.15, 1, 0.91])
-    _save(pdf, fig)
-
-
-def page_fixed_costs(pdf, engine, fiscal_year: int) -> None:
-    """
-    Four-panel page: where Saugus's fixed costs come from, vs comparable
-    towns ($80–$140M budget) and all MA.
-
-    Panels:
-      TL — Fixed costs as % of total budget (3-bar comparison)
-      TR — Education as % of total budget (3-bar comparison)
-      BL — Fixed cost 3-component composition: HI / OPEB trust contrib / Remainder
-      BR — Saugus OPEB trust contributions trend FY2012–latest vs comparable avg
-
-    The cross-sectional snapshot bars use `fiscal_year` — the same year as the
-    RBP cross-section (df.attrs['analysis_fiscal_year']) — so the Education-share
-    figure here matches the "Education Budget Share" outcome modelled elsewhere.
-    Only the BR trend panel runs through the latest year.
-
-    Verification: expenditure column sums equal total_expenditures exactly for
-    every statewide municipality-year (count printed live in the footer); health
-    insurance is excluded where HI > fixed_costs × 1.01 (~0.9% of town-years,
-    likely cross-fund accounting).
-    """
-    from sqlalchemy import text as _text
-
-    FY = fiscal_year
-    COMPARABLE_LO = 80e6
-    COMPARABLE_HI = 140e6
-
-    with engine.connect() as conn:
-        cross = pd.read_sql(_text("""
-            SELECT e.municipality,
-                   e.fixed_costs, e.education, e.total_expenditures,
-                   COALESCE(h.health_insurance_expenditure, 0)              AS hi,
-                   COALESCE(tf.opeb_trust, 0)                               AS opeb_contrib,
-                   COALESCE(tf.workers_compensation, 0)                     AS wkcomp_contrib,
-                   e.fixed_costs
-                       - COALESCE(h.health_insurance_expenditure, 0)
-                       - COALESCE(tf.opeb_trust, 0)
-                       - COALESCE(tf.workers_compensation, 0)               AS remainder,
-                   CASE WHEN h.health_insurance_expenditure IS NOT NULL
-                              AND h.health_insurance_expenditure > 0
-                        THEN 1 ELSE 0 END                                   AS has_hi
-            FROM municipal_expenditures e
-            LEFT JOIN municipal_health_insurance h
-                ON h.dor_code = e.dor_code AND h.fiscal_year = e.fiscal_year
-            LEFT JOIN municipal_trust_funds tf
-                ON tf.dor_code = e.dor_code AND tf.fiscal_year = e.fiscal_year
-               AND tf.amount_type = 'Revenues'
-            WHERE e.fiscal_year = :fy
-              AND e.total_expenditures > 0
-              AND (h.health_insurance_expenditure IS NULL
-                   OR h.health_insurance_expenditure <= e.fixed_costs * 1.01)
-        """), conn, params={"fy": FY})
-
-        trend = pd.read_sql(_text("""
-            SELECT e.fiscal_year,
-                   e.fixed_costs, e.education, e.total_expenditures,
-                   COALESCE(h.health_insurance_expenditure, 0)             AS hi,
-                   COALESCE(tf.opeb_trust, 0)                              AS opeb_contrib,
-                   COALESCE(s.total_stabilization_fund_balance, 0)         AS stbl,
-                   COALESCE(f.cert_free_cash, 0)                           AS free_cash
-            FROM municipal_expenditures e
-            LEFT JOIN municipal_health_insurance h
-                ON h.dor_code = e.dor_code AND h.fiscal_year = e.fiscal_year
-            LEFT JOIN municipal_trust_funds tf
-                ON tf.dor_code = e.dor_code AND tf.fiscal_year = e.fiscal_year
-               AND tf.amount_type = 'Revenues'
-            LEFT JOIN municipal_stabilization s
-                ON s.dor_code = e.dor_code AND s.fiscal_year = e.fiscal_year
-            LEFT JOIN municipal_free_cash f
-                ON f.dor_code = e.dor_code AND f.fiscal_year = e.fiscal_year
-            WHERE lower(e.municipality) = 'saugus'
-              AND e.fiscal_year BETWEEN 2012 AND 2025
-            ORDER BY e.fiscal_year
-        """), conn)
-
-        # Comparable town OPEB contributions over time (for BR panel reference band)
-        comp_opeb_trend = pd.read_sql(_text("""
-            SELECT tf.fiscal_year,
-                   AVG(tf.opeb_trust) / 1e6 AS avg_opeb_m,
-                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tf.opeb_trust) / 1e6 AS med_opeb_m
-            FROM municipal_trust_funds tf
-            JOIN municipal_expenditures me
-                ON me.dor_code = tf.dor_code AND me.fiscal_year = tf.fiscal_year
-            WHERE tf.amount_type = 'Revenues'
-              AND tf.fiscal_year BETWEEN 2012 AND 2025
-              AND me.total_expenditures BETWEEN 80000000 AND 140000000
-            GROUP BY tf.fiscal_year
-            ORDER BY tf.fiscal_year
-        """), conn)
-
-        # Town-years backing the column-sum verification (whole available panel).
-        n_townyears = conn.execute(_text(
-            "SELECT COUNT(*) FROM municipal_expenditures WHERE total_expenditures > 0"
-        )).scalar()
-
-    # ── Derived groups ─────────────────────────────────────────────────────────
-    saugus = cross[cross["municipality"].str.lower() == "saugus"].iloc[0]
-    comp   = cross[cross["total_expenditures"].between(COMPARABLE_LO, COMPARABLE_HI)]
-    n_comp = len(comp)
-    n_all  = len(cross)
-
-    def _pct(num, denom):
-        return float(num / denom * 100) if denom else float("nan")
-
-    saugus_fc_pct  = _pct(saugus["fixed_costs"], saugus["total_expenditures"])
-    saugus_ed_pct  = _pct(saugus["education"],   saugus["total_expenditures"])
-
-    comp_fc_pct  = float((comp["fixed_costs"] / comp["total_expenditures"] * 100).mean())
-    comp_ed_pct  = float((comp["education"]   / comp["total_expenditures"] * 100).mean())
-    comp_avg_hi   = float(comp.loc[comp["has_hi"] == 1, "hi"].mean())
-    comp_avg_opeb = float(comp["opeb_contrib"].mean())
-    comp_avg_rem  = float(comp["remainder"].mean())
-    comp_avg_fc   = float(comp["fixed_costs"].mean())
-
-    all_fc_pct  = float((cross["fixed_costs"] / cross["total_expenditures"] * 100).mean())
-    all_ed_pct  = float((cross["education"]   / cross["total_expenditures"] * 100).mean())
-    all_avg_hi   = float(cross.loc[cross["has_hi"] == 1, "hi"].mean())
-    all_avg_opeb = float(cross["opeb_contrib"].mean())
-    all_avg_rem  = float(cross["remainder"].mean())
-    all_avg_fc   = float(cross["fixed_costs"].mean())
-
-    saugus_hi   = float(saugus["hi"])
-    saugus_opeb = float(saugus["opeb_contrib"])
-    saugus_rem  = float(saugus["remainder"])
-    saugus_fc   = float(saugus["fixed_costs"])
-
-    # ── Layout ─────────────────────────────────────────────────────────────────
-    fig, axes = _paper_fig(2, 2, gridspec_kw={"hspace": 0.65, "wspace": 0.38})
-    ((ax_tl, ax_tr), (ax_bl, ax_br)) = axes
-
-    _header(
-        fig,
-        "Fixed Costs: Sources, Scale, and OPEB Prefunding",
-        f"FY{FY} · Comparable = {n_comp} MA towns ($80M–$140M) · All MA = {n_all} · "
-        f"Columns sum exactly to total for all {n_townyears:,} statewide municipality-years",
-    )
-
-    LABELS   = ["Saugus", f"Comparable\n(n={n_comp})", f"All MA\n(n={n_all})"]
-    COLORS   = [_GOLD, _BLUE, _GREY]
-    BAR_H    = 0.45
-
-    # ── TL: Fixed costs % of budget ───────────────────────────────────────────
-    fc_vals = [saugus_fc_pct, comp_fc_pct, all_fc_pct]
-    bars = ax_tl.barh(LABELS, fc_vals, height=BAR_H, color=COLORS, alpha=0.85)
-    for bar, val in zip(bars, fc_vals):
-        ax_tl.text(val + 0.3, bar.get_y() + bar.get_height() / 2,
-                   f"{val:.1f}%", va="center", ha="left", fontsize=9,
-                   fontweight="bold" if val == saugus_fc_pct else "normal")
-    ax_tl.set_xlabel("% of total municipal expenditure")
-    ax_tl.set_title(f"Fixed Costs as % of Budget (FY{FY})", fontsize=9)
-    ax_tl.grid(axis="x", alpha=0.25)
-    ax_tl.set_xlim(0, max(fc_vals) * 1.25)
-
-    # ── TR: Education % of budget ─────────────────────────────────────────────
-    ed_vals = [saugus_ed_pct, comp_ed_pct, all_ed_pct]
-    bars2 = ax_tr.barh(LABELS, ed_vals, height=BAR_H, color=COLORS, alpha=0.85)
-    for bar, val in zip(bars2, ed_vals):
-        ax_tr.text(val + 0.3, bar.get_y() + bar.get_height() / 2,
-                   f"{val:.1f}%", va="center", ha="left", fontsize=9,
-                   fontweight="bold" if val == saugus_ed_pct else "normal")
-    ax_tr.set_xlabel("% of total municipal expenditure")
-    ax_tr.set_title(f"Education as % of Budget (FY{FY})", fontsize=9)
-    ax_tr.grid(axis="x", alpha=0.25)
-    ax_tr.set_xlim(0, max(ed_vals) * 1.20)
-
-    # ── BL: Fixed cost composition — 3-component stacked bars ─────────────────
-    # Components: Health Insurance | OPEB trust contributions | Remainder
-    hi_vals   = [saugus_hi   / 1e6, comp_avg_hi   / 1e6, all_avg_hi   / 1e6]
-    opeb_vals = [saugus_opeb / 1e6, comp_avg_opeb / 1e6, all_avg_opeb / 1e6]
-    rem_vals  = [saugus_rem  / 1e6, comp_avg_rem  / 1e6, all_avg_rem  / 1e6]
-    fc_totals = [saugus_fc   / 1e6, comp_avg_fc   / 1e6, all_avg_fc   / 1e6]
-
-    C_HI   = "#5B84C4"   # lighter blue
-    C_OPEB = "#B7950B"   # gold
-    C_REM  = "#2C4770"   # dark blue
-
-    y_pos = list(range(len(LABELS)))
-    ax_bl.barh(y_pos, hi_vals,   height=BAR_H, color=C_HI,   alpha=0.90,
-               label="Health insurance")
-    ax_bl.barh(y_pos, opeb_vals, height=BAR_H, left=hi_vals, color=C_OPEB, alpha=0.90,
-               label="OPEB prefunding")
-    left2 = [h + o for h, o in zip(hi_vals, opeb_vals)]
-    ax_bl.barh(y_pos, rem_vals,  height=BAR_H, left=left2,   color=C_REM,  alpha=0.85,
-               label="Remainder (pension + other)")
-    ax_bl.set_yticks(y_pos)
-    ax_bl.set_yticklabels(LABELS)
-
-    for i, (hi, opeb, rem, total) in enumerate(zip(hi_vals, opeb_vals, rem_vals, fc_totals)):
-        hi_pct   = hi   / total * 100 if total else 0
-        opeb_pct = opeb / total * 100 if total else 0
-        rem_pct  = rem  / total * 100 if total else 0
-        if hi > 0.8:
-            ax_bl.text(hi / 2, i, f"${hi:.1f}M\n({hi_pct:.0f}%)",
-                       ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
-        # Only label OPEB inside the bar if it occupies ≥4% of bar width; otherwise annotate above
-        if opeb_pct >= 4:
-            lbl = f"${opeb:.1f}M\n({opeb_pct:.0f}%)"
-            ax_bl.text(hi + opeb / 2, i, lbl,
-                       ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
-        elif opeb > 0:
-            opeb_str = f"${opeb*1000:.0f}K" if opeb < 1 else f"${opeb:.1f}M"
-            ax_bl.annotate(
-                f"OPEB {opeb_str}\n({opeb_pct:.1f}%)",
-                xy=(hi + opeb / 2, i), xytext=(hi + opeb / 2, i + 0.32),
-                fontsize=6.5, color=C_OPEB, ha="center",
-                arrowprops=dict(arrowstyle="-", color=C_OPEB, lw=0.6),
-            )
-        else:
-            ax_bl.text(hi + opeb + 0.05, i + 0.30, "OPEB $0",
-                       va="bottom", fontsize=6.5, color=C_OPEB, style="italic")
-        if rem > 0.5:
-            ax_bl.text(hi + opeb + rem / 2, i, f"${rem:.1f}M\n({rem_pct:.0f}%)",
-                       ha="center", va="center", fontsize=7.5, color="white")
-        ax_bl.text(total + 0.15, i, f"${total:.1f}M", va="center", fontsize=8)
-
-    ax_bl.set_xlabel("$ millions")
-    ax_bl.set_title(f"Fixed Cost Composition (FY{FY})\n"
-                    "HI  |  OPEB trust contributions  |  Remainder", fontsize=8.5)
-    # Color legend intentionally omitted: the subtitle above already names the three
-    # segments left-to-right in bar order (HI / OPEB / Remainder), and the gold OPEB
-    # callout labels that slice — a separate legend below the axis only collided with
-    # the data-source footer.
-    ax_bl.grid(axis="x", alpha=0.25)
-    ax_bl.set_xlim(0, max(fc_totals) * 1.30)
-
-    # ── BR: OPEB trust contribution trend — Saugus vs comparable peers ────────
-    yrs_t      = trend["fiscal_year"].tolist()
-    saugus_opeb_t = (trend["opeb_contrib"] / 1e3).tolist()   # thousands
-
-    comp_yrs  = comp_opeb_trend["fiscal_year"].tolist()
-    comp_avg_t = (comp_opeb_trend["avg_opeb_m"] * 1e3).tolist()  # back to thousands
-    comp_med_t = (comp_opeb_trend["med_opeb_m"] * 1e3).tolist()
-
-    ax_br.bar(yrs_t, saugus_opeb_t, color=_GOLD, alpha=0.85, label="Saugus OPEB contribution")
-    ax_br.plot(comp_yrs, comp_avg_t, color=_BLUE, lw=1.5, ls="--", label=f"Comparable avg (n={n_comp})")
-    ax_br.plot(comp_yrs, comp_med_t, color=_GREY, lw=1.2, ls=":", label="Comparable median")
-
-    ax_br.set_xlabel("Fiscal year")
-    ax_br.set_ylabel("$ thousands")
-    ax_br.set_title(f"OPEB Trust Fund Contributions FY{yrs_t[0]}–{yrs_t[-1]}\n"
-                    "Saugus vs. comparable towns ($80M–$140M budget)", fontsize=8.5)
-    ax_br.legend(fontsize=7.5, loc="upper left")
-    ax_br.grid(alpha=0.25)
-    ax_br.set_ylim(bottom=0)
-    ax_br.yaxis.set_major_formatter(
-        plt.FuncFormatter(lambda x, _: f"${x:,.0f}K")
-    )
-
-    # Annotate Saugus's most recent OPEB bar (latest trend year)
-    last_yr  = yrs_t[-1]
-    last_val = saugus_opeb_t[-1]
-    ax_br.annotate(
-        f"${last_val:,.0f}K\n(FY{last_yr})",
-        (last_yr, last_val),
-        xytext=(-4, 6), textcoords="offset points",
-        fontsize=7.5, color=_GOLD, fontweight="bold", ha="right",
-    )
-
-    # Live figures for the footnote so they track the data, not a fixed year.
-    _prefund_yrs = [y for y, v in zip(yrs_t, saugus_opeb_t) if v > 0]
-    _prefund_start = _prefund_yrs[0] if _prefund_yrs else last_yr
-    _comp_avg_last = comp_avg_t[-1] if comp_avg_t else float("nan")  # $ thousands
-    _footer(
-        fig,
-        "Health insurance from DLS Schedule A Part 2 & 6 (self-insured municipalities). "
-        "OPEB & workers comp contributions from Schedule A Part 6 trust fund revenues (municipal_trust_funds, Revenues). "
-        "Remainder = pension assessment (Essex Regional Retirement System) + workers comp insurance + unemployment + other. "
-        f"Saugus began OPEB prefunding in FY{_prefund_start}; FY{last_yr} contribution = ${last_val:,.0f}K "
-        f"vs. comparable-town avg ~${_comp_avg_last:,.0f}K."
-    )
-
-    # Reserve a bottom band for the ~3-line data-source footer (no legend competes
-    # for it now).
-    plt.tight_layout(rect=[0, 0.10, 1, 0.86])
     _save(pdf, fig)
 
 
@@ -2105,11 +1555,9 @@ def page_what_overachievers_did(pdf, label: str, target: str,
             "values vs Saugus, ordered by where Saugus is furthest from these peers "
             "(gap measured in standard deviations, so different-unit factors compare)")
 
-    # ── Left: heatmap of feature values (z-scored relative to all districts) ──
+    # ── Left: factor comparison table (Saugus vs peer values) ──
     ax_l.axis("off")
     saugus_vals = feat_df.loc["Saugus", feats_ordered]
-    mu  = feat_df[feats_ordered].mean()
-    std = feat_df[feats_ordered].std().replace(0, 1)
 
     def _fmt(v):
         """Compact number format: large values as XM / X.XB to prevent overflow."""
@@ -2121,13 +1569,10 @@ def page_what_overachievers_did(pdf, label: str, target: str,
         if av >= 10:   return f"{v:.1f}"
         return f"{v:.2f}"
 
-    # 2 comparison towns leaves room to widen the Factor column so the full
-    # factor labels fit without colliding with the values.  Town names use a
-    # graceful ellipsis only when genuinely long, rather than a hard 9-char cut.
-    # Only a couple of example towns fit as columns, so add a "Peer med" column —
-    # the median of ALL the comparable better-performing towns — so the reader sees
-    # the typical peer value, not just the examples.  Median (not mean) matches the
-    # synthesis page's "Peer median" for the same set, so the numbers agree.
+    # Two example towns as columns (keeps the Factor column wide enough for full
+    # labels), plus a "Peer med" column = median of ALL comparable better-performing
+    # towns.  Median (not mean) matches the synthesis page's "Peer median" so the
+    # two pages agree.
     n_compare = min(2, len(oa_names))
     col_names = (["Factor", "Saugus"] +
                  [_shorten(n, 11) for n in oa_names[:n_compare]] +
@@ -2640,33 +2085,19 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
-# What is a "factor"?
+# Tier gating — the one application-layer decision layered on top of RBP
 # ─────────────────────────────────────────────────────────────────────────────
-# A factor is a single measurable quantity per district that the model can use
-# as a predictor.  It is either:
-#   • a RAW column straight from the data (e.g. chronic_absenteeism_pct,
-#     avg_teacher_salary), or
-#   • a CALCULATED ratio/share derived from several columns and normalized so a
-#     big town and a small town are comparable (e.g. instructional_share =
-#     classroom spending ÷ total in-district spending).  Normalizing is what
-#     keeps a factor from just proxying town size or wealth.
+# Every factor is defined once in the library (analysis/factors.py) and carries a
+# TIER: 1 = directly votable, 2 = policy/management (together "actionable" — what a
+# town DOES), 3 = structural (what a community IS: income, poverty, size).
 #
-# Every factor carries a TIER that fixes how the model may use it:
-#   • Tier 1 — directly votable (Town Meeting / ballot)      ┐ "actionable":
-#   • Tier 2 — policy / management (administration decides)  ┘  what a town DOES
-#   • Tier 3 — structural: what a community IS (income, poverty, size).  Used
-#     ONLY to match Saugus to comparable peer towns, never ranked as a lever —
-#     a town cannot vote to change who it is.
-#
-# ─────────────────────────────────────────────────────────────────────────────
 # RBP is tier-blind — it treats every column identically — so we impose the
-# Tier 3 (structural) vs Tier 1/2 (actionable) distinction by CHOOSING which
-# columns enter each run.  Every factor is DEFINED once in the library
-# (analysis/factors.py); each REPORT then selects its own factors explicitly in the
-# MODELS section below, so this module keeps no shared pool.  Structural traits
-# still match Saugus to comparable towns (they dominate the RBP covariance); the
-# Exhibit-5 importance is read only for the Tier-1/2 levers a town can change.
-# The tier of any factor is available at runtime via factors.tier_of / is_structural.
+# actionable-vs-structural distinction by CHOOSING which columns enter each run:
+# structural traits match Saugus to comparable peers (they dominate the RBP
+# covariance), while the Exhibit-5 importance is read only for the Tier-1/2 levers
+# a town can act on.  Each report selects its own factors explicitly in the MODELS
+# section below, so this module keeps no shared pool.  Tiers are available at
+# runtime via factors.tier_of / is_structural.
 
 
 def _display_features(features) -> list:
@@ -2726,8 +2157,6 @@ def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
     d = F.derive_factors(d)
     return d.drop(columns=["_k", "eqv_per_capita", "muni_pop", "req_nss_pp", "health_ins"],
                   errors="ignore")
-
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2956,8 +2385,7 @@ def _run_one_model(args: tuple) -> dict:
         saugus = analyze_saugus(df_raw, candidates, target, n_random_cells)
         _p(f"  predicted={saugus['pred_pct']:.1f}  actual={saugus['actual_pct']:.1f}  "
            f"gap={saugus['gap_pp']:+.1f}pp")
-        # The canonical descriptive importance (Step 1) is reused by every page,
-        # so the all-candidate chart and the Saugus chart are identical.
+        # The canonical descriptive importance (Step 1) is reused by every page.
         if saugus is not None:
             saugus["display_importance"]     = full_importance
             saugus["importance_top3_stable"] = imp_stats["top3_stable"]
@@ -3033,17 +2461,6 @@ def _build_actionable_report(pdf, results, df_raw, engine):
             page_what_overachievers_did(pdf, r["label"], r["target"],
                                         r["saugus"], df_raw,
                                         r.get("lean_features", r["features"]))
-    # ── Temporarily hidden (re-enable by uncommenting) ───────────────────────
-    # "Budget Allocation & Teacher Density" and "Fixed Costs: Sources, Scale, and
-    # OPEB Prefunding" pages are hidden for now at the user's request.  The Ridge
-    # cross-check is only consumed by the budget/staffing page, so it is skipped
-    # too while that page is hidden.
-    # _mcas_r = next((r for r in results if r.get("target") == "avg_mcas"), None)
-    # _ridge_stats = (compute_ridge_validation(
-    #     df_raw, _mcas_r.get("all_candidates", _mcas_r["features"]), "avg_mcas")
-    #     if _mcas_r else None)
-    # page_budget_and_staffing(pdf, engine, results, df_raw, _ridge_stats)
-    # page_fixed_costs(pdf, engine, _fy)   # snapshot pinned to the cross-section year
     page_optimum_profile(pdf, results, df_raw)
 
 
@@ -3091,7 +2508,7 @@ def main(fast: bool = False, parallel: bool = False):
     # ── Write PDF (write to /tmp first, then copy to avoid network timeouts) ──
     import tempfile, shutil as _shutil
     _tmp_pdf = Path(tempfile.gettempdir()) / "saugus_factor_analysis.pdf"
-    print(f"\n[factor_analysis] Writing PDF...")
+    print("\n[factor_analysis] Writing PDF...")
     with PdfPages(str(_tmp_pdf)) as pdf:
         _build_actionable_report(pdf, results, df_raw, engine)
 
