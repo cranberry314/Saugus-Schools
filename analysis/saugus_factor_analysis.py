@@ -75,7 +75,161 @@ MIN_COVERAGE   = 0.60   # feature must have data for ≥60 % of districts
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1.  Comprehensive feature loader
+# 1.  Factor models — the control panel (edit here to change a report)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tier gating — the one application-layer decision layered on top of RBP
+# ─────────────────────────────────────────────────────────────────────────────
+# Every factor is defined once in the library (analysis/factors.py) and carries a
+# TIER: 1 = directly votable, 2 = policy/management (together "actionable" — what a
+# town DOES), 3 = structural (what a community IS: income, poverty, size).
+#
+# RBP is tier-blind — it treats every column identically — so we impose the
+# actionable-vs-structural distinction by CHOOSING which columns enter each run:
+# structural traits match Saugus to comparable peers (they dominate the RBP
+# covariance), while the Exhibit-5 importance is read only for the Tier-1/2 levers
+# a town can act on.  Each report selects its own factors explicitly in the MODELS
+# section below, so this module keeps no shared pool.  Tiers are available at
+# runtime via factors.tier_of / is_structural.
+
+
+MODEL_MCAS_3_8 = {
+    "label":  "MCAS Grades 3–8",
+    "target": "avg_mcas",          # PREDICT: % of grades 3–8 meeting/exceeding (ELA+Math)
+    "target_pct": True,
+    "desc":   "% students meeting/exceeding (ELA + Math, grades 3–8)",
+    "factors": [
+        # ── Tier 1 — votable (Town Meeting / ballot) ──────────────────────────
+        F.ed_budget_share,             # Town Meeting allocation to schools
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
+        # ── Tier 2 — managed (administration) ─────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context; never ranked) ──────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+MODEL_DROPOUT = {
+    "label":  "Dropout Rate",
+    "target": "dropout_pct",       # PREDICT: % of students dropping out of high school
+    "target_pct": False,
+    "desc":   "% students dropping out of high school",
+    "factors": [
+        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        F.ed_budget_share,             # Town Meeting allocation to schools
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        #   fixed_costs_pct omitted: municipal crowd-out, not a dropout lever
+        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement (leading dropout signal)
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+MODEL_MCAS_10 = {
+    "label":  "MCAS Grade 10 (ELA)",
+    "target": "mcas10_ela",        # PREDICT: % of grade-10 students meeting/exceeding on MCAS ELA
+    "target_pct": True,
+    "desc":   "% grade 10 students meeting/exceeding on MCAS ELA",
+    # (MCAS10 over SAT: mandatory for all → no self-selection, and no private-prep ceiling.)
+    "factors": [
+        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        F.ed_budget_share,             # Town Meeting allocation to schools
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
+        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+MODEL_ED_SHARE = {
+    "label":  "Education Budget Share",
+    "target": "ed_budget_share",   # PREDICT: education as % of total municipal budget
+    "target_pct": True,
+    "desc":   "Education as % of total municipal expenditure (MA DLS Schedule A)",
+    # ed_budget_share is the TARGET here, so it is not a factor.  fixed_costs_pct IS
+    # included — a competing budget line is a legitimate (upstream) predictor of what
+    # share is left for schools.  Academic outcomes are downstream of the budget, so
+    # they are not used.
+    "factors": [
+        # ── Tier 1 — votable ──────────────────────────────────────────────────
+        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
+        F.fixed_costs_pct,             # pensions/benefits/health — crowds out the school share
+        # ── Tier 2 — managed ──────────────────────────────────────────────────
+        F.chronic_absenteeism_pct,     # attendance / engagement
+        F.teachers_per_100_students,   # class size / staffing density
+        F.avg_teacher_salary,          # teacher pay level
+        F.instructional_share,         # share of the school dollar reaching the classroom
+        F.teachers_per_lowincome,      # staffing relative to need
+        F.teacher_pay_share,           # teacher share of the school dollar
+        # ── Tier 3 — structural (peer context) ────────────────────────────────
+        F.low_income_pct,              # student poverty
+        F.median_hh_income,            # household income
+        F.equalized_income,            # property wealth per capita
+        F.pct_bachelors_plus,          # adult education
+        F.pct_owner_occupied,          # housing tenure
+        F.ell_pct,                     # English-learner share
+        F.sped_pct,                    # special-education share
+        F.total_enrollment,            # district size
+        F.crime_rate,                  # community safety
+        F.health_ins_per_capita,       # municipal cost / wealth proxy
+    ],
+}
+
+# Postsecondary + SAT reports removed: Saugus is +9.8pp above prediction on
+# college-going (healthy, not a problem area), and SAT scores >~1200 reflect
+# private prep, not school quality.
+MODELS = [MODEL_MCAS_3_8, MODEL_DROPOUT, MODEL_MCAS_10, MODEL_ED_SHARE]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2.  Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
 def latest_analysis_year(engine) -> int:
@@ -273,8 +427,67 @@ def load_features(engine, school_year: int | None = None) -> pd.DataFrame:
     return df
 
 
+def _display_features(features) -> list:
+    """
+    Features to SHOW as drivers/factors in the narrative tables.  Tier-3 structural
+    traits define Saugus's peer group and are used for matching only — they are
+    hidden from the 'what to do' tables (tier read live from the factor library) so
+    the report surfaces what the town can actually change.  Order is preserved.
+    """
+    factors = [f for f in features if F.is_actionable(f)]
+    return factors or list(features)
+
+
+def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
+    """
+    Augment df_raw with the derived 'effort / intensity' factors used by the
+    tiered pool.  Two are pure df_raw ratios (no join); three need one extra
+    column each from the wider DB (latest non-null per municipality):
+        teachers_per_lowincome = teachers/100 ÷ low-income %        (need vs staffing)
+        teacher_pay_share = teacher $/pupil ÷ in-district PPE/pupil        (classroom share)
+        nss_per_eqv            = in-district PPE/pupil ÷ property wealth/capita  (effort vs wealth)
+        spend_vs_required  = in-district PPE/pupil ÷ Ch70 required NSS/pupil (effort vs floor)
+        health_ins_per_capita  = health insurance ÷ population       (cost drag)
+    """
+    from sqlalchemy import text as _text
+    d = df.copy()
+    d["_k"] = d["district_name"].str.lower().str.strip()
+
+    # Pin external joins to the cross-section year: take each town's latest row
+    # AT OR BEFORE the analysis year, never future years, so a derived ratio can't
+    # blend an FY2024 numerator with an FY2026/27 denominator (e.g. spend_vs_required
+    # = FY2024 PPE ÷ required-NSS must divide by the FY2024 required-NSS).
+    ay = df.attrs.get("analysis_fiscal_year")
+    def latest(table, namecol, cols, notnull=None):
+        conds = []
+        if notnull:        conds.append(f"{notnull} IS NOT NULL")
+        if ay is not None: conds.append(f"fiscal_year <= {int(ay)}")
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        sql = (f"SELECT DISTINCT ON (lower({namecol})) lower({namecol}) AS _k, "
+               + ", ".join(cols) + f" FROM {table} {where} "
+               f"ORDER BY lower({namecol}), fiscal_year DESC")
+        with engine.connect() as c:
+            return pd.read_sql(_text(sql), c)
+
+    for t in (
+        latest("municipal_income_eqv", "municipality",
+               ["eqv_per_capita", "population AS muni_pop"]),
+        latest("district_chapter70", "district_name",
+               ["required_nss_per_pupil AS req_nss_pp"], notnull="required_nss_per_pupil"),
+        latest("municipal_health_insurance", "municipality",
+               ["health_insurance_expenditure AS health_ins"], notnull="health_insurance_expenditure"),
+    ):
+        d = d.merge(t, on="_k", how="left")
+
+    # Derived ratios come from the single definition in analysis/factors.py
+    # (name-tolerant: it resolves in_district_ppe/req_nss_pp/health_ins/muni_pop here).
+    d = F.derive_factors(d)
+    return d.drop(columns=["_k", "eqv_per_capita", "muni_pop", "req_nss_pp", "health_ins"],
+                  errors="ignore")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 2.  Saugus-specific RBP analysis
+# 3.  RBP analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Outcomes where a LOWER value is the better result, so a NEGATIVE LOO residual
@@ -488,8 +701,131 @@ def _display_importance(analysis: dict) -> pd.Series:
     return imp
 
 
+def _run_one_model(args: tuple) -> dict:
+    """
+    Top-level worker function — must be at module level to be picklable
+    on macOS (which uses 'spawn' for multiprocessing).
+
+    Implements the Kritzman (2024) approach directly — ONE run, all variables,
+    no pruning:
+      Step 1  — Canonical RBP importance (Exhibit 5): one dense-grid RBP with
+                ALL candidate features on the Saugus prediction task.  Importance
+                is read as a transparency diagnostic only — no features are
+                dropped (fn. 12: ≈0-importance features are diversified away and
+                do no harm).  A couple of check seeds confirm the top-3 is not a
+                Monte-Carlo artifact.
+      Step 2  — NO PRUNING.  The full candidate set is used for prediction,
+                ordered by |importance| for display purposes only.
+      Step 3  — Saugus RBP prediction + leave-one-out LOO r across all MA
+                districts (Saugus excluded from its own training set).
+    """
+    model, n_random_cells, random_state = args
+    tag    = model["label"]
+    target = model["target"]
+
+    def _p(msg):
+        print(f"[{tag}] {msg}", flush=True)
+
+    _p(f"Starting  (target={target!r})")
+    engine = get_engine()
+    df_raw = load_features(engine)
+    df_raw = add_actionable_factors(df_raw, engine)   # derived effort/intensity factors
+
+    # This report's explicit factor list (MODELS above) IS the candidate set.  Keep
+    # only factors that are present and adequately populated, so a hand-edit can't
+    # silently break a run; the target is never a factor.  We iterate df columns so
+    # the candidate ORDER is stable (the RBP grid samples by position).
+    wanted = {(f.name if hasattr(f, "name") else f) for f in model["factors"]}
+    candidates = [c for c in df_raw.columns
+                  if c in wanted and c != target
+                  and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
+                  and df_raw[c].dtype.kind in "fiu"]
+    _dropped = sorted(wanted - set(candidates) - {target})
+
+    # Show the pool grouped by tier — tiers pulled live from the factor library.
+    _by_tier = {1: [], 2: [], 3: [], None: []}
+    for c in sorted(candidates):
+        _by_tier[F.tier_of(c)].append(c)
+    _p(f"Realized candidates ({len(candidates)}):")
+    _p(f"    Tier 1 votable (ranked):          {_by_tier[1]}")
+    _p(f"    Tier 2 managed (ranked):          {_by_tier[2]}")
+    _p(f"    Tier 3 structural (peer context): {_by_tier[3]}")
+    if _by_tier[None]:
+        _p(f"    Uncatalogued:                     {_by_tier[None]}")
+    if _dropped:
+        _p(f"  dropped (missing / <{MIN_COVERAGE:.0%} coverage / non-numeric): {_dropped}")
+
+    # ── Step 1: Full RBP with all candidates (Kritzman Exhibit 5) ───────────
+    # Variable importance directly reveals which features contribute to
+    # prediction reliability — a transparency diagnostic, not a feature filter.
+    # This is the single canonical importance Series (one dense grid, the paper's
+    # procedure); every page reuses it.  A couple of check seeds verify the
+    # top-3 is not a Monte-Carlo artifact.
+    _p(f"Step 1: Canonical RBP importance over all {len(candidates)} candidates")
+    try:
+        imp_stats = saugus_importance(df_raw, candidates, target, n_random_cells)
+        full_importance = imp_stats["importance"]
+        _p(f"  Importance from canonical grid; top-3 seed-stable="
+           f"{imp_stats['top3_stable']} ({imp_stats['n_checks']} grids); "
+           f"top: {list(full_importance.index[:3])}")
+    except Exception as e:
+        _p(f"  Full model failed: {e}")
+        return {}
+
+    # ── Step 2: NO pruning — faithful to Kritzman ──────────────────────────
+    # The paper makes ONE RBP run using all variables; importance (Exhibit 5) is
+    # a transparency diagnostic, and fn. 12 notes that ≈0-importance variables
+    # are "diversified away," so they are NOT removed.  We therefore predict on
+    # the full candidate set.  `feature_set` is just the candidates ordered by
+    # |importance| for display — the ordering does not affect the prediction.
+    feature_set = (full_importance.reindex(candidates).abs()
+                   .sort_values(ascending=False).index.tolist())
+    _p(f"Step 2: No prune (Kritzman-faithful) — predicting on all "
+       f"{len(feature_set)} candidates")
+
+    # ── Step 3: Saugus RBP + LOO validation on the FULL candidate set ───────
+    _p("Step 3: Saugus RBP analysis + LOO (all candidates)")
+    try:
+        saugus = analyze_saugus(df_raw, candidates, target, n_random_cells)
+        _p(f"  predicted={saugus['pred_pct']:.1f}  actual={saugus['actual_pct']:.1f}  "
+           f"gap={saugus['gap_pp']:+.1f}pp")
+        # The canonical descriptive importance (Step 1) is reused by every page.
+        if saugus is not None:
+            saugus["display_importance"]     = full_importance
+            saugus["importance_top3_stable"] = imp_stats["top3_stable"]
+    except Exception as e:
+        _p(f"  Saugus analysis failed: {e}")
+        saugus = None
+
+    # Validation r comes from the SAME single LOO pass (no separate re-run).
+    if saugus is not None:
+        _loo = saugus["loo_df"].dropna(subset=["actual", "predicted"])
+        loo_score = (float(np.corrcoef(_loo["actual"], _loo["predicted"])[0, 1])
+                     if len(_loo) > 2 else float("nan"))
+    else:
+        loo_score = float("nan")
+    _p(f"  LOO r = {loo_score:.4f}")
+
+    _p("Done.")
+    return {
+        **model,
+        "all_candidates":   candidates,
+        "full_importance":  full_importance,
+        "importance_top3_stable": imp_stats["top3_stable"],
+        "n_random_cells":   n_random_cells,
+        # No prune: the feature set used for prediction IS the candidate set.
+        # 'lean_features'/'features' kept as keys for PDF backward-compat, now
+        # equal to all candidates (ordered by |importance| for display).
+        "lean_features":    feature_set,
+        "features":         feature_set,
+        "saugus":           saugus,
+        "loo_score":        loo_score,
+        "base_score":       loo_score,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 3.  Paper-format PDF
+# 4.  Display / PDF report
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PAGE_W = 11.0
@@ -2080,346 +2416,6 @@ def page_synthesis(pdf, label: str, target: str, analysis: dict,
     _save(pdf, fig)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4.  Main orchestration
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tier gating — the one application-layer decision layered on top of RBP
-# ─────────────────────────────────────────────────────────────────────────────
-# Every factor is defined once in the library (analysis/factors.py) and carries a
-# TIER: 1 = directly votable, 2 = policy/management (together "actionable" — what a
-# town DOES), 3 = structural (what a community IS: income, poverty, size).
-#
-# RBP is tier-blind — it treats every column identically — so we impose the
-# actionable-vs-structural distinction by CHOOSING which columns enter each run:
-# structural traits match Saugus to comparable peers (they dominate the RBP
-# covariance), while the Exhibit-5 importance is read only for the Tier-1/2 levers
-# a town can act on.  Each report selects its own factors explicitly in the MODELS
-# section below, so this module keeps no shared pool.  Tiers are available at
-# runtime via factors.tier_of / is_structural.
-
-
-def _display_features(features) -> list:
-    """
-    Features to SHOW as drivers/factors in the narrative tables.  Tier-3 structural
-    traits define Saugus's peer group and are used for matching only — they are
-    hidden from the 'what to do' tables (tier read live from the factor library) so
-    the report surfaces what the town can actually change.  Order is preserved.
-    """
-    factors = [f for f in features if F.is_actionable(f)]
-    return factors or list(features)
-
-
-def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
-    """
-    Augment df_raw with the derived 'effort / intensity' factors used by the
-    tiered pool.  Two are pure df_raw ratios (no join); three need one extra
-    column each from the wider DB (latest non-null per municipality):
-        teachers_per_lowincome = teachers/100 ÷ low-income %        (need vs staffing)
-        teacher_pay_share = teacher $/pupil ÷ in-district PPE/pupil        (classroom share)
-        nss_per_eqv            = in-district PPE/pupil ÷ property wealth/capita  (effort vs wealth)
-        spend_vs_required  = in-district PPE/pupil ÷ Ch70 required NSS/pupil (effort vs floor)
-        health_ins_per_capita  = health insurance ÷ population       (cost drag)
-    """
-    from sqlalchemy import text as _text
-    d = df.copy()
-    d["_k"] = d["district_name"].str.lower().str.strip()
-
-    # Pin external joins to the cross-section year: take each town's latest row
-    # AT OR BEFORE the analysis year, never future years, so a derived ratio can't
-    # blend an FY2024 numerator with an FY2026/27 denominator (e.g. spend_vs_required
-    # = FY2024 PPE ÷ required-NSS must divide by the FY2024 required-NSS).
-    ay = df.attrs.get("analysis_fiscal_year")
-    def latest(table, namecol, cols, notnull=None):
-        conds = []
-        if notnull:        conds.append(f"{notnull} IS NOT NULL")
-        if ay is not None: conds.append(f"fiscal_year <= {int(ay)}")
-        where = ("WHERE " + " AND ".join(conds)) if conds else ""
-        sql = (f"SELECT DISTINCT ON (lower({namecol})) lower({namecol}) AS _k, "
-               + ", ".join(cols) + f" FROM {table} {where} "
-               f"ORDER BY lower({namecol}), fiscal_year DESC")
-        with engine.connect() as c:
-            return pd.read_sql(_text(sql), c)
-
-    for t in (
-        latest("municipal_income_eqv", "municipality",
-               ["eqv_per_capita", "population AS muni_pop"]),
-        latest("district_chapter70", "district_name",
-               ["required_nss_per_pupil AS req_nss_pp"], notnull="required_nss_per_pupil"),
-        latest("municipal_health_insurance", "municipality",
-               ["health_insurance_expenditure AS health_ins"], notnull="health_insurance_expenditure"),
-    ):
-        d = d.merge(t, on="_k", how="left")
-
-    # Derived ratios come from the single definition in analysis/factors.py
-    # (name-tolerant: it resolves in_district_ppe/req_nss_pp/health_ins/muni_pop here).
-    d = F.derive_factors(d)
-    return d.drop(columns=["_k", "eqv_per_capita", "muni_pop", "req_nss_pp", "health_ins"],
-                  errors="ignore")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                    Factor Models: MCAS, Dropout, SAT, Grad Rate, Budget Share
-# ─────────────────────────────────────────────────────────────────────────────
-
-MODEL_MCAS_3_8 = {
-    "label":  "MCAS Grades 3–8",
-    "target": "avg_mcas",          # PREDICT: % of grades 3–8 meeting/exceeding (ELA+Math)
-    "target_pct": True,
-    "desc":   "% students meeting/exceeding (ELA + Math, grades 3–8)",
-    "factors": [
-        # ── Tier 1 — votable (Town Meeting / ballot) ──────────────────────────
-        F.ed_budget_share,             # Town Meeting allocation to schools
-        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
-        #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
-        # ── Tier 2 — managed (administration) ─────────────────────────────────
-        F.chronic_absenteeism_pct,     # attendance / engagement
-        F.teachers_per_100_students,   # class size / staffing density
-        F.avg_teacher_salary,          # teacher pay level
-        F.instructional_share,         # share of the school dollar reaching the classroom
-        F.teachers_per_lowincome,      # staffing relative to need
-        F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context; never ranked) ──────────────────
-        F.low_income_pct,              # student poverty
-        F.median_hh_income,            # household income
-        F.equalized_income,            # property wealth per capita
-        F.pct_bachelors_plus,          # adult education
-        F.pct_owner_occupied,          # housing tenure
-        F.ell_pct,                     # English-learner share
-        F.sped_pct,                    # special-education share
-        F.total_enrollment,            # district size
-        F.crime_rate,                  # community safety
-        F.health_ins_per_capita,       # municipal cost / wealth proxy
-    ],
-}
-
-MODEL_DROPOUT = {
-    "label":  "Dropout Rate",
-    "target": "dropout_pct",       # PREDICT: % of students dropping out of high school
-    "target_pct": False,
-    "desc":   "% students dropping out of high school",
-    "factors": [
-        # ── Tier 1 — votable ──────────────────────────────────────────────────
-        F.ed_budget_share,             # Town Meeting allocation to schools
-        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
-        #   fixed_costs_pct omitted: municipal crowd-out, not a dropout lever
-        # ── Tier 2 — managed ──────────────────────────────────────────────────
-        F.chronic_absenteeism_pct,     # attendance / engagement (leading dropout signal)
-        F.teachers_per_100_students,   # class size / staffing density
-        F.avg_teacher_salary,          # teacher pay level
-        F.instructional_share,         # share of the school dollar reaching the classroom
-        F.teachers_per_lowincome,      # staffing relative to need
-        F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context) ────────────────────────────────
-        F.low_income_pct,              # student poverty
-        F.median_hh_income,            # household income
-        F.equalized_income,            # property wealth per capita
-        F.pct_bachelors_plus,          # adult education
-        F.pct_owner_occupied,          # housing tenure
-        F.ell_pct,                     # English-learner share
-        F.sped_pct,                    # special-education share
-        F.total_enrollment,            # district size
-        F.crime_rate,                  # community safety
-        F.health_ins_per_capita,       # municipal cost / wealth proxy
-    ],
-}
-
-MODEL_MCAS_10 = {
-    "label":  "MCAS Grade 10 (ELA)",
-    "target": "mcas10_ela",        # PREDICT: % of grade-10 students meeting/exceeding on MCAS ELA
-    "target_pct": True,
-    "desc":   "% grade 10 students meeting/exceeding on MCAS ELA",
-    # (MCAS10 over SAT: mandatory for all → no self-selection, and no private-prep ceiling.)
-    "factors": [
-        # ── Tier 1 — votable ──────────────────────────────────────────────────
-        F.ed_budget_share,             # Town Meeting allocation to schools
-        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
-        #   fixed_costs_pct omitted: municipal crowd-out, not academically causal
-        # ── Tier 2 — managed ──────────────────────────────────────────────────
-        F.chronic_absenteeism_pct,     # attendance / engagement
-        F.teachers_per_100_students,   # class size / staffing density
-        F.avg_teacher_salary,          # teacher pay level
-        F.instructional_share,         # share of the school dollar reaching the classroom
-        F.teachers_per_lowincome,      # staffing relative to need
-        F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context) ────────────────────────────────
-        F.low_income_pct,              # student poverty
-        F.median_hh_income,            # household income
-        F.equalized_income,            # property wealth per capita
-        F.pct_bachelors_plus,          # adult education
-        F.pct_owner_occupied,          # housing tenure
-        F.ell_pct,                     # English-learner share
-        F.sped_pct,                    # special-education share
-        F.total_enrollment,            # district size
-        F.crime_rate,                  # community safety
-        F.health_ins_per_capita,       # municipal cost / wealth proxy
-    ],
-}
-
-MODEL_ED_SHARE = {
-    "label":  "Education Budget Share",
-    "target": "ed_budget_share",   # PREDICT: education as % of total municipal budget
-    "target_pct": True,
-    "desc":   "Education as % of total municipal expenditure (MA DLS Schedule A)",
-    # ed_budget_share is the TARGET here, so it is not a factor.  fixed_costs_pct IS
-    # included — a competing budget line is a legitimate (upstream) predictor of what
-    # share is left for schools.  Academic outcomes are downstream of the budget, so
-    # they are not used.
-    "factors": [
-        # ── Tier 1 — votable ──────────────────────────────────────────────────
-        F.spend_vs_required,           # spending above the Ch70 minimum (fund-more vote)
-        F.fixed_costs_pct,             # pensions/benefits/health — crowds out the school share
-        # ── Tier 2 — managed ──────────────────────────────────────────────────
-        F.chronic_absenteeism_pct,     # attendance / engagement
-        F.teachers_per_100_students,   # class size / staffing density
-        F.avg_teacher_salary,          # teacher pay level
-        F.instructional_share,         # share of the school dollar reaching the classroom
-        F.teachers_per_lowincome,      # staffing relative to need
-        F.teacher_pay_share,           # teacher share of the school dollar
-        # ── Tier 3 — structural (peer context) ────────────────────────────────
-        F.low_income_pct,              # student poverty
-        F.median_hh_income,            # household income
-        F.equalized_income,            # property wealth per capita
-        F.pct_bachelors_plus,          # adult education
-        F.pct_owner_occupied,          # housing tenure
-        F.ell_pct,                     # English-learner share
-        F.sped_pct,                    # special-education share
-        F.total_enrollment,            # district size
-        F.crime_rate,                  # community safety
-        F.health_ins_per_capita,       # municipal cost / wealth proxy
-    ],
-}
-
-# Postsecondary + SAT reports removed: Saugus is +9.8pp above prediction on
-# college-going (healthy, not a problem area), and SAT scores >~1200 reflect
-# private prep, not school quality.
-MODELS = [MODEL_MCAS_3_8, MODEL_DROPOUT, MODEL_MCAS_10, MODEL_ED_SHARE]
-
-
-def _run_one_model(args: tuple) -> dict:
-    """
-    Top-level worker function — must be at module level to be picklable
-    on macOS (which uses 'spawn' for multiprocessing).
-
-    Implements the Kritzman (2024) approach directly — ONE run, all variables,
-    no pruning:
-      Step 1  — Canonical RBP importance (Exhibit 5): one dense-grid RBP with
-                ALL candidate features on the Saugus prediction task.  Importance
-                is read as a transparency diagnostic only — no features are
-                dropped (fn. 12: ≈0-importance features are diversified away and
-                do no harm).  A couple of check seeds confirm the top-3 is not a
-                Monte-Carlo artifact.
-      Step 2  — NO PRUNING.  The full candidate set is used for prediction,
-                ordered by |importance| for display purposes only.
-      Step 3  — Saugus RBP prediction + leave-one-out LOO r across all MA
-                districts (Saugus excluded from its own training set).
-    """
-    model, n_random_cells, random_state = args
-    tag    = model["label"]
-    target = model["target"]
-
-    def _p(msg):
-        print(f"[{tag}] {msg}", flush=True)
-
-    _p(f"Starting  (target={target!r})")
-    engine = get_engine()
-    df_raw = load_features(engine)
-    df_raw = add_actionable_factors(df_raw, engine)   # derived effort/intensity factors
-
-    # This report's explicit factor list (MODELS above) IS the candidate set.  Keep
-    # only factors that are present and adequately populated, so a hand-edit can't
-    # silently break a run; the target is never a factor.  We iterate df columns so
-    # the candidate ORDER is stable (the RBP grid samples by position).
-    wanted = {(f.name if hasattr(f, "name") else f) for f in model["factors"]}
-    candidates = [c for c in df_raw.columns
-                  if c in wanted and c != target
-                  and df_raw[c].notna().sum() / len(df_raw) >= MIN_COVERAGE
-                  and df_raw[c].dtype.kind in "fiu"]
-    _dropped = sorted(wanted - set(candidates) - {target})
-
-    # Show the pool grouped by tier — tiers pulled live from the factor library.
-    _by_tier = {1: [], 2: [], 3: [], None: []}
-    for c in sorted(candidates):
-        _by_tier[F.tier_of(c)].append(c)
-    _p(f"Realized candidates ({len(candidates)}):")
-    _p(f"    Tier 1 votable (ranked):          {_by_tier[1]}")
-    _p(f"    Tier 2 managed (ranked):          {_by_tier[2]}")
-    _p(f"    Tier 3 structural (peer context): {_by_tier[3]}")
-    if _by_tier[None]:
-        _p(f"    Uncatalogued:                     {_by_tier[None]}")
-    if _dropped:
-        _p(f"  dropped (missing / <{MIN_COVERAGE:.0%} coverage / non-numeric): {_dropped}")
-
-    # ── Step 1: Full RBP with all candidates (Kritzman Exhibit 5) ───────────
-    # Variable importance directly reveals which features contribute to
-    # prediction reliability — a transparency diagnostic, not a feature filter.
-    # This is the single canonical importance Series (one dense grid, the paper's
-    # procedure); every page reuses it.  A couple of check seeds verify the
-    # top-3 is not a Monte-Carlo artifact.
-    _p(f"Step 1: Canonical RBP importance over all {len(candidates)} candidates")
-    try:
-        imp_stats = saugus_importance(df_raw, candidates, target, n_random_cells)
-        full_importance = imp_stats["importance"]
-        _p(f"  Importance from canonical grid; top-3 seed-stable="
-           f"{imp_stats['top3_stable']} ({imp_stats['n_checks']} grids); "
-           f"top: {list(full_importance.index[:3])}")
-    except Exception as e:
-        _p(f"  Full model failed: {e}")
-        return {}
-
-    # ── Step 2: NO pruning — faithful to Kritzman ──────────────────────────
-    # The paper makes ONE RBP run using all variables; importance (Exhibit 5) is
-    # a transparency diagnostic, and fn. 12 notes that ≈0-importance variables
-    # are "diversified away," so they are NOT removed.  We therefore predict on
-    # the full candidate set.  `feature_set` is just the candidates ordered by
-    # |importance| for display — the ordering does not affect the prediction.
-    feature_set = (full_importance.reindex(candidates).abs()
-                   .sort_values(ascending=False).index.tolist())
-    _p(f"Step 2: No prune (Kritzman-faithful) — predicting on all "
-       f"{len(feature_set)} candidates")
-
-    # ── Step 3: Saugus RBP + LOO validation on the FULL candidate set ───────
-    _p("Step 3: Saugus RBP analysis + LOO (all candidates)")
-    try:
-        saugus = analyze_saugus(df_raw, candidates, target, n_random_cells)
-        _p(f"  predicted={saugus['pred_pct']:.1f}  actual={saugus['actual_pct']:.1f}  "
-           f"gap={saugus['gap_pp']:+.1f}pp")
-        # The canonical descriptive importance (Step 1) is reused by every page.
-        if saugus is not None:
-            saugus["display_importance"]     = full_importance
-            saugus["importance_top3_stable"] = imp_stats["top3_stable"]
-    except Exception as e:
-        _p(f"  Saugus analysis failed: {e}")
-        saugus = None
-
-    # Validation r comes from the SAME single LOO pass (no separate re-run).
-    if saugus is not None:
-        _loo = saugus["loo_df"].dropna(subset=["actual", "predicted"])
-        loo_score = (float(np.corrcoef(_loo["actual"], _loo["predicted"])[0, 1])
-                     if len(_loo) > 2 else float("nan"))
-    else:
-        loo_score = float("nan")
-    _p(f"  LOO r = {loo_score:.4f}")
-
-    _p("Done.")
-    return {
-        **model,
-        "all_candidates":   candidates,
-        "full_importance":  full_importance,
-        "importance_top3_stable": imp_stats["top3_stable"],
-        "n_random_cells":   n_random_cells,
-        # No prune: the feature set used for prediction IS the candidate set.
-        # 'lean_features'/'features' kept as keys for PDF backward-compat, now
-        # equal to all candidates (ordered by |importance| for display).
-        "lean_features":    feature_set,
-        "features":         feature_set,
-        "saugus":           saugus,
-        "loo_score":        loo_score,
-        "base_score":       loo_score,
-    }
-
-
 def _build_actionable_report(pdf, results, df_raw, engine):
     """
     Lean, ACTIONABLE report — only pages that tell Saugus what it can change:
@@ -2463,6 +2459,10 @@ def _build_actionable_report(pdf, results, df_raw, engine):
                                         r.get("lean_features", r["features"]))
     page_optimum_profile(pdf, results, df_raw)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5.  Main (entrypoint)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main(fast: bool = False, parallel: bool = False):
     # n_random_cells = number of random grid CELLS sampled per prediction task,
