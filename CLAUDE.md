@@ -31,10 +31,12 @@ warehouse (`ma_school_data`); analyses read from it and emit PDF reports to
 The pipeline was deliberately de-duplicated. Do **not** re-derive these inline —
 import them:
 
+- `analysis/factors.py` — the factor **library**: every factor defined once as a
+  named `Factor` object (tier, formula, units), plus `derive_factors()`, which holds
+  **all** derived-ratio math in one place. Both the flagship report and the statewide
+  screen select from it. Add or re-tier a factor here, never inline.
 - `db/queries.py` — centralized feature/data queries for the flagship.
 - `analysis/inflation.py` — CPI deflation (shared, one implementation).
-- `analysis/peers.py` — Mahalanobis peer-distance math.
-- `analysis/panel.py` — district-year panel data layer.
 
 ## The flagship (RBP) and its discipline
 
@@ -46,14 +48,22 @@ Czasonis, Kritzman & Turkington (2024).
   kept; near-zero-importance factors are diversified away by relevance weighting,
   not deleted. Importance is diagnostic only. Do not "optimize" by dropping
   low-importance factors here.
-- **Factor selection happens elsewhere.** The statewide factor *screen* is the
-  place selection/discarding is allowed (it is method-plural and intentionally
-  NOT bound by Kritzman's no-pruning rule — its whole job is to sort and discard).
-  It nominates the curated pool the RBP report then consumes without pruning.
-  Keep these two roles separate.
+- **Factor selection happens elsewhere.** The statewide factor *screen*
+  (`factor_selection_scratch.py`, gitignored) is the place selection/discarding is
+  allowed (method-plural, intentionally NOT bound by Kritzman's no-pruning rule). It
+  nominates the curated factors the RBP report then consumes without pruning. Keep
+  these two roles separate.
+- **Each report is self-contained.** The four `MODEL_*` definitions in the flagship
+  each state their target and their explicit `factors` list (selected by reference
+  from `analysis/factors.py`). That list *is* the candidate set — no shared pool, no
+  exclusion bookkeeping. To change a report, edit its own list.
 - **Tiers:** Tier-3 = structural traits (what a town *is*: income, poverty,
-  enrollment) → used only for peer-matching. Tier-1/2 = actionable factors (what a
-  town *does*: staffing, pay, budget shares) → the factors actually ranked.
+  enrollment) → peer context only. Tier-1/2 = actionable factors (what a town
+  *does*: staffing, pay, budget shares) → the factors actually ranked. RBP itself is
+  tier-blind; tiers only shape how we read/display the output.
+- **The engine is verified.** `analysis/test_rbp_properties.py` checks `rbp.py`
+  against the paper's equations + convergence results — run it after any RBP change.
+  `rbp.py` is marked "Do Not Modify"; leave it unless explicitly asked.
 
 ## Terminology
 
@@ -91,7 +101,15 @@ Rebuild PDFs from cache without recompute via `--regen-pdf` where supported.
 
 ## Status
 
-- Working tree is the RBP flagship, post a consolidation/cleanup campaign.
+- The flagship (`rbp.py` + `factors.py` + `saugus_factor_analysis.py`) is being
+  prepared to share with **David Turkington** (a co-author of the RBP paper), so the
+  bar is a faithful implementation *and* clean, expert-readable code — not just a
+  working report. The earlier budget/staffing and fixed-cost report pages (and their
+  Ridge cross-check) have been removed to keep the flagship focused; recover them from
+  git history if needed.
+- Factors are fully centralized in `analysis/factors.py` (a library of 97 — 19
+  curated + 78 exploratory candidates flagged `curated=False`); each report selects
+  its own factors explicitly.
 - Work in progress: within-district fixed-effects **event study**
   (`analysis/event_study.py`) — the causal-leaning temporal complement to the
   cross-sectional RBP model. Not yet published.

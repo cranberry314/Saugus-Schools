@@ -65,6 +65,14 @@ This is me trying to understand the strengths and weaknesses in the Saugus schoo
    mostly proxy town size) were dropped in favor of normalized shares and ratios, one
    clean factor per factor-type. See [Chosen Factors](#chosen-factors) for the final set.
 
+   Every factor lives once in a **factor library** (`analysis/factors.py`) — a named
+   `Factor` object carrying its tier, formula, and units — and each report *selects*
+   the ones it uses by reference, so the definition can never drift from the usage.
+   The RBP engine itself is not taken on faith: `analysis/test_rbp_properties.py`
+   independently verifies `rbp.py` against the paper's equations and its two stated
+   convergence results (RBP → OLS; informativeness-weighted adjusted fit → R²),
+   passing across thousands of synthetic cases.
+
 5. **Synthesis** (`analysis/saugus_synthesis.py`) — combines the trajectory study,
    municipal finance report, and factor portfolio into a single
    narrative, generated in two modes from the same underlying data: a technical
@@ -110,12 +118,12 @@ Alternative to Neural Networks"* — see the module docstring for the full math
 (relevance, censoring, adjusted fit, and the reliability-weighted grid).
 
 `analysis/saugus_factor_analysis.py` runs RBP for four outcomes — MCAS Grades 3–8,
-MCAS Grade 10 (ELA), Dropout Rate, and Education Budget Share. For each outcome it
-runs a single RBP model over the full curated factor pool (10 Tier-3 structural +
-Tier-1/2 actionable factors — see [Chosen Factors](#chosen-factors)), with **no
-in-model pruning**, then predicts Saugus's value, validates it leave-one-out (LOO)
-across all MA districts, and identifies the most/least relevant comparison towns and
-the per-factor importance driving the prediction.
+MCAS Grade 10 (ELA), Dropout Rate, and Education Budget Share. Each report is
+self-contained (see its `MODEL_*` definition): its target outcome and the explicit
+list of factors it predicts from — 10 Tier-3 structural + Tier-1/2 actionable, drawn
+by reference from the factor library. With **no in-model pruning**, it predicts
+Saugus's value, validates it leave-one-out (LOO) across all MA districts, and reports
+the per-factor importance and how comparable better-performing towns differ.
 
 ```bash
 source .venv/bin/activate
@@ -128,8 +136,7 @@ Output:
 - `Reports/saugus_factor_analysis.pdf` — factor definitions, a combined per-model
   standings summary, per-outcome "What This Means" pages (RBP importance-ranked
   actionable factors, the actual-vs-predicted scatter, and how comparable
-  better-performing towns differ), and the optimum-profile page.  (The
-  budget/staffing and fixed-cost pages are temporarily disabled in the build.)
+  better-performing towns differ), and the optimum-profile page.
 - `Reports/saugus_factor_analysis_results.csv` — machine-readable factor importances
 - `Reports/saugus_factor_analysis_cache.pkl` — cached results (used by `--regen-pdf`)
 
@@ -219,9 +226,14 @@ columns; seven are normalized ratios computed from public data.
 | `instructional_share` | 2 (managed) | Share of the school dollar reaching the classroom vs. overhead |
 | `teacher_pay_share` | 2 (managed) | Share of the school dollar going specifically to teacher pay |
 
-The derived actionable ratios are built by `add_actionable_factors()` in
-`analysis/saugus_factor_analysis.py`; the factor definitions and their formulas
-also appear on a dedicated page inside `Reports/saugus_factor_analysis.pdf`.
+Every factor above is defined **once** in the factor library (`analysis/factors.py`)
+as a named `Factor` object carrying its tier, formula, and units; the derived ratios
+are computed by `factors.derive_factors()`. Each report selects its factors from the
+library by reference (see the `MODEL_*` definitions in `saugus_factor_analysis.py`),
+so a definition can never drift from its use. The library also holds ~78 additional
+*exploratory* candidates that the statewide screen tests but no report has curated —
+flagged `curated=False`. The factor definitions and formulas also appear on a
+dedicated page inside `Reports/saugus_factor_analysis.pdf`.
 
 ---
 
@@ -345,8 +357,10 @@ Schools/
 ├── data_loader.py              # Annual data update orchestrator ← START HERE
 │
 ├── analysis/
-│   ├── saugus_factor_analysis.py      # ★ Flagship: RBP over the tiered factor pool + Saugus prediction (4 outcome models)
+│   ├── saugus_factor_analysis.py      # ★ Flagship: one RBP model per outcome (4 self-contained reports) + Saugus prediction
 │   ├── rbp.py                         # Reference implementation: Czasonis/Kritzman/Turkington (2024) RBP
+│   ├── factors.py                     # Factor LIBRARY — every factor defined once (tier, formula, units); reports select from it
+│   ├── test_rbp_properties.py         # Verifies rbp.py against the paper's equations + convergence results
 │   ├── saugus_synthesis.py            # Two-audience narrative report (--parent for community brief)
 │   ├── municipal_finance_report.py    # Municipal finance report generator (PDF)
 │   ├── peer_trajectory_study.py       # "What makes towns succeed" trajectory study
@@ -487,7 +501,7 @@ total fatalities, total injuries. Coverage: all ~350 MA municipalities, 2021–2
 | `analysis_runs` | One row per report generation |
 | `computed_peer_groups` | Peer towns selected per run |
 | `computed_metrics` | Key metrics saved per run |
-| `computed_feature_importance` | Ridge regression feature weights per run |
+| `computed_feature_importance` | Feature importance per run |
 
 ---
 
