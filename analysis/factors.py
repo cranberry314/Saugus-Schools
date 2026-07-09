@@ -306,42 +306,141 @@ def _safe_div(a, b):
 
 def derive_factors(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add the derived-ratio factors to `df` (row-wise; never touches the DB).  Each
-    factor is computed ONLY when its inputs are present, so a caller supplying just
-    some inputs gets just those factors — an absent input never overwrites an
-    existing column with NaN.  Column names are resolved by alias (see _col) so both
-    the report's and the screen's naming work unchanged.
+    Compute every derived library factor whose inputs are present in `df` (row-wise;
+    never touches the DB).  A factor is set ONLY when all its inputs exist, so a
+    caller supplying just some inputs gets just those factors — an absent input never
+    overwrites an existing column with NaN.  Column names are resolved by alias (see
+    _col) so the report's and the screen's differing base-column names both work.
+
+    Formulas mirror analysis/factor_selection_scratch.add_derived_ratios exactly, so
+    this is the single computation source for the whole library.
     """
     d = df.copy()
 
+    # ── Resolve every base input by alias (None if the caller didn't supply it) ──
     ppe_indist = _col(d, "in_district_ppe", "ppe_in_district")
     ppe_teach  = _col(d, "teacher_spending_per_pupil", "ppe_teachers")
     ppe_instr  = _col(d, "ppe_instructional")
+    ppe_oteach = _col(d, "ppe_other_teaching")
+    ppe_mat    = _col(d, "ppe_materials")
+    ppe_ilead  = _col(d, "ppe_instr_leadership")
+    ppe_admin  = _col(d, "ppe_administration")
+    ppe_pupsvc = _col(d, "ppe_pupil_services")
+    ppe_ops    = _col(d, "ppe_operations")
+    ppe_benef  = _col(d, "ppe_insurance_retire")
+    ppe_pd     = _col(d, "ppe_prof_dev")
     teach_fte  = _col(d, "teacher_fte")
+    para_fte   = _col(d, "para_fte")
+    coach_fte  = _col(d, "instructional_coach_fte")
+    spedsup_fte= _col(d, "sped_support_fte")
+    instsup_fte= _col(d, "instructional_support_fte")
     enroll     = _col(d, "total_enrollment")
     low_inc    = _col(d, "low_income_pct")
+    sped_pct   = _col(d, "sped_pct")
+    hn_pct     = _col(d, "high_needs_pct")
+    ell_pct_   = _col(d, "ell_pct")
     req_nss    = _col(d, "req_nss_pp", "required_nss_pp")
     eqv_pc     = _col(d, "eqv_per_capita")
     health     = _col(d, "health_ins", "health_insurance_expenditure", "health_ins_exp")
     muni_pop   = _col(d, "muni_pop", "municipal_population")
+    foundbud   = _col(d, "foundation_budget")
+    foundenr   = _col(d, "foundation_enrollment")
+    tsalary    = _col(d, "teacher_avg_salary", "avg_teacher_salary")
+    hh_income  = _col(d, "median_hh_income")
+    m_edu      = _col(d, "muni_education")
+    m_texp     = _col(d, "muni_total_exp")
+    m_psaf     = _col(d, "muni_pub_safety")
+    m_pwrk     = _col(d, "muni_pub_works")
+    m_fixed    = _col(d, "muni_fixed_costs")
+    m_debt     = _col(d, "muni_debt_service")
+    m_gg       = _col(d, "muni_gen_gov")
+    m_tax      = _col(d, "muni_taxes")
+    m_trev     = _col(d, "muni_total_rev")
+    m_srev     = _col(d, "muni_state_rev")
+    m_igov     = _col(d, "muni_intergov")
+    comm_av    = _col(d, "commercial_av")
+    ind_av     = _col(d, "industrial_av")
+    tot_av     = _col(d, "total_av")
+    m_sal      = _col(d, "muni_salaries")
+    m_emp      = _col(d, "muni_employees")
+    cap_sch    = _col(d, "capital_schools")
+    cap_tot    = _col(d, "capital_total")
+    viol       = _col(d, "violent_crimes")
+    crime_pop  = _col(d, "crime_pop")
 
     def _set(name, a, b, scale=1.0):
+        """Set d[name] = a/b × scale, only if both inputs are present."""
         if a is not None and b is not None:
             d[name] = _safe_div(a, b) * scale
 
-    # Staffing intensity (density first — per-need uses it)
-    _set(teachers_per_100_students.name, teach_fte, enroll, scale=100.0)
-    _set(teachers_per_lowincome.name, _col(d, teachers_per_100_students.name), low_inc)
+    # ── Staffing intensity (density first — per-need uses it) ────────────────
+    _set("teachers_per_100_students", teach_fte, enroll, 100.0)
+    _set("teachers_per_lowincome", _col(d, "teachers_per_100_students"), low_inc)
+    _set("student_teacher_ratio", enroll, teach_fte)
+    _set("paras_per_100_students", para_fte, enroll, 100.0)
+    _set("coaches_per_100_students", coach_fte, enroll, 100.0)
+    _set("sped_support_per_100", spedsup_fte, enroll, 100.0)
+    _set("para_teacher_ratio", para_fte, teach_fte)
+    _set("coaches_per_100_teachers", coach_fte, teach_fte, 100.0)
+    if para_fte is not None and teach_fte is not None:
+        d["para_share_of_staff"] = para_fte / (teach_fte + para_fte).replace(0, np.nan)
+    if all(c is not None for c in (teach_fte, para_fte, coach_fte, spedsup_fte, instsup_fte)) and enroll is not None:
+        adult = teach_fte + para_fte + coach_fte + spedsup_fte + instsup_fte
+        d["adults_per_100_students"] = adult / enroll.replace(0, np.nan) * 100
 
-    # Spending mix (shares of in-district PPE)
-    _set(instructional_share.name, ppe_instr, ppe_indist)
-    _set(teacher_pay_share.name,   ppe_teach, ppe_indist)
+    # ── Staff-to-NEED (per 100 students in a given need group) ───────────────
+    if enroll is not None:
+        enr = enroll.replace(0, np.nan)
+        if sped_pct is not None:
+            sped_n = (sped_pct / 100 * enr).replace(0, np.nan)
+            if spedsup_fte is not None: d["sped_support_per_100sped"] = spedsup_fte / sped_n * 100
+            if para_fte is not None:    d["paras_per_100_sped"] = para_fte / sped_n * 100
+        if hn_pct is not None and para_fte is not None:
+            d["paras_per_100_highneed"] = para_fte / (hn_pct / 100 * enr).replace(0, np.nan) * 100
+        if ell_pct_ is not None and instsup_fte is not None:
+            d["support_per_100_ell"] = instsup_fte / (ell_pct_ / 100 * enr).replace(0, np.nan) * 100
+    if ppe_pupsvc is not None and hn_pct is not None:
+        d["pupil_svc_per_need"] = ppe_pupsvc / (hn_pct / 100).replace(0, np.nan)
+    if ppe_pd is not None and enroll is not None and teach_fte is not None:
+        d["pd_per_teacher"] = ppe_pd * enroll / teach_fte.replace(0, np.nan)
 
-    # Spending effort
-    _set(spend_vs_required.name, ppe_indist, req_nss)
-    _set(nss_per_eqv.name,       ppe_indist, eqv_pc)
+    # ── Spending mix (shares of in-district PPE) ─────────────────────────────
+    # instructional numerator: report supplies a precomputed sum; screen the parts.
+    if ppe_instr is None and all(c is not None for c in (ppe_teach, ppe_oteach, ppe_mat, ppe_ilead)):
+        ppe_instr = ppe_teach + ppe_oteach + ppe_mat + ppe_ilead
+    _set("instructional_share", ppe_instr, ppe_indist)
+    _set("teacher_pay_share",   ppe_teach, ppe_indist)
+    _set("admin_share",         ppe_admin, ppe_indist)
+    _set("pupil_services_share", ppe_pupsvc, ppe_indist)
+    _set("operations_share",    ppe_ops, ppe_indist)
+    _set("benefits_share",      ppe_benef, ppe_indist)
 
-    # Municipal cost drag (structural)
-    _set(health_ins_per_capita.name, health, muni_pop)
+    # ── Spending level & effort ──────────────────────────────────────────────
+    _set("spend_vs_required", ppe_indist, req_nss)
+    _set("nss_per_eqv",       ppe_indist, eqv_pc)
+    _set("spend_per_eqv",     ppe_indist, eqv_pc)
+    _set("foundation_budget_pp", foundbud, foundenr)
+    _set("salary_vs_income",  tsalary, hh_income)
+
+    # ── Municipal budget shares (× 100) ──────────────────────────────────────
+    _set("ed_budget_share",     m_edu,  m_texp, 100.0)
+    _set("public_safety_share", m_psaf, m_texp, 100.0)
+    _set("public_works_share",  m_pwrk, m_texp, 100.0)
+    _set("fixed_costs_share",   m_fixed, m_texp, 100.0)
+    _set("debt_service_share",  m_debt, m_texp, 100.0)
+    _set("gen_gov_share",       m_gg,   m_texp, 100.0)
+
+    # ── Revenue structure (× 100) ────────────────────────────────────────────
+    _set("tax_pct_rev",   m_tax,  m_trev, 100.0)
+    _set("state_aid_pct", m_srev, m_trev, 100.0)
+    _set("intergov_pct",  m_igov, m_trev, 100.0)
+
+    # ── Tax base / municipal / crime ─────────────────────────────────────────
+    if comm_av is not None and ind_av is not None and tot_av is not None:
+        d["commercial_av_share"] = (comm_av + ind_av) / tot_av.replace(0, np.nan) * 100
+    _set("health_ins_per_capita", health, muni_pop)
+    _set("muni_avg_salary", m_sal, m_emp)
+    _set("capital_school_share", cap_sch, cap_tot)
+    _set("violent_rate", viol, crime_pop, 100000.0)
 
     return d
