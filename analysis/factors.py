@@ -16,7 +16,8 @@ A `Factor` carries:
     name    — the DataFrame column / DB name
     tier    — 1 votable · 2 managed · 3 structural (what a town IS)
     kind    — "raw" (a DB column) or "derived" (a ratio; see `formula` + derive_factors)
-    unit    — "pct" (0-100) · "pct100" (0-1 fraction) · "ratio" · "usd" · "count"
+    unit    — display/format kind: "pct" (0-100) · "pct100" (0-1 fraction) ·
+              "dollar" · "count" · "rate" (small ratios)
     higher_is_better — True/False for actionable levers; None for structural
     label   — human-readable name for tables/exhibits
     formula — for derived factors, the exact ratio (the math lives in derive_factors)
@@ -41,7 +42,7 @@ class Factor:
     name: str
     tier: int                       # 1 votable · 2 managed · 3 structural
     kind: str                       # "raw" | "derived"
-    unit: str                       # pct | pct100 | ratio | usd | count
+    unit: str                       # pct | pct100 | dollar | count | rate
     higher_is_better: bool | None   # None for structural
     label: str
     formula: str | None = None      # for derived factors
@@ -55,47 +56,47 @@ class Factor:
 # ---------------------------------------------------------------------------
 
 # ── Tier 3 — structural: what a community IS (peer context; never ranked) ──────
-low_income_pct        = Factor("low_income_pct",        3, "raw", "pct",   None, "Low-income share of students")
-median_hh_income      = Factor("median_hh_income",      3, "raw", "usd",   None, "Median household income")
-equalized_income      = Factor("equalized_income",      3, "raw", "usd",   None, "Equalized property valuation per capita")
-pct_bachelors_plus    = Factor("pct_bachelors_plus",    3, "raw", "pct",   None, "Adults with a bachelor's degree or higher")
-pct_owner_occupied    = Factor("pct_owner_occupied",    3, "raw", "pct",   None, "Owner-occupied housing share")
-ell_pct               = Factor("ell_pct",               3, "raw", "pct",   None, "English-language-learner share")
-sped_pct              = Factor("sped_pct",              3, "raw", "pct",   None, "Special-education share")
-total_enrollment      = Factor("total_enrollment",      3, "raw", "count", None, "District enrollment (size)")
-crime_rate            = Factor("crime_rate",            3, "raw", "ratio", None, "Violent crime rate per 100k")
-health_ins_per_capita = Factor("health_ins_per_capita", 3, "derived", "usd", None,
-                               "Municipal health-insurance spend per resident",
+low_income_pct        = Factor("low_income_pct",        3, "raw", "pct",    None, "% students from low-income families")
+median_hh_income      = Factor("median_hh_income",      3, "raw", "dollar", None, "Median household income")
+equalized_income      = Factor("equalized_income",      3, "raw", "dollar", None, "Equalized property value per capita")
+pct_bachelors_plus    = Factor("pct_bachelors_plus",    3, "raw", "pct",    None, "Adults with a bachelor's degree+")
+pct_owner_occupied    = Factor("pct_owner_occupied",    3, "raw", "pct",    None, "Owner-occupied housing units")
+ell_pct               = Factor("ell_pct",               3, "raw", "pct",    None, "English language learners")
+sped_pct              = Factor("sped_pct",              3, "raw", "pct",    None, "Special education students")
+total_enrollment      = Factor("total_enrollment",      3, "raw", "count",  None, "Total district enrollment")
+crime_rate            = Factor("crime_rate",            3, "raw", "count",  None, "Crime incidents per 100k residents")
+health_ins_per_capita = Factor("health_ins_per_capita", 3, "derived", "dollar", None,
+                               "Health insurance $ per resident",
                                formula="health_insurance_expenditure / municipal_population")
 
 # ── Tier 1 — votable: what the town chooses to fund (Town Meeting / ballot) ────
-ed_budget_share       = Factor("ed_budget_share",       1, "raw", "pct",   True,  "Education's share of the municipal budget")
-fixed_costs_pct       = Factor("fixed_costs_pct",       1, "raw", "pct",   False, "Fixed costs (pensions/benefits/debt) share of budget")
-spend_vs_required     = Factor("spend_vs_required",     1, "derived", "ratio", True,
-                               "In-district PPE vs the Ch.70 required minimum",
+ed_budget_share       = Factor("ed_budget_share",       1, "raw", "pct",    True,  "Education's share of the municipal budget")
+fixed_costs_pct       = Factor("fixed_costs_pct",       1, "raw", "pct",    False, "Fixed costs (mostly health ins.)")
+spend_vs_required     = Factor("spend_vs_required",     1, "derived", "rate", True,
+                               "Spending vs Ch70 required minimum",
                                formula="in-district PPE / required NSS per pupil")
 
 # ── Tier 2 — managed: day-to-day school operations (administration) ────────────
-chronic_absenteeism_pct   = Factor("chronic_absenteeism_pct",   2, "raw", "pct", False, "Chronically absent (≥10% of days)")
-avg_teacher_salary        = Factor("avg_teacher_salary",        2, "raw", "usd", True,  "Average teacher salary")
-teachers_per_100_students = Factor("teachers_per_100_students", 2, "derived", "ratio", True,
+chronic_absenteeism_pct   = Factor("chronic_absenteeism_pct",   2, "raw", "pct",    False, "Students chronically absent (10%+)")
+avg_teacher_salary        = Factor("avg_teacher_salary",        2, "raw", "dollar", True,  "Average teacher salary")
+teachers_per_100_students = Factor("teachers_per_100_students", 2, "derived", "rate", True,
                                    "Teachers per 100 students",
                                    formula="teacher_fte / total_enrollment × 100")
 instructional_share       = Factor("instructional_share",       2, "derived", "pct100", True,
-                                   "Share of the school dollar reaching the classroom",
+                                   "Share of school $ reaching the classroom",
                                    formula="(teachers + other-teaching + materials + instructional-leadership) / in-district PPE")
-teachers_per_lowincome    = Factor("teachers_per_lowincome",    2, "derived", "ratio", True,
-                                   "Teachers per unit of low-income need",
+teachers_per_lowincome    = Factor("teachers_per_lowincome",    2, "derived", "rate", True,
+                                   "Teachers per low-income student",
                                    formula="teachers_per_100_students / low_income_pct")
-teacher_pay_share         = Factor("teacher_pay_share",         2, "derived", "pct100", True,
-                                   "Share of the school dollar going to teacher pay",
+teacher_pay_share         = Factor("teacher_pay_share",         2, "derived", "rate", True,
+                                   "Teacher share of school spending",
                                    formula="teacher spending per pupil / in-district PPE")
 
 # The one library factor deliberately NOT tiered into any curated report pool:
 # strong raw but weak partial (mostly a wealth proxy, not a lever).  Kept because
 # the statewide screen still tests it as a candidate.  Derivable in derive_factors.
-nss_per_eqv = Factor("nss_per_eqv", 3, "derived", "ratio", None,
-                     "In-district PPE vs property wealth (effort vs wealth)",
+nss_per_eqv = Factor("nss_per_eqv", 3, "derived", "rate", None,
+                     "School spend vs. property wealth",
                      formula="in-district PPE / equalized valuation per capita")
 
 

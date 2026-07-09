@@ -2253,50 +2253,37 @@ def page_what_overachievers_did(pdf, label: str, target: str,
     _save(pdf, fig)
 
 
-# Plain-language description and display unit for every feature that can
-# appear as a lean RBP feature across the four models.
-FEATURE_INFO: dict[str, tuple[str, str]] = {
-    "low_income_pct":            ("% students from low-income families",          "pct"),
-    "median_hh_income":          ("Median household income",                      "dollar"),
-    "equalized_income":          ("Equalized property value per capita",          "dollar"),
-    "pct_bachelors_plus":        ("Adults with a bachelor's degree+",              "pct"),
-    "pct_owner_occupied":        ("Owner-occupied housing units",                  "pct"),
-    "crime_rate":                ("Crime incidents per 100k residents",            "count"),
-    "res_tax_rate":              ("Residential tax rate (per $1,000)",             "rate"),
-    "chronic_absenteeism_pct":   ("Students chronically absent (10%+)",            "pct"),
-    "ell_pct":                   ("English language learners",                     "pct"),
-    "sped_pct":                  ("Special education students",                    "pct"),
-    "total_enrollment":          ("Total district enrollment",                     "count"),
-    "teachers_per_100_students": ("Teachers per 100 students",                     "rate"),
-    "avg_teacher_salary":        ("Average teacher salary",                        "dollar"),
-    "in_district_ppe":              ("In-district spending per pupil",                "dollar"),
-    "debt_service_pct":          ("Debt service share of town budget",             "pct"),
-    "fixed_costs_pct":           ("Fixed costs (mostly health ins.)", "pct"),
-    "public_safety_pct":         ("Police & fire share of town budget",            "pct"),
-    "public_works_pct":          ("Public works share of town budget",             "pct"),
-    "avg_mcas":                  ("MCAS 3–8 (% meeting/exceeding)",                "pct100"),
-    "mcas10_ela":                ("MCAS 10 ELA (% meeting/exceeding)",             "pct100"),
-    "dropout_pct":               ("Annual dropout rate",                           "pct"),
-    "attending_pct":             ("HS completers attending college",               "pct"),
-    # Derived actionable "effort / intensity" factors (see add_actionable_factors)
-    "teachers_per_lowincome":    ("Teachers per low-income student",               "rate"),
-    "nss_per_eqv":               ("School spend vs. property wealth",              "rate"),
-    "spend_vs_required":     ("Spending vs Ch70 required minimum",             "rate"),
-    "teacher_pay_share":    ("Teacher share of school spending",              "rate"),
-    "health_ins_per_capita":     ("Health insurance $ per resident",               "dollar"),
+# Display label + unit for NON-FACTOR columns that can still appear in a table:
+# the four OUTCOMES and a few legacy municipal budget lines.  Curated FACTORS get
+# their label/unit from the factor library (analysis/factors.py) — see _feat_meta —
+# so there is no second copy of the factor metadata here.
+_DISPLAY_ONLY: dict[str, tuple[str, str]] = {
+    # outcomes
+    "avg_mcas":          ("MCAS 3–8 (% meeting/exceeding)",     "pct100"),
+    "mcas10_ela":        ("MCAS 10 ELA (% meeting/exceeding)",  "pct100"),
+    "dropout_pct":       ("Annual dropout rate",                "pct"),
+    "attending_pct":     ("HS completers attending college",    "pct"),
+    # non-curated municipal columns occasionally shown in fiscal tables
+    "in_district_ppe":   ("In-district spending per pupil",     "dollar"),
+    "res_tax_rate":      ("Residential tax rate (per $1,000)",  "rate"),
+    "debt_service_pct":  ("Debt service share of town budget",  "pct"),
+    "public_safety_pct": ("Police & fire share of town budget", "pct"),
+    "public_works_pct":  ("Public works share of town budget",  "pct"),
 }
 
 
 def _feat_meta(feat: str) -> tuple[str, str]:
     """
-    (display label, unit kind) for any feature — including factors not yet in
-    FEATURE_INFO (e.g. future computed/derived factors).  Known factors use their
-    curated label/units; unknown ones fall back to a prettified column name
-    ("some_new_factor" → "Some new factor") and generic numeric formatting, so a
-    newly added factor renders cleanly with no extra wiring.
+    (display label, unit kind) for any column.  Curated factors get their label +
+    unit from the factor library (analysis/factors.py, single source); outcomes and
+    a few legacy municipal columns come from _DISPLAY_ONLY; anything else falls back
+    to a prettified column name so a newly added factor renders with no extra wiring.
     """
-    if feat in FEATURE_INFO:
-        return FEATURE_INFO[feat]
+    lf = F.get(feat)
+    if lf is not None:
+        return (lf.label, lf.unit)
+    if feat in _DISPLAY_ONLY:
+        return _DISPLAY_ONLY[feat]
     pretty = feat.replace("_pct", "").replace("_", " ").strip().capitalize()
     return (pretty or feat, "rate")
 
