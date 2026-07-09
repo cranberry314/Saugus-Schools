@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import get_engine
 from analysis.rbp import rbp, rbp_loo
 from db import queries as Q
+import analysis.factors as F   # the factor library (see the explicit selection below)
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -2746,38 +2747,34 @@ PRE_SPECIFIED_POOL = {
 # moves the outcome," instead of mixing in demographics it cannot act on.
 USE_ACTIONABLE_POOL = True
 
-# Tier 3 — what a community IS (the peer-matching basis; not factors).
-STRUCTURAL_FEATURES = {
-    "low_income_pct", "median_hh_income", "equalized_income",
-    "pct_bachelors_plus", "pct_owner_occupied", "ell_pct", "sped_pct",
-    "total_enrollment", "crime_rate",
-    # Municipal employee health-insurance spending per resident: tracks town
-    # wealth / workforce, not a clean town-vote factor — treated as structural.
-    "health_ins_per_capita",
-}
+# ── This report's explicit factor selection ──────────────────────────────────
+# Every factor is DEFINED once in the library (analysis/factors.py).  Here we just
+# SELECT which ones this report uses, by reference, grouped by tier — so the pool
+# is explicit and readable, but each factor's tier/formula/provenance lives in one
+# place and can't drift.  To change the pool, edit these lists (and, for a brand-new
+# factor, define it once in factors.py first).
 
-# Tier 1/2 — what a town DOES (votable or managed).  Includes the derived
-# effort/intensity ratios the statewide factor screen validated as carrying
-# signal where the raw levels did not.
-ACTIONABLE_FACTORS = {
-    # ── The 9 best Tier-1/2 levers, chosen by the cross-sectional factor screen
-    #    (lag-0, net of the structural block, FDR-validated; one clean lever per
-    #    lever-TYPE, no redundant twins, no wealth-proxies).  Superseded the older
-    #    pool: dropped in_district_ppe (raw level → redundant with spend_vs_required),
-    #    res_tax_rate (borderline), nss_per_eqv (negative = poverty proxy, not a
-    #    lever); added instructional_share and avg_teacher_salary. ──
-    # straight-up factors from load_features
-    "chronic_absenteeism_pct",    # attendance / engagement
-    "teachers_per_100_students",  # class size / staffing density
-    "avg_teacher_salary",         # teacher pay LEVEL
-    "instructional_share",        # share of the school dollar reaching the classroom
-    "ed_budget_share",            # Town Meeting allocation to schools
-    "fixed_costs_pct",            # pensions/benefits/health (crowd-out)
-    # derived effort/intensity (added by add_actionable_factors)
-    "teachers_per_lowincome",     # staffing RELATIVE TO need
-    "spend_vs_required",      # spending above the Ch70 legal minimum (fund-more vote)
-    "teacher_pay_share",     # share of the school dollar reaching teachers
-}
+# Tier 3 — structural: what a community IS.  Used ONLY to place Saugus among
+# comparable towns (peer context); never ranked as a lever.
+TIER3_STRUCTURAL = [
+    F.low_income_pct, F.median_hh_income, F.equalized_income, F.pct_bachelors_plus,
+    F.pct_owner_occupied, F.ell_pct, F.sped_pct, F.total_enrollment, F.crime_rate,
+    F.health_ins_per_capita,
+]
+# Tier 1 — votable: what the town chooses to fund (Town Meeting / ballot).
+TIER1_VOTABLE = [
+    F.ed_budget_share, F.spend_vs_required, F.fixed_costs_pct,
+]
+# Tier 2 — managed: day-to-day school operations (administration decides).
+TIER2_MANAGED = [
+    F.chronic_absenteeism_pct, F.teachers_per_100_students, F.avg_teacher_salary,
+    F.instructional_share, F.teachers_per_lowincome, F.teacher_pay_share,
+]
+
+# Name-sets the rest of the module works with (RBP is tier-blind; these are the
+# columns we let into each run).  Derived from the selection above.
+STRUCTURAL_FEATURES = F.names(TIER3_STRUCTURAL)
+ACTIONABLE_FACTORS  = F.names(TIER1_VOTABLE + TIER2_MANAGED)
 
 
 def _display_features(features) -> list:
@@ -2834,14 +2831,9 @@ def add_actionable_factors(df: pd.DataFrame, engine) -> pd.DataFrame:
     ):
         d = d.merge(t, on="_k", how="left")
 
-    def _safe(a, b):
-        return a / b.replace(0, np.nan)
-
-    d["teachers_per_lowincome"] = _safe(d["teachers_per_100_students"], d["low_income_pct"])
-    d["teacher_pay_share"] = _safe(d["teacher_spending_per_pupil"], d["in_district_ppe"])
-    d["nss_per_eqv"]            = _safe(d["in_district_ppe"], d["eqv_per_capita"])
-    d["spend_vs_required"]  = _safe(d["in_district_ppe"], d["req_nss_pp"])
-    d["health_ins_per_capita"]  = _safe(d["health_ins"], d["muni_pop"])
+    # Derived ratios come from the single definition in analysis/factors.py
+    # (name-tolerant: it resolves in_district_ppe/req_nss_pp/health_ins/muni_pop here).
+    d = F.derive_factors(d)
     return d.drop(columns=["_k", "eqv_per_capita", "muni_pop", "req_nss_pp", "health_ins"],
                   errors="ignore")
 
@@ -2995,7 +2987,17 @@ def _run_one_model(args: tuple) -> dict:
     # is fully reproducible and the model dicts don't over-claim.
     _live_excl  = sorted(model.get("also_exclude", set()) & set(allowed))
     _inert_excl = sorted(model.get("also_exclude", set()) - set(allowed))
-    _p(f"Realized candidates ({len(candidates)}): {sorted(candidates)}")
+    # Show the pool grouped by tier — tiers pulled live from the factor library
+    # (factors.tier_of), so this is a derived view, never a second list.
+    _by_tier = {1: [], 2: [], 3: [], None: []}
+    for c in sorted(candidates):
+        _by_tier[F.tier_of(c)].append(c)
+    _p(f"Realized candidates ({len(candidates)}):")
+    _p(f"    Tier 3 structural (peer context): {_by_tier[3]}")
+    _p(f"    Tier 1 votable (ranked):          {_by_tier[1]}")
+    _p(f"    Tier 2 managed (ranked):          {_by_tier[2]}")
+    if _by_tier[None]:
+        _p(f"    Uncatalogued:                     {_by_tier[None]}")
     if model.get("also_exclude"):
         _p(f"  also_exclude live (in pool, removed): {_live_excl or ['—']}")
         _p(f"  also_exclude inert (not in pool anyway): {_inert_excl or ['—']}")
