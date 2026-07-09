@@ -42,3 +42,12 @@ analysis/factor_validation.py
 analysis/model_select_rbp.py
 analysis/test_new_ratios.py
 analysis/event_study.py
+
+# Non-flagship reports & their shared helper — kept local, not published.
+# (The public repo is scoped to the RBP flagship; recover these from git history.)
+analysis/saugus_synthesis.py
+analysis/municipal_finance_report.py
+analysis/peer_trajectory_study.py
+analysis/inflation.py
+analysis/data_integrity.py
+analysis/data_consistency_tests.py

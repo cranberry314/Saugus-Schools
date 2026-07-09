@@ -36,7 +36,6 @@ import them:
   **all** derived-ratio math in one place. Both the flagship report and the statewide
   screen select from it. Add or re-tier a factor here, never inline.
 - `db/queries.py` — centralized feature/data queries for the flagship.
-- `analysis/inflation.py` — CPI deflation (shared, one implementation).
 
 ## The flagship (RBP) and its discipline
 
@@ -70,19 +69,7 @@ Czasonis, Kritzman & Turkington (2024).
 - Use **"factor"**, not "lever." The codebase went through a full sweep to
   standardize on "factor" (files, README, reports). Don't reintroduce "lever."
 
-## Reports: two audiences, one source
-
-`analysis/saugus_synthesis.py` is the single source of truth for the narrative
-report and emits both audiences (no sync risk):
-
-- default → `saugus_full_analysis.pdf` — technical: full methodology, regression
-  tables, peer-selection math.
-- `--parent` → `saugus_community_brief.pdf` — community: story and conclusions,
-  methodology pages omitted.
-
-Rebuild PDFs from cache without recompute via `--regen-pdf` where supported.
-
-### Report style rules (user preferences)
+## Report style rules (user preferences)
 
 - **Show numbers, not bar charts.** Per-outcome factor pages are numeric,
   multi-method tables grouped by tier (Tier 1 → 2 → 3), each tier ranked
