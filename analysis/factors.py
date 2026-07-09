@@ -46,8 +46,9 @@ class Factor:
     higher_is_better: bool | None   # None for structural
     label: str
     formula: str | None = None      # for derived factors
-    curated: bool = True            # True = in a report pool (precise metadata);
-                                    # False = exploratory screen candidate (best-effort)
+    curated: bool = True            # True  = in a report pool (precise, vetted metadata)
+                                    # False = exploratory candidate, NOT THOROUGHLY
+                                    #         VETTED (best-effort tier/unit/label)
 
     def __str__(self) -> str:       # so it reads/serialises as its column name
         return self.name
@@ -111,14 +112,22 @@ CURATED: list[Factor] = [
 
 # ---------------------------------------------------------------------------
 # Exploratory candidates — the wider pool the statewide screen tests but no
-# report has curated.  Metadata (unit/label) is best-effort; formulas are taken
-# verbatim from the screen (factor_selection_scratch.add_derived_ratios).  Some
-# are the screen's differently-named twin of a curated factor (noted inline);
+# report has curated.
+#
+#   ⚠  EVERY factor in this section HAS NOT BEEN THOROUGHLY VETTED.  Its tier,
+#      unit, and label are best-effort (its formula is taken verbatim from the
+#      screen, but the metadata around it is not audited).  Do not surface one of
+#      these in a published exhibit without checking it first.  This caveat is
+#      carried on each factor programmatically via curated=False (see _f below).
+#
+# Some are the screen's differently-named twin of a curated factor (noted inline);
 # they stay under the screen's name so its panel keeps working unchanged.
 # Registered as module attributes below, so `factors.<name>` works for all.
 # ---------------------------------------------------------------------------
 
 def _f(name, tier, kind, unit, hib, label, formula=None):
+    """Build an EXPLORATORY factor — curated=False marks it as NOT THOROUGHLY
+    VETTED (best-effort tier/unit/label)."""
     return Factor(name, tier, kind, unit, hib, label, formula=formula, curated=False)
 
 EXPLORATORY: list[Factor] = [
